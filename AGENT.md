@@ -1,0 +1,128 @@
+# AGENT.md
+
+Instrucciones para agentes de IA que trabajen en este repositorio.
+
+`foto` es una fototeca local-first en Python + Qt que aspira a sustituir a Apple
+Photos. Es una herramienta personal, no un producto: prioriza claridad,
+corrección y que la biblioteca sea inspeccionable por su dueño.
+
+Antes de tocar nada, lee `README.md`. Es la fuente de verdad sobre alcance,
+arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
+`docs/diseno-ui.md`.
+
+## Estado actual
+
+- Fase de diseño. No hay código todavía; `src/` y `tests/` aún no existen.
+- El MVP es **visualización y metadatos**, nada más. No adelantes edición,
+  álbumes ni IA sin que se pida explícitamente.
+- No inventes comandos de instalación, CI ni badges que no existan.
+
+## Reglas no negociables
+
+1. **Nunca modificar, mover ni borrar originales.** Toda escritura va a XMP,
+   SQLite o a un nuevo fichero derivado (miniaturas, caché).
+2. **XMP es la fuente de verdad.** SQLite es un índice reconstruible; ningún
+   dato debe existir solo en la base de datos.
+3. **Sin red por defecto.** La única salida permitida es la copia de seguridad a
+   S3, y solo si el usuario la ha configurado. Nada de telemetría, analítica ni
+   servicios externos.
+4. **Multiplataforma real.** Omarchy (Arch + Hyprland/Wayland) y macOS son
+   objetivos de primera clase. Aísla cualquier diferencia de sistema en
+   módulos concretos, no la disperses por la UI.
+5. **La UI no contiene lógica de negocio.** `core/` y `storage/` no deben
+   importar Qt.
+6. **Sin dependencias nuevas sin justificarlo.** Antes de añadir una librería,
+   comprueba que la stdlib o una dependencia existente no bastan.
+7. **Teclado primero.** Toda acción de la UI debe poder ejecutarse sin ratón.
+   Los atajos siguen `docs/diseno-ui.md`; no inventes teclas ni cambies su
+   significado sin actualizar ese documento y la ayuda integrada.
+
+## Stack
+
+- Python 3.12+
+- PySide6 (LGPL, coherente con la licencia MIT del proyecto)
+- `platformdirs` para ubicar configuración, caché y datos en Linux y macOS
+- SQLite (índice y caché de miniaturas)
+- Sidecars XMP; `exiftool` para lectura/escritura de metadatos
+- pytest y ruff como base de tests y estilo (propuesta hasta que exista código)
+- `uv` como gestor de entorno y dependencias (propuesta)
+
+Formatos de imagen: JPEG, HEIC y RAW vía `exiftool` + extracción de miniaturas
+embebidas. No implementes decodificadores de RAW propios.
+
+## Estructura prevista
+
+```
+foto/
+├── docs/
+│   ├── adr/          # decisiones de arquitectura
+│   └── diseno-ui.md  # reglas de interfaz
+├── src/foto/
+│   ├── core/       # indexado, metadatos, miniaturas
+│   ├── storage/    # SQLite, XMP, configuración, copias de seguridad
+│   └── ui/         # ventanas y widgets Qt
+├── tests/
+└── README.md
+```
+
+Cuando el código exista, actualiza esta sección y añade aquí los comandos
+reales (`uv sync`, `uv run pytest`, `uv run foto`, etc.).
+
+## Convenciones de código
+
+- Código e identificadores en inglés; comentarios, docstrings, documentación y
+  textos visibles de la UI en español.
+- Type hints en todas las funciones públicas.
+- Usa `pathlib` para todas las rutas y `platformdirs` para localizar los
+  directorios de configuración, caché y datos del usuario. Nunca concatenes
+  strings para construir rutas.
+- `dataclasses` para modelos de datos; evita dicts sueltos cruzan módulos.
+- Errores explícitos: excepciones propias en `core`, nunca `except: pass`.
+- Operaciones de disco potencialmente lentas (indexar, miniaturas) fuera del
+  hilo de UI.
+- Nada de estado global mutable; la configuración se pasa explícitamente.
+
+## Configuración
+
+Decisión completa en `docs/adr/0001-configuracion.md`. Resumen operativo:
+
+- **Global del usuario:** `config.toml` en `platformdirs.user_config_dir("foto")`.
+  Formato TOML, legible y editable a mano.
+- **De la biblioteca:** `<fototeca>/.foto/library.toml`, junto al catálogo SQLite
+  y la caché de miniaturas. La biblioteca se describe a sí misma.
+- **Secretos:** llavero del sistema o variables de entorno. Nunca en `config.toml`.
+- **Precedencia:** `--library` → `FOTO_LIBRARY` → `config.toml` → diálogo de
+  primera ejecución. Para el fichero de config: `--config` → `FOTO_CONFIG` →
+  `platformdirs`.
+- **Requisitos:** lectura con `tomllib`, escritura atómica, campo `version` con
+  migración, errores explícitos y `pathlib`.
+- **Prohibido:** `.env` como fuente de verdad y `QSettings`. La carga y la
+  escritura de configuración no viven en la UI.
+
+## Tests
+
+- `pytest` para todo; los tests de `core/` y `storage/` no deben necesitar Qt ni
+  pantalla.
+- Usa `tmp_path` y fixtures con ficheros de imagen mínimos en lugar de imágenes
+  reales grandes.
+- Todo bug corregido lleva su test de regresión.
+
+## Flujo de trabajo
+
+- Cambios pequeños y revisables. Nada de refactors masivos no pedidos.
+- Si implementas una funcionalidad del roadmap, marca su casilla en el
+  `README.md` y ajusta la documentación afectada.
+- No hagas `git commit`, `git push` ni cambios de configuración de git sin
+  confirmación explícita.
+- Mensajes de commit cortos, en imperativo y en español (p. ej.
+  `añade indexado de carpetas`).
+- Si una decisión de diseño no está clara, pregunta antes de asumirla.
+
+## Datos y privacidad
+
+- No incluyas fotos, rutas personales, bases de datos ni sidecars XMP en el
+  repositorio. Añade los patrones necesarios a `.gitignore` cuando aparezcan.
+- Credenciales de S3 vía variables de entorno o llavero del sistema, nunca en
+  el repo ni en ficheros de configuración versionados.
+- Los logs no deben volcar rutas completas de la biblioteca salvo en modo
+  depuración explícito.
