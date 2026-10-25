@@ -6,50 +6,20 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QGridLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QScrollArea,
-    QSizePolicy,
-    QWidget,
 )
 
 from foto.core.library import list_images
 from foto.storage.config import AppConfig, load_config, save_config
-
-
-class ThumbnailLabel(QLabel):
-    def __init__(self, path: Path, parent=None):
-        super().__init__(parent)
-        self.path = path
-        self.setAlignment(Qt.AlignCenter)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.setFixedSize(200, 200)
-        self.setStyleSheet("border: 1px solid gray;")
-        self._load_thumbnail()
-
-    def _load_thumbnail(self):
-        try:
-            pixmap = QPixmap(str(self.path))
-            if pixmap.isNull():
-                self.setText(self.path.name)
-                return
-            scaled = pixmap.scaled(
-                196,
-                196,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            self.setPixmap(scaled)
-            self.setText("")
-        except Exception:
-            self.setText(self.path.name)
 
 
 class MainWindow(QMainWindow):
@@ -59,32 +29,44 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"foto — {library_path.name}")
         self.setMinimumSize(640, 480)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        container = QWidget()
-        self.grid = QGridLayout(container)
-        self.grid.setSpacing(8)
-        scroll.setWidget(container)
-        self.setCentralWidget(scroll)
+        self.list = QListWidget()
+        self.list.setViewMode(QListWidget.IconMode)
+        self.list.setFlow(QListWidget.LeftToRight)
+        self.list.setWrapping(True)
+        self.list.setResizeMode(QListWidget.Adjust)
+        self.list.setSpacing(8)
+        self.list.setFrameShape(QListWidget.NoFrame)
+        self.list.setIconSize(QSize(200, 200))
+        self.list.setUniformItemSizes(True)
+        self.setCentralWidget(self.list)
 
         self.load_thumbnails()
 
     def load_thumbnails(self):
         images = list_images(self.library_path)
-        row = col = 0
-        cols = 4
         for img in images:
-            label = ThumbnailLabel(img)
-            self.grid.addWidget(label, row, col)
-            col += 1
-            if col >= cols:
-                col = 0
-                row += 1
+            item = QListWidgetItem()
+            try:
+                pixmap = QPixmap(str(img))
+                if not pixmap.isNull():
+                    scaled = pixmap.scaled(
+                        196,
+                        196,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation,
+                    )
+                    item.setIcon(QIcon(scaled))
+                    item.setText("")
+                else:
+                    item.setText(img.name)
+            except Exception:
+                item.setText(img.name)
+            self.list.addItem(item)
 
         if not images:
-            empty = QLabel("No se encontraron imágenes en esta biblioteca")
-            empty.setAlignment(Qt.AlignCenter)
-            self.grid.addWidget(empty, 0, 0)
+            item = QListWidgetItem("No se encontraron imágenes en esta biblioteca")
+            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+            self.list.addItem(item)
 
 
 def main():
