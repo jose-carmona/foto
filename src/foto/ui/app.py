@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -16,10 +16,32 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QStyle,
+    QStyledItemDelegate,
 )
 
 from foto.core.library import list_images
 from foto.storage.config import AppConfig, load_config, save_config
+
+
+class ThumbnailDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        if option.state & QStyle.State_Selected:
+            rect = option.rect.adjusted(3, 3, 3, 3)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 35))
+            painter.drawRoundedRect(rect, 2, 2)
+
+        icon = index.data(Qt.DecorationRole)
+        if icon and not icon.isNull():
+            icon.paint(painter, option.rect, Qt.AlignCenter)
+        else:
+            super().paint(painter, option, index)
+
+        painter.restore()
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +61,8 @@ class MainWindow(QMainWindow):
         self.list.setFrameShape(QListWidget.NoFrame)
         self.list.setIconSize(QSize(400, 247))
         self.list.setUniformItemSizes(True)
+        self.list.setItemDelegate(ThumbnailDelegate())
+        self.list.setStyleSheet("QListWidget::item:selected { background: transparent; }")
         self.setCentralWidget(self.list)
 
         self.load_thumbnails()
