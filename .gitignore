@@ -1,0 +1,71 @@
+# --- Python: bytecode y cachés ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Entornos virtuales (uv crea .venv por defecto) ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- uv ---
+# Se versionan: pyproject.toml, uv.lock y .python-version
+# (para librerías puedes ignorar uv.lock si prefieres no fijarlo)
+# uv.lock
+
+# --- Empaquetado y distribución ---
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+share/python-wheels/
+MANIFEST
+
+# --- Tests, cobertura y linters ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+coverage.xml
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# --- Notebooks ---
+.ipynb_checkpoints/
+
+# --- Variables de entorno y secretos ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Logs y temporales ---
+*.log
+*.tmp
+*.swp
+.cache/
+
+# --- Documentación generada ---
+docs/_build/
+site/
+
+# --- IDEs y editores ---
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# --- Sistema operativo ---
+.DS_Store
+Thumbs.db
+Desktop.ini

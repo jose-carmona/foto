@@ -12,7 +12,9 @@ prototipo arranca visible para poder evaluarlo sin pulsar nada.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
@@ -226,6 +228,12 @@ class Photo:
     location: str
     rating: int = 0
     favorite: bool = False
+    path: Optional[Path] = None
+
+    @property
+    def key(self) -> str:
+        """Identifica la foto aunque haya nombres repetidos en la biblioteca."""
+        return str(self.path) if self.path is not None else self.name
 
 
 def photo_accessible_name(photo: Photo) -> str:
@@ -1314,15 +1322,27 @@ class HelpOverlay(QFrame):
 
 
 class PrototypeWindow(QMainWindow):
-    def __init__(self, photos: list[Photo]) -> None:
+    def __init__(
+        self,
+        photos: list[Photo],
+        *,
+        thumbnails: Optional[dict[str, QIcon]] = None,
+        title: Optional[str] = None,
+        initial_panel_visible: bool = True,
+        on_open: Optional[Callable[[str], None]] = None,
+        on_rescan: Optional[Callable[[], None]] = None,
+    ) -> None:
         super().__init__()
-        self.photos = {photo.name: photo for photo in photos}
+        self.photos = {photo.key: photo for photo in photos}
+        self.thumbnails = dict(thumbnails or {})
+        self._on_open = on_open
+        self._on_rescan = on_rescan
         self.search_text = ""
         self._search_origin: Optional[str] = None
-        self.panel_visible = True
+        self.panel_visible = initial_panel_visible
         self.panel_overlay = False
 
-        self.setWindowTitle("foto — prototipo de UI")
+        self.setWindowTitle(title or "foto — prototipo de UI")
         self.resize(1280, 960)
         self.setMinimumSize(640, 480)
 
@@ -1451,14 +1471,59 @@ class PrototypeWindow(QMainWindow):
         self.grid.clear()
         for index, photo in enumerate(photos):
             item = QListWidgetItem()
-            item.setIcon(make_thumbnail(index))
-            item.setData(PHOTO_ROLE, photo.name)
+            icon = self.thumbnails.get(photo.key)
+            if icon is None or icon.isNull():
+                icon = make_thumbnail(index)
+            item.setIcon(icon)
+            item.setData(PHOTO_ROLE, photo.key)
             item.setData(RATING_ROLE, photo.rating)
             item.setData(FAVORITE_ROLE, photo.favorite)
             item.setData(Qt.AccessibleTextRole, photo_accessible_name(photo))
             item.setSizeHint(QSize(ITEM_W, ITEM_H))
             item.setText("")
             self.grid.addItem(item)
+
+    def set_photos(
+        self,
+        photos: list[Photo],
+        thumbnails: Optional[dict[str, QIcon]] = None,
+    ) -> None:
+        """Sustituye la biblioteca visible conservando la foto actual si sigue."""
+        current = self.grid.currentItem()
+        current_key = current.data(PHOTO_ROLE) if current is not None else None
+        self.photos = {photo.key: photo for photo in photos}
+        if thumbnails is not None:
+            self.thumbnails = dict(thumbnails)
+        self.search_text = ""
+        self._search_origin = None
+        self.grid.blockSignals(True)
+        try:
+            self._populate_grid(photos)
+            self.grid.setCurrentRow(-1)
+
+            target = None
+            for row in range(self.grid.count()):
+                item = self.grid.item(row)
+                if item.data(PHOTO_ROLE) == current_key:
+                    target = item
+                    break
+            if target is None and self.grid.count():
+                target = self.grid.item(0)
+            if target is not None:
+                self.grid.setCurrentItem(target)
+                self.grid.scrollToItem(target, QAbstractItemView.EnsureVisible)
+            else:
+                self.panel.show_empty("Sin selección")
+        finally:
+            self.grid.blockSignals(False)
+
+        self.status.clear_error()
+        photo = self._current_photo()
+        filename = photo.name if photo else ""
+        self.status.set_counts(self._visible_count(), len(self.photos), filename)
+        self._update_empty_state()
+        self._on_current_changed(self.grid.currentItem(), None)
+        self._focus_grid()
 
     def _layout_content(self) -> None:
         width = self.content.width()
@@ -1511,7 +1576,7 @@ class PrototypeWindow(QMainWindow):
 
     def _open_search(self) -> None:
         photo = self._current_photo()
-        self._search_origin = photo.name if photo else None
+        self._search_origin = photo.key if photo else None
         self.status.open_search(self.search_text)
 
     def _focus_grid(self) -> None:
@@ -1617,13 +1682,13 @@ class PrototypeWindow(QMainWindow):
         self._focus_grid()
 
     def _restore_search_origin(self) -> None:
-        name = self._search_origin
+        key = self._search_origin
         self._search_origin = None
-        if not name:
+        if not key:
             return
         for row in range(self.grid.count()):
             item = self.grid.item(row)
-            if item.data(PHOTO_ROLE) == name and not item.isHidden():
+            if item.data(PHOTO_ROLE) == key and not item.isHidden():
                 self.grid.setCurrentItem(item)
                 self.grid.scrollToItem(item, QAbstractItemView.EnsureVisible)
                 return
@@ -1639,20 +1704,26 @@ class PrototypeWindow(QMainWindow):
             self._toggle_help()
             return
         if command == "rescan":
-            self.status.show_message("reindexando…", 3000)
-            QTimer.singleShot(
-                1200,
-                lambda: self.status.show_message(
-                    f"{len(self.photos)} fotos indexadas", 3000
-                ),
-            )
+            if self._on_rescan is not None:
+                self._on_rescan()
+            else:
+                self.status.show_message("reindexando…", 3000)
+                QTimer.singleShot(
+                    1200,
+                    lambda: self.status.show_message(
+                        f"{len(self.photos)} fotos indexadas", 3000
+                    ),
+                )
             return
         if command == "open" or command.startswith("open "):
             argument = command[5:].strip()
-            suffix = f": {argument}" if argument else ""
-            self.status.show_message(
-                f"selector nativo no implementado en el prototipo{suffix}", 4000
-            )
+            if self._on_open is not None:
+                self._on_open(argument)
+            else:
+                suffix = f": {argument}" if argument else ""
+                self.status.show_message(
+                    f"selector nativo no implementado en el prototipo{suffix}", 4000
+                )
             return
         if command == "sort" or command.startswith("sort "):
             key = command[4:].strip()
@@ -1667,14 +1738,14 @@ class PrototypeWindow(QMainWindow):
 
     def _sort_grid(self, key: str) -> None:
         current = self.grid.currentItem()
-        current_name = current.data(PHOTO_ROLE) if current else None
+        current_key = current.data(PHOTO_ROLE) if current else None
 
         self.grid.blockSignals(True)
         items = [self.grid.takeItem(0) for _ in range(self.grid.count())]
 
         def sort_key(item: QListWidgetItem):
-            name = item.data(PHOTO_ROLE)
-            photo = self.photos[name]
+            photo_key = item.data(PHOTO_ROLE)
+            photo = self.photos[photo_key]
             if key == "date":
                 return photo.taken
             if key == "camera":
@@ -1688,7 +1759,7 @@ class PrototypeWindow(QMainWindow):
         self.grid.setCurrentRow(-1)
         for row in range(self.grid.count()):
             item = self.grid.item(row)
-            if item.data(PHOTO_ROLE) == current_name:
+            if item.data(PHOTO_ROLE) == current_key:
                 self.grid.setCurrentItem(item)
                 break
         self.grid.blockSignals(False)
@@ -1801,7 +1872,7 @@ class PrototypeWindow(QMainWindow):
         if photo is None or item is None:
             return
         updated = replace(photo, favorite=not photo.favorite)
-        self.photos[photo.name] = updated
+        self.photos[photo.key] = updated
         item.setData(FAVORITE_ROLE, updated.favorite)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
         self.grid.viewport().update()
@@ -1815,7 +1886,7 @@ class PrototypeWindow(QMainWindow):
         if photo is None or item is None:
             return
         updated = replace(photo, rating=rating)
-        self.photos[photo.name] = updated
+        self.photos[photo.key] = updated
         item.setData(RATING_ROLE, updated.rating)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
         self.grid.viewport().update()
