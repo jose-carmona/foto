@@ -27,6 +27,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.library_path = library_path
         self.setWindowTitle(f"foto — {library_path.name}")
+        self.resize(1280, 960)
         self.setMinimumSize(640, 480)
 
         self.list = QListWidget()
@@ -34,9 +35,9 @@ class MainWindow(QMainWindow):
         self.list.setFlow(QListWidget.LeftToRight)
         self.list.setWrapping(True)
         self.list.setResizeMode(QListWidget.Adjust)
-        self.list.setSpacing(8)
+        self.list.setSpacing(16)
         self.list.setFrameShape(QListWidget.NoFrame)
-        self.list.setIconSize(QSize(200, 200))
+        self.list.setIconSize(QSize(400, 400))
         self.list.setUniformItemSizes(True)
         self.setCentralWidget(self.list)
 
@@ -50,8 +51,8 @@ class MainWindow(QMainWindow):
                 pixmap = QPixmap(str(img))
                 if not pixmap.isNull():
                     scaled = pixmap.scaled(
-                        196,
-                        196,
+                        392,
+                        392,
                         Qt.KeepAspectRatio,
                         Qt.SmoothTransformation,
                     )
