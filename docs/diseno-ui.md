@@ -252,14 +252,17 @@ alterna con `i`.
 
 ### Rejilla
 
-- Celdas cuadradas con recorte centrado; la imagen completa se ve en el visor.
-- Tamaño de celda entre 160 y 240 px, adaptable al ancho. Separación de 8 px y
-  margen exterior de 16 px.
-- Columnas calculadas para llenar el ancho; scroll solo vertical.
+- Las miniaturas fluyen de izquierda a derecha, fila a fila, con ajuste al ancho de
+  la ventana (sin rejilla fija de columnas).
+- Tamaño de miniatura: 400 × 247 px (proporción áurea). Recorte centrado para
+  llenar el recuadro sin deformar la imagen. Sin marco ni borde alrededor de la
+  miniatura.
+- Separación de 16 px entre miniaturas; margen exterior según composición.
 - Favorito y valoración se muestran como insignias discretas en una esquina,
   sobre un velo semitransparente para garantizar legibilidad sobre cualquier
   foto. Nunca aparecen solo al pasar el ratón.
-- El cursor es un borde de acento de 2 px. No se usan sombras ni elevación.
+- Al estar seleccionada, solo se añade un leve sombreado al recuadro de la miniatura
+  (sin recolorizarla ni cambiar su color).
 - Barra de desplazamiento fina (8 px), sin flechas, visible cuando hay desborde.
 
 ### Visor
