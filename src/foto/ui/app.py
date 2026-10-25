@@ -51,12 +51,15 @@ class MainWindow(QMainWindow):
                 pixmap = QPixmap(str(img))
                 if not pixmap.isNull():
                     scaled = pixmap.scaled(
-                        392,
-                        392,
-                        Qt.KeepAspectRatio,
+                        400,
+                        400,
+                        Qt.KeepAspectRatioByExpanding,
                         Qt.SmoothTransformation,
                     )
-                    item.setIcon(QIcon(scaled))
+                    x = max(0, (scaled.width() - 400) // 2)
+                    y = max(0, (scaled.height() - 400) // 2)
+                    cropped = scaled.copy(x, y, 400, 400)
+                    item.setIcon(QIcon(cropped))
                     item.setText("")
                 else:
                     item.setText(img.name)
