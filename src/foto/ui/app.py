@@ -37,7 +37,7 @@ class MainWindow(QMainWindow):
         self.list.setResizeMode(QListWidget.Adjust)
         self.list.setSpacing(16)
         self.list.setFrameShape(QListWidget.NoFrame)
-        self.list.setIconSize(QSize(400, 400))
+        self.list.setIconSize(QSize(400, 247))
         self.list.setUniformItemSizes(True)
         self.setCentralWidget(self.list)
 
@@ -50,15 +50,17 @@ class MainWindow(QMainWindow):
             try:
                 pixmap = QPixmap(str(img))
                 if not pixmap.isNull():
+                    target_w = 400
+                    target_h = 247  # proporción áurea (1.618...)
                     scaled = pixmap.scaled(
-                        400,
-                        400,
+                        target_w,
+                        target_h,
                         Qt.KeepAspectRatioByExpanding,
                         Qt.SmoothTransformation,
                     )
-                    x = max(0, (scaled.width() - 400) // 2)
-                    y = max(0, (scaled.height() - 400) // 2)
-                    cropped = scaled.copy(x, y, 400, 400)
+                    x = max(0, (scaled.width() - target_w) // 2)
+                    y = max(0, (scaled.height() - target_h) // 2)
+                    cropped = scaled.copy(x, y, target_w, target_h)
                     item.setIcon(QIcon(cropped))
                     item.setText("")
                 else:
