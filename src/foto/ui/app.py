@@ -147,6 +147,7 @@ class MainWindow(PrototypeWindow):
             initial_panel_visible=False,
             on_open=self._open_library,
             on_rescan=self._rescan,
+            grid_row=True,
         )
 
     def _window_title(self) -> str:

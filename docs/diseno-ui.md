@@ -1,7 +1,7 @@
 # Diseño de la interfaz de usuario
 
 - **Estado:** vigente para el MVP
-- **Fecha:** 2026-10-26
+- **Fecha:** 2026-10-29
 - **Ámbito:** interfaz de `foto` en Omarchy (Arch + Hyprland/Wayland) y macOS.
   Complementa a `README.md` y a `docs/adr/0001-configuracion.md`; no decide
   almacenamiento ni modelo de datos.
@@ -72,8 +72,8 @@ cambia la regla aquí o no se implementa.
 | Ayuda | `AYUDA` | `?` o `F1` | `Esc` o `q` |
 
 La rejilla y el visor no son modos de entrada: comparten el modo Normal y la
-barra sigue mostrando `NORMAL`. El visor es la vista individual con tira de
-miniaturas; se abre con `Enter`/`o` y se cierra con `q` o `Esc`.
+barra sigue mostrando `NORMAL`. El visor es la vista individual con la rejilla
+limitada a una fila; se abre con `Enter`/`o` y se cierra con `q` o `Esc`.
 
 Reglas:
 
@@ -92,8 +92,8 @@ Reglas:
 El mapa de teclas vivirá en un único módulo de la UI y será la fuente de verdad
 para la ayuda integrada, que se genera a partir de él. Un test detectará teclas
 duplicadas o acciones sin documentar. Las teclas distinguen mayúsculas solo
-donde se indica (`G`, `J`, `K`); las secuencias como `g g` admiten hasta 500 ms
-entre pulsaciones.
+donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias como `g g` admiten
+hasta 500 ms entre pulsaciones.
 
 ### Atajos globales
 
@@ -130,14 +130,34 @@ estado lo indica de forma discreta.
 
 ### Visor
 
+La fila inferior del visor es la misma rejilla de la vista principal, limitada a
+una fila de alto. No es un widget aparte: comparte selección, navegación,
+insignias y foco con la rejilla.
+
+Reglas de la fila:
+
+- Es la misma `PhotoGrid` que la vista principal, limitada a una fila de alto;
+  no es un filmstrip ni una vista aparte.
+- Todas las fotos visibles bajo el filtro activo forman una única fila
+  horizontal, de borde a borde del contenido y sin scrollbars visibles.
+- El foco y la selección están en la fila. La miniatura actual se resalta; la
+  foto grande no lleva anillo de foco ni se resalta.
+- La navegación es la de la rejilla y usa `EnsureVisible`: la fila se desplaza
+  lo mínimo para dejar la miniatura a la vista, sin autocentrarla.
+- Al cerrar el visor, la rejilla principal queda en la foto que se estaba
+  viendo.
+
 | Tecla | Acción |
 | --- | --- |
-| `j` / `k` o flechas | Siguiente / anterior foto |
-| `h` / `l` | Desplazar la imagen en horizontal cuando hay zoom |
-| `J` / `K` | Desplazar la imagen en vertical cuando hay zoom |
+| `h` / `l` o `←` / `→` | Foto anterior / siguiente |
+| `j` / `k` o `↓` / `↑` | Avanzar / retroceder un bloque de columnas visibles |
+| `g g` / `G` | Primera / última foto |
+| `Ctrl+d` / `Ctrl+u` | Media página abajo / arriba |
+| `PgDn` / `PgUp` | Una página abajo / arriba |
+| `Home` / `End` | Primera / última foto |
+| `H` / `J` / `K` / `L` | Desplazar la imagen con zoom: izquierda, abajo, arriba, derecha |
 | `+` / `-` | Acercar / alejar |
 | `z` | Alternar entre ajustar a la ventana y 100 % |
-| `g g` / `G` | Primera / última foto |
 | `i` | Mostrar u ocultar metadatos |
 | `f` | Alternar favorito |
 | `1`–`5` | Asignar valoración |
@@ -145,20 +165,22 @@ estado lo indica de forma discreta.
 | `q` | Volver a la rejilla |
 | `Esc` | Restablecer zoom; si ya está ajustado, volver a la rejilla |
 
-`j`/`k` siempre recorren la secuencia; `h`/`l` se mueven en horizontal y
-`J`/`K` en vertical. Esa separación se mantiene en todas las vistas: en la
-rejilla, `h`/`l` cambian de columna; en el visor con zoom, desplazan la imagen.
-En el visor sin zoom, `h`/`l` y `J`/`K` no desplazan la imagen ni cambian de
-significado.
+La navegación de la fila es la de la rejilla: `h`/`l` mueven una miniatura,
+`j`/`k` saltan un bloque de columnas visibles y `g g`/`G`, `Home`/`End`,
+`PgUp`/`PgDn` y `Ctrl+d`/`Ctrl+u` recorren la secuencia con la misma semántica.
+
+El paneo de la imagen ampliada usa las mayúsculas `H`, `J`, `K`, `L`. Sin zoom no
+desplazan nada. La miniatura actual se resalta en la fila; la foto grande no lleva
+anillo de foco ni se resalta.
 
 Al llegar al final de la secuencia, la navegación se detiene; no hay salto
 circular.
 
-El visor incluye una tira de una sola fila con las miniaturas visibles. `j`/`k`
-y las flechas actualizan la foto grande y la selección de la tira, que se
-autocentra. Un clic en una miniatura selecciona esa foto. Al salir, la rejilla
-queda en la foto que se estaba viendo. La tira no es una vista aparte: forma
-parte del mismo visor.
+La fila ocupa el ancho del contenido (excluyendo el panel de metadatos) y queda
+pegada al borde inferior. Muestra todas las fotos visibles bajo el filtro activo
+con las mismas métricas que la rejilla: miniaturas de 400 × 247 px, separación de
+16 px y celdas de 416 × 263 px. No tiene scrollbars visibles; la rueda la recorre
+en horizontal. Un clic en una miniatura selecciona esa foto.
 
 ### Búsqueda
 
@@ -210,9 +232,10 @@ lleguen sus funciones:
 ### Ratón
 
 - Clic: mover el cursor. Doble clic: abrir en el visor.
-- En el visor, un clic en una miniatura de la tira cambia la foto actual. La
-  rueda recorre la tira en horizontal.
-- Rueda: desplazar la rejilla o hacer zoom con `Ctrl`/`⌘` + rueda.
+- En el visor, un clic en una miniatura de la fila cambia la foto actual. La
+  rueda sobre la fila la recorre en horizontal.
+- Rueda: desplazar la rejilla; sobre la fila del visor, recorrerla en horizontal.
+  `Ctrl`/`⌘` + rueda sobre la foto grande hace zoom.
 - Clic derecho: menú contextual con las acciones de la foto bajo el cursor. Es
   un atajo, no la única vía: todo lo que ofrece está en el teclado.
 - Ninguna acción puede depender de `hover`, arrastre o gesto. Los controles
@@ -245,18 +268,18 @@ lleguen sus funciones:
 │                                          │                  │
 │                                          │  Cámara          │
 ├──────────────────────────────────────────┤  Fujifilm X100V  │
-│ [mini] [mini] [mini] [mini] [mini] ...   │                  │
+│ [  mini  ][  mini  ][  mini  ][  mini  ] │                  │
 ├──────────────────────────────────────────┴──────────────────┤
 │ NORMAL        14 de 248 · DSCF1234.RAF                      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 El diagrama del visor muestra el panel abierto; por defecto arranca oculto y se
-alterna con `i`. La tira inferior pertenece al visor y ocupa el mismo ancho que
-la foto, excluyendo el panel de metadatos.
+alterna con `i`. La fila inferior es la misma rejilla del visor y ocupa el mismo
+ancho que la foto, excluyendo el panel de metadatos.
 
 - **Contenido:** rejilla o visor. Ocupa todo el espacio libre. En el visor, la
-  foto y la tira de miniaturas comparten ese ancho; la tira queda pegada al
+  foto y la fila de la rejilla comparten ese ancho; la fila queda pegada al
   borde inferior.
 - **Panel de metadatos:** columna a la derecha, 280–360 px, bajo demanda en la
   rejilla y en el visor. Arranca oculto. Si la ventana mide menos de 900 px,
@@ -276,8 +299,9 @@ la foto, excluyendo el panel de metadatos.
 - Favorito y valoración se muestran como insignias discretas en una esquina,
   sobre un velo semitransparente para garantizar legibilidad sobre cualquier
   foto. Nunca aparecen solo al pasar el ratón.
-- Al estar seleccionada, solo se añade un leve sombreado al recuadro de la miniatura
-  (sin recolorizarla ni cambiar su color).
+- Al estar seleccionada, se añade un leve sombreado al recuadro y un borde fino.
+  Con el foco en la rejilla, el borde usa el acento; sin foco, un gris neutro.
+  No se recolorea la miniatura.
 - Barra de desplazamiento fina (8 px), sin flechas, visible cuando hay desborde.
 
 ### Visor
@@ -285,13 +309,16 @@ la foto, excluyendo el panel de metadatos.
 - La imagen se ajusta entera al espacio disponible con 8 px de margen, centrada
   y sin recortar. Si la proporción no llena el ancho, quedan franjas del lienzo;
   nunca se recorta la foto para llenarlo.
-- La tira inferior mide 120 px de alto: miniaturas de 96 px de alto (~155 px de
-  ancho), separación de 8 px y barra de desplazamiento horizontal fina de 8 px.
-  Usa el mismo recorte centrado, las mismas insignias y el mismo sombreado de
-  selección que la rejilla.
-- La tira muestra solo las fotos visibles bajo el filtro activo. La foto actual
-  queda seleccionada y la tira se autocentra al navegar.
-- Si el filtro deja la tira vacía, el visor se cierra y la rejilla muestra el
+- La fila inferior es la misma rejilla limitada a una fila de alto: celdas de
+  416 × 263 px (miniatura de 400 × 247 px y 16 px de separación), de borde a
+  borde del contenido. No muestra scrollbars; la rueda la desplaza en horizontal.
+  Usa el mismo recorte centrado, las mismas insignias, el mismo sombreado de
+  selección y el mismo foco que la rejilla.
+- La fila muestra solo las fotos visibles bajo el filtro activo. La miniatura
+  actual queda seleccionada y resaltada; la foto grande no. La fila no se
+  autocentra: usa `EnsureVisible` para mantener la miniatura a la vista con el
+  desplazamiento mínimo.
+- Si el filtro deja la fila vacía, el visor se cierra y la rejilla muestra el
   estado vacío. Si se estaba escribiendo una búsqueda, el foco permanece en la
   barra de estado.
 - El lienzo es un gris neutro sin tinte, distinto del fondo de la ventana, para
@@ -392,7 +419,8 @@ Requisitos:
 - Todas las funciones, incluidas las de la ayuda y la línea de comandos, se
   manejan con teclado.
 - Foco visible con anillo de 2 px y separación de 2 px. Nunca se elimina el
-  indicador de foco.
+  indicador de foco. En el visor, el foco se muestra en la miniatura actual de la
+  fila; el lienzo de la foto grande no recibe foco.
 - Nombres accesibles en widgets propios y en las miniaturas.
 - Texto escalable hasta el 200 % sin recortes ni solapamientos.
 - Sin dependencia de animación, `hover` ni gestos.

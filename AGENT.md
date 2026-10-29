@@ -12,8 +12,8 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 
 ## Estado actual
 
-- Prototipo funcional de UI en `src/foto/`: rejilla, visor con tira de
-  miniaturas, panel de metadatos y temas claro/oscuro.
+- Prototipo funcional de UI en `src/foto/`: rejilla, visor con la rejilla en una
+  fila, panel de metadatos y temas claro/oscuro.
 - La aplicación abre una carpeta y genera miniaturas con Qt; aún no hay catálogo
   SQLite, XMP, `exiftool` ni indexado incremental.
 - La imagen grande del visor se decodifica en segundo plano; la generación

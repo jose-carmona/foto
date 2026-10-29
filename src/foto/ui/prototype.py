@@ -1,4 +1,4 @@
-"""UI de foto: rejilla, visor con tira y panel de metadatos.
+"""UI de foto: rejilla, visor con la rejilla en una fila y panel de metadatos.
 
 El prototipo usa datos falsos; las mismas clases sirven a la app real, que pasa
 `Photo.path` y miniaturas reales. El visor decodifica el original en segundo
@@ -10,6 +10,11 @@ Se ejecuta con:
 
 La app real arranca con el panel oculto, como fija docs/diseno-ui.md. En el
 prototipo arranca visible para poder evaluarlo sin pulsar nada.
+
+El visor muestra debajo de la foto grande la misma rejilla, limitada a una fila
+de alto y sin scrollbars. La navegación, la selección y las insignias son las de
+la rejilla; la foto grande no recibe foco. La app real y el prototipo comparten
+este comportamiento.
 """
 
 from __future__ import annotations
@@ -77,6 +82,7 @@ FAVORITE_ROLE = Qt.UserRole + 3
 THUMB_W = 400
 THUMB_H = 247
 GRID_GAP = 16
+GRID_MARGIN = 16
 ITEM_W = THUMB_W + GRID_GAP
 ITEM_H = THUMB_H + GRID_GAP
 PANEL_W = 320
@@ -469,6 +475,7 @@ class PhotoCanvas(QWidget):
         self._preview = False
         self._zoom: Optional[float] = None
         self._pan = QPointF(0, 0)
+        self.focus_ring = True
 
     def set_image(self, pixmap: Optional[QPixmap], *, preview: bool = False) -> None:
         self._pixmap = pixmap
@@ -590,7 +597,7 @@ class PhotoCanvas(QWidget):
         self._paint_focus_ring(painter)
 
     def _paint_focus_ring(self, painter: QPainter) -> None:
-        if not self.hasFocus():
+        if not self.focus_ring or not self.hasFocus():
             return
         painter.setBrush(Qt.NoBrush)
         painter.setPen(QPen(self.palette().color(QPalette.Highlight), 2))
@@ -730,7 +737,11 @@ class ThumbnailDelegate(QStyledItemDelegate):
 
 
 class Filmstrip(QListWidget):
-    """Tira horizontal de miniaturas, sincronizada con la foto actual."""
+    """Tira horizontal histórica del visor.
+
+    La app real y el prototipo usan la misma rejilla limitada a una fila. Esta
+    tira se conserva como variante anterior para comparar comportamientos.
+    """
 
     action_requested = Signal(str)
     photo_selected = Signal(str)
@@ -865,12 +876,18 @@ class Filmstrip(QListWidget):
 
 
 class PhotoViewer(QWidget):
-    """Vista individual: foto grande arriba y tira de miniaturas abajo."""
+    """Vista individual: foto grande arriba y fila de miniaturas abajo.
+
+    Con `with_strip=False`, la fila inferior la aporta la rejilla de la ventana:
+    es el modo que usan la app real y el prototipo.
+    """
 
     action_requested = Signal(str)
     photo_selected = Signal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self, parent: Optional[QWidget] = None, *, with_strip: bool = True
+    ) -> None:
         super().__init__(parent)
         self.setAccessibleName("visor de fotos")
         self.canvas = PhotoCanvas(self)
@@ -880,7 +897,10 @@ class PhotoViewer(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.canvas, 1)
-        layout.addWidget(self.strip, 0)
+        if with_strip:
+            layout.addWidget(self.strip, 0)
+        else:
+            self.strip.hide()
 
         self.canvas.action_requested.connect(self.action_requested)
         self.strip.action_requested.connect(self.action_requested)
@@ -914,6 +934,8 @@ class PhotoGrid(QListWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setAccessibleName("rejilla de fotos")
+        # En el visor, la rejilla se limita a una fila horizontal.
+        self.row_mode = False
 
     def retheme(self) -> None:
         palette = _app_palette()
@@ -957,8 +979,47 @@ class PhotoGrid(QListWidget):
         self.scrollToItem(self.currentItem(), QAbstractItemView.EnsureVisible)
         return target != position
 
+    def wheelEvent(self, event) -> None:
+        if self.row_mode:
+            bar = self.horizontalScrollBar()
+            delta = event.angleDelta().y() or event.angleDelta().x()
+            bar.setValue(bar.value() - delta)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
     def keyPressEvent(self, event):
         key = event.key()
+        modifiers = event.modifiers()
+        shift = bool(modifiers & Qt.ShiftModifier)
+        control = bool(modifiers & (Qt.ControlModifier | Qt.MetaModifier))
+
+        if self.row_mode:
+            if not control and shift and key in (
+                Qt.Key_H,
+                Qt.Key_J,
+                Qt.Key_K,
+                Qt.Key_L,
+            ):
+                self.action_requested.emit(
+                    {
+                        Qt.Key_H: "pan_left",
+                        Qt.Key_J: "pan_down",
+                        Qt.Key_K: "pan_up",
+                        Qt.Key_L: "pan_right",
+                    }[key]
+                )
+                return
+            if not control:
+                if key in (Qt.Key_Plus, Qt.Key_Equal):
+                    self.action_requested.emit("zoom_in")
+                    return
+                if key == Qt.Key_Minus:
+                    self.action_requested.emit("zoom_out")
+                    return
+                if key == Qt.Key_Z and not shift:
+                    self.action_requested.emit("toggle_zoom")
+                    return
 
         if key in (Qt.Key_J, Qt.Key_K, Qt.Key_H, Qt.Key_L):
             self.action_requested.emit(
@@ -1800,10 +1861,14 @@ class HelpOverlay(QFrame):
             "<code>f</code> favorito · <code>1–5</code> valoración · "
             "<code>0</code> quitar · <code>Tab</code> foco del panel<br>"
             "<b>Visor</b><br>"
-            "<code>j</code>/<code>k</code> o flechas navegar · "
-            "<code>+</code>/<code>-</code> zoom · <code>z</code> ajuste/100 %<br>"
-            "Con zoom, <code>h</code>/<code>l</code> y <code>J</code>/<code>K</code> "
-            "desplazan · <code>Esc</code> restablece el zoom<br><br>"
+            "La fila inferior es la misma rejilla: "
+            "<code>h</code>/<code>l</code> foto anterior/siguiente · "
+            "<code>j</code>/<code>k</code> bloque de columnas<br>"
+            "<code>g g</code>/<code>G</code> extremos · "
+            "<code>PgUp/PgDn</code> página · <code>Ctrl+d/u</code> media página<br>"
+            "<code>+</code>/<code>-</code> zoom · <code>z</code> ajuste/100 % · "
+            "<code>H J K L</code> desplazar con zoom<br>"
+            "<code>q</code>/<code>Esc</code> volver a la rejilla<br><br>"
             "<b>Comandos</b><br>"
             "<code>:q</code>/<code>:quit</code> salir · <code>:open [ruta]</code> abrir · "
             "<code>:rescan</code> reindexar<br>"
@@ -1847,8 +1912,12 @@ class PrototypeWindow(QMainWindow):
         initial_panel_visible: bool = True,
         on_open: Optional[Callable[[str], None]] = None,
         on_rescan: Optional[Callable[[], None]] = None,
+        grid_row: bool = False,
     ) -> None:
         super().__init__()
+        # True usa la rejilla como fila inferior del visor; False conserva el
+        # filmstrip histórico. La app real y el prototipo pasan True.
+        self.grid_row = grid_row
         self.photos = {photo.key: photo for photo in photos}
         self.thumbnails = dict(thumbnails or {})
         self._on_open = on_open
@@ -1910,7 +1979,11 @@ class PrototypeWindow(QMainWindow):
         palette.setColor(QPalette.Base, palette.color(QPalette.Window))
         self.grid.setPalette(palette)
 
-        self.viewer = PhotoViewer(self.content)
+        self.viewer = PhotoViewer(self.content, with_strip=not grid_row)
+        if grid_row:
+            # La rejilla es la dueña del foco y de la navegación también en el visor.
+            self.viewer.canvas.setFocusPolicy(Qt.NoFocus)
+            self.viewer.canvas.focus_ring = False
         self.viewer.hide()
 
         self.panel = MetadataPanel()
@@ -2089,14 +2162,30 @@ class PrototypeWindow(QMainWindow):
             self.panel.hide()
 
         if self._viewer_visible:
-            self.grid.hide()
-            self.viewer.setGeometry(0, 0, max(0, content_w), height)
-            self.viewer.show()
-            self.viewer.raise_()
+            if self.grid_row:
+                # La fila es la misma rejilla: una celda de alto y sin scrollbar.
+                row_h = min(ITEM_H, max(0, height))
+                viewer_h = max(0, height - row_h)
+                self.viewer.setGeometry(0, 0, max(0, content_w), viewer_h)
+                self.viewer.show()
+                self.viewer.raise_()
+                self.grid.show()
+                self.grid.setGeometry(0, viewer_h, max(0, content_w), row_h)
+                self.grid.raise_()
+            else:
+                self.grid.hide()
+                self.viewer.setGeometry(0, 0, max(0, content_w), height)
+                self.viewer.show()
+                self.viewer.raise_()
         else:
             self.viewer.hide()
             self.grid.show()
-            self.grid.setGeometry(16, 16, max(0, content_w - 32), max(0, height - 32))
+            self.grid.setGeometry(
+                GRID_MARGIN,
+                GRID_MARGIN,
+                max(0, content_w - 2 * GRID_MARGIN),
+                max(0, height - 2 * GRID_MARGIN),
+            )
 
         self._position_empty_label()
         if self.panel_visible:
@@ -2138,7 +2227,10 @@ class PrototypeWindow(QMainWindow):
 
     def _focus_current_view(self) -> None:
         if self._viewer_visible:
-            self.viewer.focus_canvas()
+            if self.grid_row:
+                self.grid.setFocus()
+            else:
+                self.viewer.focus_canvas()
         else:
             self._focus_grid()
 
@@ -2162,6 +2254,8 @@ class PrototypeWindow(QMainWindow):
         return None
 
     def _rebuild_strip(self) -> None:
+        if self.grid_row:
+            return
         items: list[StripItem] = []
         for row in range(self.grid.count()):
             item = self.grid.item(row)
@@ -2200,8 +2294,7 @@ class PrototypeWindow(QMainWindow):
             self._on_current_changed(item, None)
         else:
             self.grid.setCurrentItem(item)
-        if not self._viewer_visible:
-            self.grid.scrollToItem(item, QAbstractItemView.EnsureVisible)
+        self.grid.scrollToItem(item, QAbstractItemView.EnsureVisible)
 
     def _viewer_navigate(self, delta: int) -> None:
         keys = self._visible_keys()
@@ -2237,6 +2330,20 @@ class PrototypeWindow(QMainWindow):
     def _clear_g_pending(self) -> None:
         self._g_pending = False
 
+    def _set_grid_row_mode(self, enabled: bool) -> None:
+        """Limita la rejilla a una fila horizontal o la devuelve a la rejilla."""
+        self.grid.row_mode = enabled
+        self.grid.setWrapping(not enabled)
+        self.grid.setFlow(QListWidget.LeftToRight)
+        if enabled:
+            self.grid.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.grid.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.grid.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
+        else:
+            self.grid.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.grid.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.grid.setFocusPolicy(Qt.StrongFocus)
+
     def _open_viewer(self) -> None:
         if self._viewer_visible:
             return
@@ -2245,11 +2352,18 @@ class PrototypeWindow(QMainWindow):
             self.status.show_message("no hay fotos", 2000)
             return
         self._viewer_visible = True
+        if self.grid_row:
+            self._set_grid_row_mode(True)
         self._layout_content()
-        self.viewer.select_key(photo.key)
+        if self.grid_row:
+            item = self.grid.currentItem()
+            if item is not None:
+                self.grid.scrollToItem(item, QAbstractItemView.EnsureVisible)
+        else:
+            self.viewer.select_key(photo.key)
         self._show_viewer_photo(photo)
-        self.viewer.focus_canvas()
-        self.status.show_message("visor · j/k navegar · q volver", 2500)
+        self._focus_current_view()
+        self.status.show_message("visor · h/j/k/l mover · q volver", 2500)
 
     def _close_viewer(self) -> None:
         if not self._viewer_visible:
@@ -2257,6 +2371,8 @@ class PrototypeWindow(QMainWindow):
         self._viewer_visible = False
         self.viewer.canvas.reset_zoom()
         self.viewer.hide()
+        if self.grid_row:
+            self._set_grid_row_mode(False)
         self._layout_content()
         if self.grid.currentItem() is not None:
             self.grid.scrollToItem(
@@ -2285,7 +2401,14 @@ class PrototypeWindow(QMainWindow):
             if photo is None:
                 self._close_viewer()
             else:
-                self.viewer.select_key(photo.key)
+                if self.grid_row:
+                    item = self.grid.currentItem()
+                    if item is not None:
+                        self.grid.scrollToItem(
+                            item, QAbstractItemView.EnsureVisible
+                        )
+                else:
+                    self.viewer.select_key(photo.key)
                 self._show_viewer_photo(photo)
 
     def _fallback_pixmap(self, photo: Photo) -> Optional[QPixmap]:
@@ -2579,7 +2702,7 @@ class PrototypeWindow(QMainWindow):
             "halfdown",
             "halfup",
         ):
-            if self._viewer_visible:
+            if self._viewer_visible and not self.grid_row:
                 if action == "j":
                     self._viewer_navigate(1)
                 elif action == "k":
@@ -2604,6 +2727,9 @@ class PrototypeWindow(QMainWindow):
         if action in ("zoom_in", "zoom_out", "toggle_zoom"):
             if self._viewer_visible:
                 self._on_viewer_action(action)
+            return
+        if action.startswith("pan_") and self._viewer_visible:
+            self._on_viewer_action(action)
             return
         if action == ":":
             self.status.open_command()
@@ -2767,12 +2893,13 @@ class PrototypeWindow(QMainWindow):
         item.setData(FAVORITE_ROLE, updated.favorite)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
         self.grid.viewport().update()
-        self.viewer.update_item(
-            updated.key,
-            updated.rating,
-            updated.favorite,
-            photo_accessible_name(updated),
-        )
+        if not self.grid_row:
+            self.viewer.update_item(
+                updated.key,
+                updated.rating,
+                updated.favorite,
+                photo_accessible_name(updated),
+            )
         self.status.show_message(
             "favorito" if updated.favorite else "sin favorito", 2000
         )
@@ -2787,12 +2914,13 @@ class PrototypeWindow(QMainWindow):
         item.setData(RATING_ROLE, updated.rating)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
         self.grid.viewport().update()
-        self.viewer.update_item(
-            updated.key,
-            updated.rating,
-            updated.favorite,
-            photo_accessible_name(updated),
-        )
+        if not self.grid_row:
+            self.viewer.update_item(
+                updated.key,
+                updated.rating,
+                updated.favorite,
+                photo_accessible_name(updated),
+            )
         self.status.show_message(
             f"valoración {rating}" if rating else "sin valoración", 2000
         )
@@ -2863,7 +2991,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     apply_theme(app)
     photos = make_photos()
-    window = PrototypeWindow(photos)
+    window = PrototypeWindow(photos, grid_row=True)
     window.show()
     sys.exit(app.exec())
 

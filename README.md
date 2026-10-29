@@ -8,8 +8,8 @@ originales no se tocan, los metadatos viven en ficheros estándar y todo funcion
 sin conexión.
 
 > **Estado:** prototipo funcional de la UI. La aplicación abre una carpeta,
-> muestra la rejilla, el visor con tira de miniaturas y el panel de metadatos.
-> Faltan el catálogo SQLite, la lectura/escritura de XMP y el indexado
+> muestra la rejilla, el visor con la rejilla en una fila y el panel de
+> metadatos. Faltan el catálogo SQLite, la lectura/escritura de XMP y el indexado
 > incremental.
 
 ## Objetivo
@@ -51,7 +51,8 @@ forma de publicación o compartición.
 
 - [ ] **Fase 1 — Visualización y metadatos** (MVP)
   - Indexado de carpetas y generación de miniaturas
-  - Rejilla, visor con tira y panel de metadatos (prototipo; faltan metadatos reales)
+  - Rejilla, visor con la rejilla en una fila y panel de metadatos (prototipo;
+    faltan metadatos reales)
   - Favoritos persistidos en XMP
 - [ ] **Fase 2 — Organización**
   - Álbumes manuales e inteligentes
