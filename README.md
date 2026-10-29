@@ -7,8 +7,10 @@ depender de iCloud, del ecosistema Apple ni de una base de datos opaca. Los
 originales no se tocan, los metadatos viven en ficheros estándar y todo funciona
 sin conexión.
 
-> **Estado:** fase de diseño. El MVP (visualización y metadatos) está en
-> desarrollo y todavía no hay código funcional en este repositorio.
+> **Estado:** prototipo funcional de la UI. La aplicación abre una carpeta,
+> muestra la rejilla, el visor con tira de miniaturas y el panel de metadatos.
+> Faltan el catálogo SQLite, la lectura/escritura de XMP y el indexado
+> incremental.
 
 ## Objetivo
 
@@ -49,7 +51,7 @@ forma de publicación o compartición.
 
 - [ ] **Fase 1 — Visualización y metadatos** (MVP)
   - Indexado de carpetas y generación de miniaturas
-  - Rejilla, visor y panel de metadatos
+  - Rejilla, visor con tira y panel de metadatos (prototipo; faltan metadatos reales)
   - Favoritos persistidos en XMP
 - [ ] **Fase 2 — Organización**
   - Álbumes manuales e inteligentes
@@ -94,7 +96,7 @@ forma de publicación o compartición.
   específico de cada biblioteca vive en `<fototeca>/.foto/`. Ver
   `docs/adr/0001-configuracion.md`.
 
-Estructura prevista del repositorio (aún no creada):
+Estructura actual:
 
 ```
 foto/
@@ -102,9 +104,9 @@ foto/
 │   ├── adr/        # decisiones de arquitectura
 │   └── diseno-ui.md
 ├── src/foto/
-│   ├── core/       # indexado, metadatos, miniaturas
-│   ├── storage/    # SQLite, XMP, configuración, copias de seguridad
-│   └── ui/         # ventanas y widgets Qt
+│   ├── core/       # listado de imágenes
+│   ├── storage/    # configuración TOML
+│   └── ui/         # aplicación real y prototipo de UI
 ├── tests/
 └── README.md
 ```
@@ -116,14 +118,29 @@ foto/
 - `docs/adr/` — decisiones de arquitectura, empezando por la configuración
   (`0001-configuracion.md`).
 
+## Prototipo
+
+El repositorio ya contiene una UI ejecutable con datos reales de una carpeta,
+pero sin catálogo ni metadatos:
+
+```sh
+uv sync
+uv run foto
+PYTHONPATH=src .venv/bin/python -m foto.ui.prototype
+```
+
+`foto` abre la última biblioteca configurada o pide una carpeta. El prototipo
+usa fotos falsas para revisar la interfaz sin tocar discos.
+
 ## Requisitos
 
 - Python 3.12 o superior
 - PySide6
 - Linux con Wayland (probado en Omarchy/Hyprland) o macOS
-- `exiftool` para lectura y escritura de metadatos
+- `exiftool` para la fase de metadatos (aún no integrado)
 
-Las instrucciones de instalación y uso se añadirán con el primer MVP funcional.
+Las instrucciones completas de instalación y uso se ampliarán cuando el MVP
+indexe metadatos reales.
 
 ## Licencia
 

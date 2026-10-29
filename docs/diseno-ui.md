@@ -1,7 +1,7 @@
 # Diseño de la interfaz de usuario
 
 - **Estado:** vigente para el MVP
-- **Fecha:** 2026-10-24
+- **Fecha:** 2026-10-26
 - **Ámbito:** interfaz de `foto` en Omarchy (Arch + Hyprland/Wayland) y macOS.
   Complementa a `README.md` y a `docs/adr/0001-configuracion.md`; no decide
   almacenamiento ni modelo de datos.
@@ -70,6 +70,10 @@ cambia la regla aquí o no se implementa.
 | Búsqueda | `/texto` | `/` | `Enter` confirma, `Esc` cancela y restaura |
 | Comando | `:texto` | `:` | `Enter` ejecuta, `Esc` cancela |
 | Ayuda | `AYUDA` | `?` o `F1` | `Esc` o `q` |
+
+La rejilla y el visor no son modos de entrada: comparten el modo Normal y la
+barra sigue mostrando `NORMAL`. El visor es la vista individual con tira de
+miniaturas; se abre con `Enter`/`o` y se cierra con `q` o `Esc`.
 
 Reglas:
 
@@ -144,11 +148,17 @@ estado lo indica de forma discreta.
 `j`/`k` siempre recorren la secuencia; `h`/`l` se mueven en horizontal y
 `J`/`K` en vertical. Esa separación se mantiene en todas las vistas: en la
 rejilla, `h`/`l` cambian de columna; en el visor con zoom, desplazan la imagen.
-En el visor sin zoom, `h`/`l` y `J`/`K` no hacen nada: no cambian de
+En el visor sin zoom, `h`/`l` y `J`/`K` no desplazan la imagen ni cambian de
 significado.
 
 Al llegar al final de la secuencia, la navegación se detiene; no hay salto
 circular.
+
+El visor incluye una tira de una sola fila con las miniaturas visibles. `j`/`k`
+y las flechas actualizan la foto grande y la selección de la tira, que se
+autocentra. Un clic en una miniatura selecciona esa foto. Al salir, la rejilla
+queda en la foto que se estaba viendo. La tira no es una vista aparte: forma
+parte del mismo visor.
 
 ### Búsqueda
 
@@ -200,6 +210,8 @@ lleguen sus funciones:
 ### Ratón
 
 - Clic: mover el cursor. Doble clic: abrir en el visor.
+- En el visor, un clic en una miniatura de la tira cambia la foto actual. La
+  rueda recorre la tira en horizontal.
 - Rueda: desplazar la rejilla o hacer zoom con `Ctrl`/`⌘` + rueda.
 - Clic derecho: menú contextual con las acciones de la foto bajo el cursor. Es
   un atajo, no la única vía: todo lo que ofrece está en el teclado.
@@ -232,17 +244,20 @@ lleguen sus funciones:
 │              [ fotografía ]              │  24 oct 2026     │
 │                                          │                  │
 │                                          │  Cámara          │
-│                                          │  Fujifilm X100V  │
-│                                          │                  │
+├──────────────────────────────────────────┤  Fujifilm X100V  │
+│ [mini] [mini] [mini] [mini] [mini] ...   │                  │
 ├──────────────────────────────────────────┴──────────────────┤
 │ NORMAL        14 de 248 · DSCF1234.RAF                      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 El diagrama del visor muestra el panel abierto; por defecto arranca oculto y se
-alterna con `i`.
+alterna con `i`. La tira inferior pertenece al visor y ocupa el mismo ancho que
+la foto, excluyendo el panel de metadatos.
 
-- **Contenido:** rejilla o visor. Ocupa todo el espacio libre.
+- **Contenido:** rejilla o visor. Ocupa todo el espacio libre. En el visor, la
+  foto y la tira de miniaturas comparten ese ancho; la tira queda pegada al
+  borde inferior.
 - **Panel de metadatos:** columna a la derecha, 280–360 px, bajo demanda en la
   rejilla y en el visor. Arranca oculto. Si la ventana mide menos de 900 px,
   aparece como capa temporal sobre el contenido y se cierra con `Esc`.
@@ -267,13 +282,26 @@ alterna con `i`.
 
 ### Visor
 
-- La imagen se ajusta al espacio disponible con 8 px de margen y sin bordes.
+- La imagen se ajusta entera al espacio disponible con 8 px de margen, centrada
+  y sin recortar. Si la proporción no llena el ancho, quedan franjas del lienzo;
+  nunca se recorta la foto para llenarlo.
+- La tira inferior mide 120 px de alto: miniaturas de 96 px de alto (~155 px de
+  ancho), separación de 8 px y barra de desplazamiento horizontal fina de 8 px.
+  Usa el mismo recorte centrado, las mismas insignias y el mismo sombreado de
+  selección que la rejilla.
+- La tira muestra solo las fotos visibles bajo el filtro activo. La foto actual
+  queda seleccionada y la tira se autocentra al navegar.
+- Si el filtro deja la tira vacía, el visor se cierra y la rejilla muestra el
+  estado vacío. Si se estaba escribiendo una búsqueda, el foco permanece en la
+  barra de estado.
 - El lienzo es un gris neutro sin tinte, distinto del fondo de la ventana, para
   separar la foto del chrome. Ni negro puro ni blanco puro.
-- Zoom con interpolación de alta calidad. Por encima del 100 % se permite el
-  desplazamiento; por debajo, la imagen se centra.
-- Al cambiar de foto se mantiene la anterior hasta que la nueva está lista: sin
-  parpadeo ni fondo vacío.
+- Zoom con interpolación de alta calidad. Cuando la imagen ampliada supera el
+  lienzo se permite el desplazamiento; si cabe, se centra.
+- Al cambiar de foto se muestra de inmediato su miniatura y, cuando termina la
+  decodificación en segundo plano, la imagen original. Si el original no se
+  puede decodificar (RAW/HEIC), se mantiene la miniatura y se avisa en la barra
+  de estado. No hay hueco vacío ni spinner.
 
 ### Disciplina visual
 
@@ -345,15 +373,19 @@ Requisitos:
 
 ## Rendimiento percibido
 
-- Ninguna operación de disco o decodificación en el hilo de UI.
+- La imagen original del visor se decodifica en un hilo de trabajo; la miniatura
+  se muestra mientras tanto y el resultado se convierte a pixmap en el hilo de
+  UI.
 - El cursor y los atajos responden en el mismo ciclo de teclado, sin esperar a
   la imagen.
-- Precarga de la foto anterior y siguiente cuando el visor está abierto y no
-  hay trabajo pendiente.
-- La decodificación de miniaturas es progresiva y cancelable al cambiar de
-  vista.
-- Un cambio de foto en caché debe percibirse inmediato; si tarda, se mantiene la
-  imagen anterior, nunca un hueco blanco.
+- Caché de las tres últimas imágenes originales y precarga de las fotos anterior
+  y siguiente cuando no hay trabajo pendiente.
+- Al cambiar de foto, un resultado antiguo no reemplaza a la foto actual; si
+  llega, se guarda en caché o se descarta.
+- La generación inicial de miniaturas de la rejilla todavía es síncrona al abrir
+  la carpeta; es deuda conocida de rendimiento.
+- Un cambio de foto en caché se percibe inmediato; si aún no está, se mantiene
+  la miniatura, nunca un hueco blanco.
 
 ## Accesibilidad
 
@@ -404,3 +436,6 @@ Una pantalla o funcionalidad de UI no se considera terminada hasta que:
   o ambos) al implementar la capa de tema.
 - Definir el modo visual y el uso de `Espacio` cuando se diseñe la selección
   múltiple de la fase 2.
+- Validar RAW/HEIC mediante miniaturas embebidas y medir la memoria de la caché
+  de originales; si hace falta, cargar una versión intermedia para el visor.
+- Mover la generación inicial de miniaturas de la rejilla fuera del hilo de UI.

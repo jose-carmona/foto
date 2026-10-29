@@ -12,7 +12,13 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 
 ## Estado actual
 
-- Fase de diseño. No hay código todavía; `src/` y `tests/` aún no existen.
+- Prototipo funcional de UI en `src/foto/`: rejilla, visor con tira de
+  miniaturas, panel de metadatos y temas claro/oscuro.
+- La aplicación abre una carpeta y genera miniaturas con Qt; aún no hay catálogo
+  SQLite, XMP, `exiftool` ni indexado incremental.
+- La imagen grande del visor se decodifica en segundo plano; la generación
+  inicial de miniaturas de la rejilla sigue en el hilo de UI.
+- `tests/` está vacío; pytest y ruff todavía no forman parte del entorno.
 - El MVP es **visualización y metadatos**, nada más. No adelantes edición,
   álbumes ni IA sin que se pida explícitamente.
 - No inventes comandos de instalación, CI ni badges que no existan.
@@ -44,13 +50,14 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 - `platformdirs` para ubicar configuración, caché y datos en Linux y macOS
 - SQLite (índice y caché de miniaturas)
 - Sidecars XMP; `exiftool` para lectura/escritura de metadatos
-- pytest y ruff como base de tests y estilo (propuesta hasta que exista código)
-- `uv` como gestor de entorno y dependencias (propuesta)
+- pytest y ruff: configuración en `pyproject.toml`; pendiente instalarlos en el
+  entorno y crear la primera suite
+- `uv` como gestor de entorno y dependencias
 
 Formatos de imagen: JPEG, HEIC y RAW vía `exiftool` + extracción de miniaturas
 embebidas. No implementes decodificadores de RAW propios.
 
-## Estructura prevista
+## Estructura actual
 
 ```
 foto/
@@ -58,15 +65,20 @@ foto/
 │   ├── adr/          # decisiones de arquitectura
 │   └── diseno-ui.md  # reglas de interfaz
 ├── src/foto/
-│   ├── core/       # indexado, metadatos, miniaturas
-│   ├── storage/    # SQLite, XMP, configuración, copias de seguridad
-│   └── ui/         # ventanas y widgets Qt
+│   ├── core/         # listado de imágenes
+│   ├── storage/      # configuración TOML
+│   └── ui/           # app real y prototipo de UI
 ├── tests/
 └── README.md
 ```
 
-Cuando el código exista, actualiza esta sección y añade aquí los comandos
-reales (`uv sync`, `uv run pytest`, `uv run foto`, etc.).
+Comandos disponibles:
+
+```sh
+uv sync
+uv run foto
+PYTHONPATH=src .venv/bin/python -m foto.ui.prototype
+```
 
 ## Convenciones de código
 

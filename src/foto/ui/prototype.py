@@ -1,11 +1,14 @@
-"""Prototipo estático de la barra de estado y el panel de metadatos.
+"""UI de foto: rejilla, visor con tira y panel de metadatos.
 
-No lee discos, no usa exiftool y no toca la biblioteca: todos los datos son
-falsos. Se ejecuta con:
+El prototipo usa datos falsos; las mismas clases sirven a la app real, que pasa
+`Photo.path` y miniaturas reales. El visor decodifica el original en segundo
+plano sin tocar la biblioteca. No usa exiftool.
+
+Se ejecuta con:
 
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src .venv/bin/python -m foto.ui.prototype
 
-La app real arrancará con el panel oculto, como fija docs/diseno-ui.md. En el
+La app real arranca con el panel oculto, como fija docs/diseno-ui.md. En el
 prototipo arranca visible para poder evaluarlo sin pulsar nada.
 """
 
@@ -17,7 +20,21 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QRunnable,
+    QSize,
+    QSizeF,
+    Qt,
+    QThreadPool,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -25,6 +42,8 @@ from PySide6.QtGui import (
     QFontMetrics,
     QGuiApplication,
     QIcon,
+    QImage,
+    QImageReader,
     QKeySequence,
     QPainter,
     QPainterPath,
@@ -62,6 +81,14 @@ ITEM_W = THUMB_W + GRID_GAP
 ITEM_H = THUMB_H + GRID_GAP
 PANEL_W = 320
 BAR_H = 28
+STRIP_THUMB_H = 96
+STRIP_THUMB_W = round(STRIP_THUMB_H * THUMB_W / THUMB_H)
+STRIP_GAP = 8
+STRIP_VPAD = 8
+STRIP_H = STRIP_THUMB_H + 2 * STRIP_VPAD + 8
+CANVAS_MARGIN = 8
+PAN_STEP = 48
+IMAGE_CACHE_SIZE = 3
 
 
 def ui_font(size: int, weight: QFont.Weight = QFont.Normal) -> QFont:
@@ -246,6 +273,17 @@ def photo_accessible_name(photo: Photo) -> str:
 
 
 @dataclass(frozen=True)
+class StripItem:
+    """Una miniatura de la tira inferior del visor."""
+
+    key: str
+    icon: QIcon
+    rating: int
+    favorite: bool
+    accessible_name: str
+
+
+@dataclass(frozen=True)
 class Command:
     name: str
     description: str
@@ -329,6 +367,275 @@ def make_thumbnail(index: int) -> QIcon:
     )
     painter.end()
     return QIcon(pixmap)
+
+
+def viewer_key_action(event) -> Optional[str]:
+    """Traduce una tecla del visor a una acción, o None si no aplica."""
+    key = event.key()
+    modifiers = event.modifiers()
+    shift = bool(modifiers & Qt.ShiftModifier)
+    if modifiers & (Qt.ControlModifier | Qt.MetaModifier):
+        return None
+
+    if key == Qt.Key_J:
+        return "pan_down" if shift else "next"
+    if key == Qt.Key_K:
+        return "pan_up" if shift else "previous"
+    if key == Qt.Key_H and not shift:
+        return "pan_left"
+    if key == Qt.Key_L and not shift:
+        return "pan_right"
+    if key in (Qt.Key_Up, Qt.Key_Left):
+        return "previous"
+    if key in (Qt.Key_Down, Qt.Key_Right):
+        return "next"
+    if key in (Qt.Key_Plus, Qt.Key_Equal):
+        return "zoom_in"
+    if key == Qt.Key_Minus:
+        return "zoom_out"
+    if key == Qt.Key_Z and not shift:
+        return "toggle_zoom"
+    if key == Qt.Key_G:
+        return "last" if shift else "g"
+    if key == Qt.Key_Home:
+        return "first"
+    if key == Qt.Key_End:
+        return "last"
+    if key == Qt.Key_Q:
+        return "close"
+    if key == Qt.Key_Escape:
+        return "escape"
+    if key == Qt.Key_I:
+        return "panel"
+    if key == Qt.Key_F:
+        return "favorite"
+    if key in (Qt.Key_Question, Qt.Key_F1):
+        return "help"
+    if key == Qt.Key_Colon:
+        return "command"
+    if key == Qt.Key_Slash:
+        return "search"
+    if key in (Qt.Key_Tab, Qt.Key_Backtab):
+        return "focus_panel"
+    if Qt.Key_0 <= key <= Qt.Key_5:
+        return f"rating:{key - Qt.Key_0}"
+    return None
+
+
+class ImageLoaderSignals(QObject):
+    loaded = Signal(str, QImage)
+    failed = Signal(str, str)
+
+
+class ImageLoadTask(QRunnable):
+    """Decodifica una imagen original fuera del hilo de UI."""
+
+    def __init__(self, key: str, path: Path) -> None:
+        super().__init__()
+        self.key = key
+        self.path = path
+        self.signals = ImageLoaderSignals()
+
+    def run(self) -> None:
+        try:
+            reader = QImageReader(str(self.path))
+            reader.setAutoTransform(True)
+            if not reader.canRead():
+                self.signals.failed.emit(
+                    self.key, reader.errorString() or "formato no soportado"
+                )
+                return
+            image = reader.read()
+            if image.isNull():
+                self.signals.failed.emit(
+                    self.key, reader.errorString() or "imagen no válida"
+                )
+                return
+            self.signals.loaded.emit(self.key, image)
+        except Exception as exc:  # pragma: no cover - defensa ante plugins de imagen
+            self.signals.failed.emit(self.key, str(exc))
+
+
+class PhotoCanvas(QWidget):
+    """Lienzo neutro que ajusta la foto entera y permite zoom y paneo."""
+
+    action_requested = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setAccessibleName("foto actual")
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._pixmap: Optional[QPixmap] = None
+        self._preview = False
+        self._zoom: Optional[float] = None
+        self._pan = QPointF(0, 0)
+
+    def set_image(self, pixmap: Optional[QPixmap], *, preview: bool = False) -> None:
+        self._pixmap = pixmap
+        self._preview = preview
+        self._zoom = None
+        self._pan = QPointF(0, 0)
+        self.update()
+
+    def clear(self) -> None:
+        self._pixmap = None
+        self._preview = False
+        self._zoom = None
+        self._pan = QPointF(0, 0)
+        self.update()
+
+    def has_image(self) -> bool:
+        return self._pixmap is not None and not self._pixmap.isNull()
+
+    def is_zoomed(self) -> bool:
+        if self._zoom is None:
+            return False
+        return abs(self._zoom - self._fit_scale()) > 0.001
+
+    def reset_zoom(self) -> None:
+        self._zoom = None
+        self._pan = QPointF(0, 0)
+        self.update()
+
+    def zoom_in(self) -> None:
+        base = self._fit_scale() if self._zoom is None else self._zoom
+        if base <= 0:
+            return
+        self._zoom = min(base * 1.25, 16.0)
+        self._pan = QPointF(0, 0)
+        self.update()
+
+    def zoom_out(self) -> None:
+        if self._zoom is None:
+            return
+        fit = self._fit_scale()
+        zoom = max(self._zoom / 1.25, 0.05)
+        if self._zoom > fit and zoom <= fit:
+            self._zoom = None
+            self._pan = QPointF(0, 0)
+        else:
+            self._zoom = zoom
+            self._clamp_pan()
+        self.update()
+
+    def toggle_zoom(self) -> None:
+        self._zoom = 1.0 if self._zoom is None else None
+        self._pan = QPointF(0, 0)
+        self.update()
+
+    def pan_by(self, dx: float, dy: float) -> bool:
+        if not self.is_zoomed():
+            return False
+        self._pan += QPointF(dx, dy)
+        self._clamp_pan()
+        self.update()
+        return True
+
+    def _logical_size(self) -> QSizeF:
+        if self._pixmap is None or self._pixmap.isNull():
+            return QSizeF(0, 0)
+        ratio = self._pixmap.devicePixelRatio() or 1.0
+        return QSizeF(self._pixmap.width() / ratio, self._pixmap.height() / ratio)
+
+    def _fit_scale(self) -> float:
+        size = self._logical_size()
+        if size.isEmpty():
+            return 0.0
+        available_w = max(1, self.width() - 2 * CANVAS_MARGIN)
+        available_h = max(1, self.height() - 2 * CANVAS_MARGIN)
+        return min(available_w / size.width(), available_h / size.height())
+
+    def _clamp_pan(self) -> None:
+        if self._zoom is None or self._pixmap is None:
+            self._pan = QPointF(0, 0)
+            return
+        size = self._logical_size()
+        target_w = size.width() * self._zoom
+        target_h = size.height() * self._zoom
+        max_x = max(0.0, (target_w - self.width()) / 2)
+        max_y = max(0.0, (target_h - self.height()) / 2)
+        self._pan.setX(max(-max_x, min(max_x, self._pan.x())))
+        self._pan.setY(max(-max_y, min(max_y, self._pan.y())))
+
+    def _canvas_color(self) -> QColor:
+        window = self.palette().color(QPalette.Window)
+        if window.lightness() > 128:
+            return window.darker(112)
+        return window.darker(135)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self._canvas_color())
+
+        if self._pixmap is None or self._pixmap.isNull():
+            painter.setPen(muted_color(self))
+            painter.setFont(ui_font(13))
+            painter.drawText(self.rect(), Qt.AlignCenter, "Sin foto")
+            self._paint_focus_ring(painter)
+            return
+
+        scale = self._fit_scale() if self._zoom is None else self._zoom
+        size = self._logical_size()
+        target_w = size.width() * scale
+        target_h = size.height() * scale
+        x = (self.width() - target_w) / 2
+        y = (self.height() - target_h) / 2
+        if self._zoom is not None:
+            x += self._pan.x()
+            y += self._pan.y()
+        target = QRectF(x, y, target_w, target_h)
+
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
+        self._paint_focus_ring(painter)
+
+    def _paint_focus_ring(self, painter: QPainter) -> None:
+        if not self.hasFocus():
+            return
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(self.palette().color(QPalette.Highlight), 2))
+        painter.drawRect(self.rect().adjusted(2, 2, -3, -3))
+
+    def wheelEvent(self, event) -> None:
+        if event.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.action_requested.emit("zoom_in")
+            elif delta < 0:
+                self.action_requested.emit("zoom_out")
+            event.accept()
+            return
+        event.ignore()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._clamp_pan()
+        self.update()
+
+    def focusInEvent(self, event) -> None:
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self.update()
+
+    def event(self, event) -> bool:
+        # Qt consume Tab para la cadena de foco antes de keyPressEvent.
+        if event.type() == QEvent.KeyPress and event.key() in (
+            Qt.Key_Tab,
+            Qt.Key_Backtab,
+        ):
+            self.action_requested.emit("focus_panel")
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event) -> None:
+        action = viewer_key_action(event)
+        if action is not None:
+            self.action_requested.emit(action)
+            return
+        super().keyPressEvent(event)
 
 
 def _paint_selection_shadow(
@@ -422,6 +729,182 @@ class ThumbnailDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class Filmstrip(QListWidget):
+    """Tira horizontal de miniaturas, sincronizada con la foto actual."""
+
+    action_requested = Signal(str)
+    photo_selected = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setAccessibleName("tira de miniaturas")
+        self.setViewMode(QListWidget.IconMode)
+        self.setFlow(QListWidget.LeftToRight)
+        self.setWrapping(False)
+        self.setResizeMode(QListWidget.Adjust)
+        self.setMovement(QListWidget.Static)
+        self.setSelectionMode(QListWidget.SingleSelection)
+        self.setSpacing(0)
+        self.setFrameShape(QListWidget.NoFrame)
+        self.setIconSize(QSize(STRIP_THUMB_W, STRIP_THUMB_H))
+        self.setUniformItemSizes(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
+        self.setItemDelegate(ThumbnailDelegate(self))
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setFixedHeight(STRIP_H)
+        self.setStyleSheet(
+            """
+            QListWidget { background: palette(window); border: none; }
+            QListWidget::item:selected { background: transparent; }
+            QScrollBar:horizontal { height: 8px; background: transparent; }
+            QScrollBar::handle:horizontal {
+                background: palette(mid); min-width: 24px; border-radius: 4px;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+            """
+        )
+        palette = self.palette()
+        palette.setColor(QPalette.Base, palette.color(QPalette.Window))
+        self.setPalette(palette)
+        self._syncing = False
+        self.currentItemChanged.connect(self._on_current_changed)
+
+    def retheme(self) -> None:
+        palette = _app_palette()
+        palette.setColor(QPalette.Base, palette.color(QPalette.Window))
+        self.setPalette(palette)
+        self.setStyleSheet(self.styleSheet())
+        self.viewport().update()
+        self.update()
+
+    def set_items(self, items: list[StripItem], current_key: Optional[str]) -> None:
+        self._syncing = True
+        try:
+            self.clear()
+            for item in items:
+                row = QListWidgetItem()
+                row.setIcon(item.icon)
+                row.setData(PHOTO_ROLE, item.key)
+                row.setData(RATING_ROLE, item.rating)
+                row.setData(FAVORITE_ROLE, item.favorite)
+                row.setData(Qt.AccessibleTextRole, item.accessible_name)
+                row.setSizeHint(
+                    QSize(
+                        STRIP_THUMB_W + STRIP_GAP,
+                        STRIP_THUMB_H + 2 * STRIP_VPAD,
+                    )
+                )
+                row.setText("")
+                self.addItem(row)
+        finally:
+            self._syncing = False
+        if current_key is not None:
+            self.select_key(current_key)
+
+    def _item_for_key(self, key: str) -> Optional[QListWidgetItem]:
+        for row in range(self.count()):
+            item = self.item(row)
+            if item.data(PHOTO_ROLE) == key:
+                return item
+        return None
+
+    def select_key(self, key: str, *, center: bool = True) -> None:
+        item = self._item_for_key(key)
+        if item is None:
+            return
+        self._syncing = True
+        try:
+            self.setCurrentItem(item)
+        finally:
+            self._syncing = False
+        if center:
+            self.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+
+    def update_item(
+        self, key: str, rating: int, favorite: bool, accessible_name: str
+    ) -> None:
+        item = self._item_for_key(key)
+        if item is None:
+            return
+        item.setData(RATING_ROLE, rating)
+        item.setData(FAVORITE_ROLE, favorite)
+        item.setData(Qt.AccessibleTextRole, accessible_name)
+        self.viewport().update()
+
+    def _on_current_changed(self, current, previous) -> None:
+        if self._syncing or current is None:
+            return
+        key = current.data(PHOTO_ROLE)
+        if key:
+            self.photo_selected.emit(str(key))
+
+    def wheelEvent(self, event) -> None:
+        bar = self.horizontalScrollBar()
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        bar.setValue(bar.value() - delta)
+        event.accept()
+
+    def event(self, event) -> bool:
+        # Qt consume Tab para la cadena de foco antes de keyPressEvent.
+        if event.type() == QEvent.KeyPress and event.key() in (
+            Qt.Key_Tab,
+            Qt.Key_Backtab,
+        ):
+            self.action_requested.emit("focus_panel")
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event) -> None:
+        action = viewer_key_action(event)
+        if action is not None:
+            self.action_requested.emit(action)
+            return
+        super().keyPressEvent(event)
+
+
+class PhotoViewer(QWidget):
+    """Vista individual: foto grande arriba y tira de miniaturas abajo."""
+
+    action_requested = Signal(str)
+    photo_selected = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setAccessibleName("visor de fotos")
+        self.canvas = PhotoCanvas(self)
+        self.strip = Filmstrip(self)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self.canvas, 1)
+        layout.addWidget(self.strip, 0)
+
+        self.canvas.action_requested.connect(self.action_requested)
+        self.strip.action_requested.connect(self.action_requested)
+        self.strip.photo_selected.connect(self.photo_selected)
+
+    def set_items(self, items: list[StripItem], current_key: Optional[str]) -> None:
+        self.strip.set_items(items, current_key)
+
+    def select_key(self, key: str) -> None:
+        self.strip.select_key(key)
+
+    def update_item(
+        self, key: str, rating: int, favorite: bool, accessible_name: str
+    ) -> None:
+        self.strip.update_item(key, rating, favorite, accessible_name)
+
+    def focus_canvas(self) -> None:
+        self.canvas.setFocus()
+
+    def retheme(self) -> None:
+        self.canvas.update()
+        self.strip.retheme()
+
+
 class PhotoGrid(QListWidget):
     """Rejilla que traduce las teclas de vim a acciones de la ventana."""
 
@@ -502,6 +985,15 @@ class PhotoGrid(QListWidget):
             return
         if key == Qt.Key_End:
             self.action_requested.emit("end")
+            return
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_O):
+            self.action_requested.emit("open_viewer")
+            return
+        if key == Qt.Key_G:
+            if event.modifiers() & Qt.ShiftModifier:
+                self.action_requested.emit("end")
+            else:
+                self.action_requested.emit("g")
             return
         if key == Qt.Key_PageDown:
             self.action_requested.emit("pagedown")
@@ -584,6 +1076,24 @@ class PanelScroll(QScrollArea):
             bar.setValue(bar.maximum())
             return
         if key in (Qt.Key_Left, Qt.Key_Right):
+            return
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_O):
+            self.action_requested.emit("open_viewer")
+            return
+        if key in (Qt.Key_Plus, Qt.Key_Equal, Qt.Key_Minus, Qt.Key_Z):
+            self.action_requested.emit(
+                {
+                    Qt.Key_Plus: "zoom_in",
+                    Qt.Key_Equal: "zoom_in",
+                    Qt.Key_Minus: "zoom_out",
+                    Qt.Key_Z: "toggle_zoom",
+                }[key]
+            )
+            return
+        if key == Qt.Key_G:
+            self.action_requested.emit(
+                "last" if event.modifiers() & Qt.ShiftModifier else "g"
+            )
             return
         if key in (Qt.Key_J, Qt.Key_K, Qt.Key_H, Qt.Key_L):
             self.action_requested.emit(
@@ -1283,11 +1793,17 @@ class HelpOverlay(QFrame):
             "<b>Teclas</b><br>"
             "<code>:</code> comando · <code>/</code> búsqueda · "
             "<code>i</code> metadatos · <code>Ctrl+q</code> salir<br>"
+            "<code>Enter</code>/<code>o</code> visor · <code>q</code>/<code>Esc</code> volver "
+            "a la rejilla<br>"
             "<code>j k h l</code> o flechas mover · <code>PgUp/PgDn</code> página · "
             "<code>Ctrl+d/u</code> media página · <code>Home/End</code> extremos<br>"
             "<code>f</code> favorito · <code>1–5</code> valoración · "
             "<code>0</code> quitar · <code>Tab</code> foco del panel<br>"
-            "<code>Esc</code> cerrar o limpiar la búsqueda<br><br>"
+            "<b>Visor</b><br>"
+            "<code>j</code>/<code>k</code> o flechas navegar · "
+            "<code>+</code>/<code>-</code> zoom · <code>z</code> ajuste/100 %<br>"
+            "Con zoom, <code>h</code>/<code>l</code> y <code>J</code>/<code>K</code> "
+            "desplazan · <code>Esc</code> restablece el zoom<br><br>"
             "<b>Comandos</b><br>"
             "<code>:q</code>/<code>:quit</code> salir · <code>:open [ruta]</code> abrir · "
             "<code>:rescan</code> reindexar<br>"
@@ -1341,6 +1857,20 @@ class PrototypeWindow(QMainWindow):
         self._search_origin: Optional[str] = None
         self.panel_visible = initial_panel_visible
         self.panel_overlay = False
+        self._viewer_visible = False
+        self._image_cache: dict[str, QPixmap] = {}
+        self._image_cache_order: list[str] = []
+        self._loading_keys: set[str] = set()
+        self._failed_images: set[str] = set()
+        self._pending_image_key: Optional[str] = None
+        self._displayed_key: Optional[str] = None
+        self._g_pending = False
+        self._g_timer = QTimer(self)
+        self._g_timer.setSingleShot(True)
+        self._g_timer.setInterval(500)
+        self._g_timer.timeout.connect(self._clear_g_pending)
+        self._loader_pool = QThreadPool(self)
+        self._loader_pool.setMaxThreadCount(2)
 
         self.setWindowTitle(title or "foto — prototipo de UI")
         self.resize(1280, 960)
@@ -1380,6 +1910,9 @@ class PrototypeWindow(QMainWindow):
         palette.setColor(QPalette.Base, palette.color(QPalette.Window))
         self.grid.setPalette(palette)
 
+        self.viewer = PhotoViewer(self.content)
+        self.viewer.hide()
+
         self.panel = MetadataPanel()
         self.panel.setParent(self.content)
 
@@ -1406,9 +1939,12 @@ class PrototypeWindow(QMainWindow):
         self._populate_grid(photos)
         self._update_empty_state()
         self.grid.currentItemChanged.connect(self._on_current_changed)
+        self.grid.itemDoubleClicked.connect(self._on_grid_double_clicked)
         self.grid.action_requested.connect(self._on_action)
         self.grid.focus_panel.connect(self._focus_panel)
-        self.panel.scroll.focus_back.connect(self._focus_grid)
+        self.viewer.action_requested.connect(self._on_viewer_action)
+        self.viewer.photo_selected.connect(self._on_strip_photo_selected)
+        self.panel.scroll.focus_back.connect(self._focus_current_view)
         self.panel.scroll.escape_pressed.connect(self._handle_escape)
         self.panel.scroll.action_requested.connect(self._on_action)
         self.status.command_submitted.connect(self._run_command)
@@ -1417,7 +1953,7 @@ class PrototypeWindow(QMainWindow):
         self.status.prompt_cancelled.connect(self._cancel_prompt)
         self.status.prompt_opened.connect(self._show_content_blocker)
         self.status.prompt_closed.connect(self._hide_content_blocker)
-        self.status.prompt_closed.connect(self._focus_grid)
+        self.status.prompt_closed.connect(self._focus_current_view)
 
         quit_action = QAction(self)
         quit_action.setShortcut(QKeySequence.Quit)
@@ -1428,11 +1964,11 @@ class PrototypeWindow(QMainWindow):
         if photos:
             self.grid.setCurrentRow(0)
         self._layout_content()
-        QTimer.singleShot(0, self._focus_grid)
+        QTimer.singleShot(0, self._focus_current_view)
         QTimer.singleShot(
             400,
             lambda: self.status.show_message(
-                "i panel · : comandos · / búsqueda · ? ayuda", 4000
+                "Enter visor · i panel · : comandos · ? ayuda", 4000
             ),
         )
         QGuiApplication.styleHints().colorSchemeChanged.connect(
@@ -1447,6 +1983,7 @@ class PrototypeWindow(QMainWindow):
             central.setPalette(palette)
         self.content.setPalette(palette)
         self.grid.retheme()
+        self.viewer.retheme()
         self.panel.retheme()
         self.status.retheme()
         self.help_overlay.retheme()
@@ -1482,6 +2019,7 @@ class PrototypeWindow(QMainWindow):
             item.setSizeHint(QSize(ITEM_W, ITEM_H))
             item.setText("")
             self.grid.addItem(item)
+        self._rebuild_strip()
 
     def set_photos(
         self,
@@ -1489,6 +2027,13 @@ class PrototypeWindow(QMainWindow):
         thumbnails: Optional[dict[str, QIcon]] = None,
     ) -> None:
         """Sustituye la biblioteca visible conservando la foto actual si sigue."""
+        viewer_was_visible = self._viewer_visible
+        self._image_cache.clear()
+        self._image_cache_order.clear()
+        self._failed_images.clear()
+        self._pending_image_key = None
+        self._displayed_key = None
+        self.viewer.canvas.clear()
         current = self.grid.currentItem()
         current_key = current.data(PHOTO_ROLE) if current is not None else None
         self.photos = {photo.key: photo for photo in photos}
@@ -1523,7 +2068,11 @@ class PrototypeWindow(QMainWindow):
         self.status.set_counts(self._visible_count(), len(self.photos), filename)
         self._update_empty_state()
         self._on_current_changed(self.grid.currentItem(), None)
-        self._focus_grid()
+        if viewer_was_visible and not self.photos:
+            self._close_viewer()
+        elif viewer_was_visible:
+            self._layout_content()
+        self._focus_current_view()
 
     def _layout_content(self) -> None:
         width = self.content.width()
@@ -1531,19 +2080,24 @@ class PrototypeWindow(QMainWindow):
         if self.panel_visible:
             panel_w = min(PANEL_W, max(280, width - 48))
             self.panel_overlay = width < 900
-            if self.panel_overlay:
-                grid_w = width
-                self.grid.setGeometry(16, 16, max(0, width - 32), max(0, height - 32))
-            else:
-                grid_w = width - panel_w
-                self.grid.setGeometry(16, 16, max(0, grid_w - 32), max(0, height - 32))
+            content_w = width if self.panel_overlay else width - panel_w
             self.panel.setGeometry(width - panel_w, 0, panel_w, height)
             self.panel.show()
-            self.panel.raise_()
         else:
             self.panel_overlay = False
-            self.grid.setGeometry(16, 16, max(0, width - 32), max(0, height - 32))
+            content_w = width
             self.panel.hide()
+
+        if self._viewer_visible:
+            self.grid.hide()
+            self.viewer.setGeometry(0, 0, max(0, content_w), height)
+            self.viewer.show()
+            self.viewer.raise_()
+        else:
+            self.viewer.hide()
+            self.grid.show()
+            self.grid.setGeometry(16, 16, max(0, content_w - 32), max(0, height - 32))
+
         self._position_empty_label()
         if self.panel_visible:
             self.panel.raise_()
@@ -1582,6 +2136,12 @@ class PrototypeWindow(QMainWindow):
     def _focus_grid(self) -> None:
         self.grid.setFocus()
 
+    def _focus_current_view(self) -> None:
+        if self._viewer_visible:
+            self.viewer.focus_canvas()
+        else:
+            self._focus_grid()
+
     def _focus_panel(self) -> None:
         if not self.panel_visible:
             self.panel_visible = True
@@ -1594,11 +2154,234 @@ class PrototypeWindow(QMainWindow):
             return None
         return self.photos.get(item.data(PHOTO_ROLE))
 
+    def _grid_item(self, key: str) -> Optional[QListWidgetItem]:
+        for row in range(self.grid.count()):
+            item = self.grid.item(row)
+            if item.data(PHOTO_ROLE) == key:
+                return item
+        return None
+
+    def _rebuild_strip(self) -> None:
+        items: list[StripItem] = []
+        for row in range(self.grid.count()):
+            item = self.grid.item(row)
+            if item.isHidden():
+                continue
+            photo = self.photos.get(item.data(PHOTO_ROLE))
+            if photo is None:
+                continue
+            items.append(
+                StripItem(
+                    key=photo.key,
+                    icon=item.icon(),
+                    rating=photo.rating,
+                    favorite=photo.favorite,
+                    accessible_name=photo_accessible_name(photo),
+                )
+            )
+        current = self._current_photo()
+        self.viewer.set_items(items, current.key if current else None)
+
+    def _visible_keys(self) -> list[str]:
+        keys: list[str] = []
+        for row in range(self.grid.count()):
+            item = self.grid.item(row)
+            if not item.isHidden():
+                key = item.data(PHOTO_ROLE)
+                if key:
+                    keys.append(str(key))
+        return keys
+
+    def _select_key(self, key: str) -> None:
+        item = self._grid_item(key)
+        if item is None:
+            return
+        if self.grid.currentItem() is item:
+            self._on_current_changed(item, None)
+        else:
+            self.grid.setCurrentItem(item)
+        if not self._viewer_visible:
+            self.grid.scrollToItem(item, QAbstractItemView.EnsureVisible)
+
+    def _viewer_navigate(self, delta: int) -> None:
+        keys = self._visible_keys()
+        if not keys:
+            return
+        photo = self._current_photo()
+        index = keys.index(photo.key) if photo is not None and photo.key in keys else 0
+        target = max(0, min(len(keys) - 1, index + delta))
+        if target == index:
+            self.status.show_message("fin de la lista", 1500)
+            return
+        self._select_key(keys[target])
+
+    def _viewer_first(self) -> None:
+        keys = self._visible_keys()
+        if keys:
+            self._select_key(keys[0])
+
+    def _viewer_last(self) -> None:
+        keys = self._visible_keys()
+        if keys:
+            self._select_key(keys[-1])
+
+    def _handle_g(self) -> None:
+        if self._g_pending:
+            self._g_pending = False
+            self._g_timer.stop()
+            self._viewer_first()
+        else:
+            self._g_pending = True
+            self._g_timer.start()
+
+    def _clear_g_pending(self) -> None:
+        self._g_pending = False
+
+    def _open_viewer(self) -> None:
+        if self._viewer_visible:
+            return
+        photo = self._current_photo()
+        if photo is None:
+            self.status.show_message("no hay fotos", 2000)
+            return
+        self._viewer_visible = True
+        self._layout_content()
+        self.viewer.select_key(photo.key)
+        self._show_viewer_photo(photo)
+        self.viewer.focus_canvas()
+        self.status.show_message("visor · j/k navegar · q volver", 2500)
+
+    def _close_viewer(self) -> None:
+        if not self._viewer_visible:
+            return
+        self._viewer_visible = False
+        self.viewer.canvas.reset_zoom()
+        self.viewer.hide()
+        self._layout_content()
+        if self.grid.currentItem() is not None:
+            self.grid.scrollToItem(
+                self.grid.currentItem(), QAbstractItemView.EnsureVisible
+            )
+        if not self.status.prompt_active:
+            self._focus_grid()
+            self.status.show_message("rejilla", 1200)
+
+    def _on_strip_photo_selected(self, key: str) -> None:
+        if self._viewer_visible:
+            self._select_key(key)
+
+    def _on_grid_double_clicked(self, item: QListWidgetItem) -> None:
+        if self._viewer_visible or item is None:
+            return
+        self.grid.setCurrentItem(item)
+        self._open_viewer()
+
     def _on_current_changed(self, current, previous) -> None:
         photo = self._current_photo()
         self.panel.set_photo(photo)
         filename = photo.name if photo else ""
         self.status.set_counts(self._visible_count(), len(self.photos), filename)
+        if self._viewer_visible:
+            if photo is None:
+                self._close_viewer()
+            else:
+                self.viewer.select_key(photo.key)
+                self._show_viewer_photo(photo)
+
+    def _fallback_pixmap(self, photo: Photo) -> Optional[QPixmap]:
+        icon = self.thumbnails.get(photo.key)
+        if icon is None or icon.isNull():
+            item = self._grid_item(photo.key)
+            if item is not None:
+                icon = item.icon()
+        if icon is None or icon.isNull():
+            return None
+        return icon.pixmap(QSize(THUMB_W, THUMB_H))
+
+    def _show_viewer_photo(self, photo: Photo) -> None:
+        if not self._viewer_visible:
+            return
+        if photo.key == self._displayed_key and self.viewer.canvas.has_image():
+            return
+        cached = self._image_cache.get(photo.key)
+        if cached is not None:
+            self.viewer.canvas.set_image(cached)
+            self._displayed_key = photo.key
+            self._prefetch_neighbors(photo)
+            return
+        fallback = self._fallback_pixmap(photo)
+        if fallback is not None:
+            self.viewer.canvas.set_image(fallback, preview=True)
+        else:
+            self.viewer.canvas.clear()
+        self._displayed_key = photo.key
+        self._pending_image_key = photo.key
+        self._ensure_image_loaded(photo)
+
+    def _ensure_image_loaded(self, photo: Photo) -> None:
+        if photo.path is None:
+            return
+        key = photo.key
+        if (
+            key in self._image_cache
+            or key in self._loading_keys
+            or key in self._failed_images
+        ):
+            return
+        self._loading_keys.add(key)
+        task = ImageLoadTask(key, photo.path)
+        task.signals.loaded.connect(self._on_image_loaded)
+        task.signals.failed.connect(self._on_image_failed)
+        self._loader_pool.start(task)
+
+    def _on_image_loaded(self, key: str, image: QImage) -> None:
+        self._loading_keys.discard(key)
+        if key not in self.photos:
+            return
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
+            self._on_image_failed(key, "imagen no válida")
+            return
+        self._cache_image(key, pixmap)
+        photo = self._current_photo()
+        if self._viewer_visible and photo is not None and photo.key == key:
+            self.viewer.canvas.set_image(pixmap)
+            self._displayed_key = key
+            if self._pending_image_key == key:
+                self._pending_image_key = None
+            self._prefetch_neighbors(photo)
+
+    def _on_image_failed(self, key: str, message: str) -> None:
+        self._loading_keys.discard(key)
+        self._failed_images.add(key)
+        photo = self._current_photo()
+        if self._viewer_visible and photo is not None and photo.key == key:
+            if self._pending_image_key == key:
+                self._pending_image_key = None
+            self.status.show_message(
+                "no se pudo cargar el original; se muestra la miniatura", 4000
+            )
+
+    def _cache_image(self, key: str, pixmap: QPixmap) -> None:
+        if key in self._image_cache:
+            self._image_cache_order.remove(key)
+        self._image_cache[key] = pixmap
+        self._image_cache_order.append(key)
+        while len(self._image_cache_order) > IMAGE_CACHE_SIZE:
+            oldest = self._image_cache_order.pop(0)
+            self._image_cache.pop(oldest, None)
+
+    def _prefetch_neighbors(self, photo: Photo) -> None:
+        keys = self._visible_keys()
+        if photo.key not in keys:
+            return
+        index = keys.index(photo.key)
+        for offset in (-1, 1):
+            neighbor_index = index + offset
+            if 0 <= neighbor_index < len(keys):
+                neighbor = self.photos.get(keys[neighbor_index])
+                if neighbor is not None:
+                    self._ensure_image_loaded(neighbor)
 
     def _visible_count(self) -> int:
         return sum(
@@ -1660,6 +2443,10 @@ class PrototypeWindow(QMainWindow):
                 self.grid.setCurrentRow(-1)
                 self.panel.show_empty("Sin coincidencias")
 
+        self._rebuild_strip()
+        if self._viewer_visible and self._visible_count() == 0:
+            self._close_viewer()
+
         photo = self._current_photo()
         filename = photo.name if photo else ""
         self.status.set_counts(self._visible_count(), len(self.photos), filename)
@@ -1673,13 +2460,13 @@ class PrototypeWindow(QMainWindow):
             self.status.show_message(
                 f"{self._visible_count()} coincidencias", 3000
             )
-        self._focus_grid()
+        self._focus_current_view()
 
     def _cancel_prompt(self, mode: str) -> None:
         if mode == "search":
             self._apply_filter(self.search_text)
             self._restore_search_origin()
-        self._focus_grid()
+        self._focus_current_view()
 
     def _restore_search_origin(self) -> None:
         key = self._search_origin
@@ -1769,6 +2556,9 @@ class PrototypeWindow(QMainWindow):
         self.status.show_message(f"ordenado por {key}", 3000)
 
     def _on_action(self, action: str) -> None:
+        if action != "g" and self._g_pending:
+            self._g_pending = False
+            self._g_timer.stop()
         if self.help_overlay.isVisible():
             if action in ("esc", "?", "q"):
                 self._toggle_help()
@@ -1789,7 +2579,31 @@ class PrototypeWindow(QMainWindow):
             "halfdown",
             "halfup",
         ):
+            if self._viewer_visible:
+                if action == "j":
+                    self._viewer_navigate(1)
+                elif action == "k":
+                    self._viewer_navigate(-1)
+                elif action == "h":
+                    self._on_viewer_action("pan_left")
+                elif action == "l":
+                    self._on_viewer_action("pan_right")
+                elif action == "home":
+                    self._viewer_first()
+                elif action == "end":
+                    self._viewer_last()
+                return
             self._move_cursor(action)
+            return
+        if action == "open_viewer":
+            self._open_viewer()
+            return
+        if action == "g":
+            self._handle_g()
+            return
+        if action in ("zoom_in", "zoom_out", "toggle_zoom"):
+            if self._viewer_visible:
+                self._on_viewer_action(action)
             return
         if action == ":":
             self.status.open_command()
@@ -1807,13 +2621,83 @@ class PrototypeWindow(QMainWindow):
             self._handle_escape()
             return
         if action == "q":
-            self.status.show_message("usa Ctrl+q para salir", 3000)
+            if self._viewer_visible:
+                self._close_viewer()
+            else:
+                self.status.show_message("usa Ctrl+q para salir", 3000)
             return
         if action == "f":
             self._toggle_favorite()
             return
         if action.isdigit():
             self._set_rating(int(action))
+
+    def _on_viewer_action(self, action: str) -> None:
+        if action != "g" and self._g_pending:
+            self._g_pending = False
+            self._g_timer.stop()
+        if action == "next":
+            self._viewer_navigate(1)
+            return
+        if action == "previous":
+            self._viewer_navigate(-1)
+            return
+        if action == "first":
+            self._viewer_first()
+            return
+        if action == "last":
+            self._viewer_last()
+            return
+        if action == "g":
+            self._handle_g()
+            return
+        if action == "close":
+            self._close_viewer()
+            return
+        if action == "escape":
+            self._handle_escape()
+            return
+        if action == "panel":
+            self.toggle_panel()
+            return
+        if action == "favorite":
+            self._toggle_favorite()
+            return
+        if action.startswith("rating:"):
+            self._set_rating(int(action.split(":", 1)[1]))
+            return
+        if action == "help":
+            self._toggle_help()
+            return
+        if action == "command":
+            self.status.open_command()
+            return
+        if action == "search":
+            self._open_search()
+            return
+        if action == "focus_panel":
+            self._focus_panel()
+            return
+        if action == "zoom_in":
+            self.viewer.canvas.zoom_in()
+            return
+        if action == "zoom_out":
+            self.viewer.canvas.zoom_out()
+            return
+        if action == "toggle_zoom":
+            was_fit = not self.viewer.canvas.is_zoomed()
+            self.viewer.canvas.toggle_zoom()
+            self.status.show_message("100 %" if was_fit else "ajustado", 1200)
+            return
+        if action.startswith("pan_"):
+            dx, dy = {
+                "pan_left": (-PAN_STEP, 0),
+                "pan_right": (PAN_STEP, 0),
+                "pan_up": (0, -PAN_STEP),
+                "pan_down": (0, PAN_STEP),
+            }[action]
+            if not self.viewer.canvas.pan_by(dx, dy):
+                self.status.show_message("sin zoom · + para acercar", 1200)
 
     def _move_cursor(self, action: str) -> None:
         if not self.grid.move_selection(action):
@@ -1833,13 +2717,20 @@ class PrototypeWindow(QMainWindow):
             self.toggle_panel()
             return
         if self.panel.scroll.hasFocus():
-            self._focus_grid()
+            self._focus_current_view()
+            return
+        if self._viewer_visible:
+            if self.viewer.canvas.is_zoomed():
+                self.viewer.canvas.reset_zoom()
+                self.status.show_message("ajustado", 1200)
+            else:
+                self._close_viewer()
             return
         if self.search_text:
             self.search_text = ""
             self._apply_filter("")
             self.status.show_message("búsqueda limpiada", 2000)
-        self._focus_grid()
+        self._focus_current_view()
 
     def toggle_panel(self) -> None:
         had_focus = self.panel.scroll.hasFocus()
@@ -1849,7 +2740,7 @@ class PrototypeWindow(QMainWindow):
             self.status.show_message("panel de metadatos", 2000)
         else:
             if had_focus:
-                self._focus_grid()
+                self._focus_current_view()
             self.status.show_message("panel oculto", 2000)
 
     def _toggle_help(self) -> None:
@@ -1857,7 +2748,7 @@ class PrototypeWindow(QMainWindow):
             self.help_overlay.hide()
             self._hide_content_blocker()
             self.status.set_help_mode(False)
-            self._focus_grid()
+            self._focus_current_view()
         else:
             self._center_help()
             self._show_content_blocker()
@@ -1876,6 +2767,12 @@ class PrototypeWindow(QMainWindow):
         item.setData(FAVORITE_ROLE, updated.favorite)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
         self.grid.viewport().update()
+        self.viewer.update_item(
+            updated.key,
+            updated.rating,
+            updated.favorite,
+            photo_accessible_name(updated),
+        )
         self.status.show_message(
             "favorito" if updated.favorite else "sin favorito", 2000
         )
@@ -1890,6 +2787,12 @@ class PrototypeWindow(QMainWindow):
         item.setData(RATING_ROLE, updated.rating)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
         self.grid.viewport().update()
+        self.viewer.update_item(
+            updated.key,
+            updated.rating,
+            updated.favorite,
+            photo_accessible_name(updated),
+        )
         self.status.show_message(
             f"valoración {rating}" if rating else "sin valoración", 2000
         )
@@ -1907,6 +2810,18 @@ class PrototypeWindow(QMainWindow):
             return
 
         key = event.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_O):
+            self._open_viewer()
+            return
+        if key == Qt.Key_G:
+            if event.modifiers() & Qt.ShiftModifier:
+                if self._viewer_visible:
+                    self._viewer_last()
+                else:
+                    self._move_cursor("end")
+            else:
+                self._handle_g()
+            return
         if key == Qt.Key_Colon:
             self.status.open_command()
             return
