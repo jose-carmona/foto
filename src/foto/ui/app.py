@@ -111,6 +111,8 @@ def _to_ui_photo(photo: CatalogPhoto) -> Photo:
         rating=photo.rating,
         favorite=photo.favorite,
         path=photo.path,
+        canonical_rel_path=photo.canonical_rel_path,
+        other_locations=photo.other_locations,
     )
 
 

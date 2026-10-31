@@ -36,6 +36,8 @@ La UI leerá desde `storage/catalog`:
 - `photos`: metadatos normalizados (captura, cámara, objetivo, exposición, dimensiones, tipo/extensión, estado de metadatos).
 - `locations`: rutas relativas a la raíz de la biblioteca con `status = 'present'`. Solo se mostrarán ubicaciones presentes.
 
+**Duplicados por contenido:** si el mismo hash aparece en varias ubicaciones `present`, la foto se mostrará **una sola vez** en la rejilla. Se elegirá una **ubicación canónica** de forma determinista (primera en orden lexicográfico POSIX de `rel_path`). Las demás ubicaciones se considerarán réplicas y se mostrarán en el panel de metadatos. La ubicación canónica se mostrará en la barra de estado (abajo a la derecha).
+
 Para construir `foto.ui.prototype.Photo` se usarán, preferentemente:
 
 | Campo UI | Origen |
@@ -63,7 +65,8 @@ Toda la lógica de filtrado, búsqueda y ordenación deberá hacerse **contra lo
 
 - **Búsqueda (`/`)**: se filtra por nombre de fichero, ruta relativa, cámara, objetivo o cualquier campo indexado. El filtrado se hace en memoria sobre la lista cargada desde el catálogo.
 - **Ordenación (`:sort`)**: se ordenará por campos disponibles en el índice (`captured_at`, `camera_model`, `name`/`rel_path`, etc.). Si `captured_at` es `NULL`, se aplicará un criterio secundario estable (por ejemplo, `rel_path`).
-- **Conteos**: `visible/total` se basarán en el conjunto cargado desde el catálogo.
+- **Conteos**: `visible/total` se basarán en el conjunto cargado desde el catálogo (una foto por hash, independientemente del número de ubicaciones).
+- **Duplicados**: al buscar/ordenar se considera la foto una sola vez; las ubicaciones alternativas no crean entradas duplicadas en la rejilla.
 
 ### 4. Sincronización con el indexador
 
@@ -111,8 +114,10 @@ Toda la lógica de filtrado, búsqueda y ordenación deberá hacerse **contra lo
 - Abrir `catalog.sqlite` en modo solo lectura desde la UI.
 - Filtrar explícitamente por `locations.status = 'present'`.
 - Si falta el catálogo, mostrar mensaje de error y salir con código distinto de cero.
+- Agrupar por `photo_hash`: una entrada por foto, ubicación canónica = menor `rel_path` en orden lexicográfico POSIX.
+- Mostrar ubicación canónica en la barra de estado (derecha). Mostrar el resto de ubicaciones `present` en el panel de metadatos.
 - Mantener compatibilidad con el flujo actual de decodificación de originales en segundo plano.
-- Las búsquedas y ordenaciones deben operar sobre los datos cargados del catálogo.
+- Las búsquedas y ordenaciones deben operar sobre los datos cargados del catálogo (una entrada por foto).
 
 ## Relación con otros ADR
 

@@ -261,6 +261,8 @@ class Photo:
     rating: int = 0
     favorite: bool = False
     path: Path | None = None
+    canonical_rel_path: str | None = None
+    other_locations: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -1324,6 +1326,19 @@ class MetadataPanel(QFrame):
                 "Ubicación",
                 (("Coordenadas", photo.location),),
             ),
+            (
+                "Ubicaciones",
+                (
+                    (
+                        "Canónica",
+                        photo.canonical_rel_path or (str(photo.path) if photo.path else ""),
+                    ),
+                    *(
+                        ("Otra", other)
+                        for other in photo.other_locations
+                    ),
+                ),
+            ),
         )
 
         content = QWidget()
@@ -1621,9 +1636,12 @@ class StatusBar(QWidget):
         painter.setPen(self.palette().color(QPalette.Mid))
         painter.drawLine(0, 0, self.width(), 0)
 
-    def set_counts(self, visible: int, total: int, filename: str) -> None:
+    def set_counts(self, visible: int, total: int, filename: str, canonical_rel_path: str | None = None) -> None:
         suffix = f" · {filename}" if filename else ""
-        self._idle_right = f"{visible} de {total}{suffix}"
+        if canonical_rel_path:
+            self._idle_right = f"{visible} de {total}{suffix} · {canonical_rel_path}"
+        else:
+            self._idle_right = f"{visible} de {total}{suffix}"
         self._search_right = f"{visible} de {total}"
         self.refresh_right()
 
@@ -2137,7 +2155,8 @@ class PrototypeWindow(QMainWindow):
         self.status.clear_error()
         photo = self._current_photo()
         filename = photo.name if photo else ""
-        self.status.set_counts(self._visible_count(), len(self.photos), filename)
+        canonical = photo.canonical_rel_path if photo else None
+        self.status.set_counts(self._visible_count(), len(self.photos), filename, canonical)
         self._update_empty_state()
         self._on_current_changed(self.grid.currentItem(), None)
         if viewer_was_visible and not self.photos:
@@ -2395,7 +2414,8 @@ class PrototypeWindow(QMainWindow):
         photo = self._current_photo()
         self.panel.set_photo(photo)
         filename = photo.name if photo else ""
-        self.status.set_counts(self._visible_count(), len(self.photos), filename)
+        canonical = photo.canonical_rel_path if photo else None
+        self.status.set_counts(self._visible_count(), len(self.photos), filename, canonical)
         if self._viewer_visible:
             if photo is None:
                 self._close_viewer()
@@ -2571,7 +2591,8 @@ class PrototypeWindow(QMainWindow):
 
         photo = self._current_photo()
         filename = photo.name if photo else ""
-        self.status.set_counts(self._visible_count(), len(self.photos), filename)
+        canonical = photo.canonical_rel_path if photo else None
+        self.status.set_counts(self._visible_count(), len(self.photos), filename, canonical)
         self._update_empty_state()
 
     def _commit_search(self, text: str) -> None:

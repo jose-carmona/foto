@@ -32,6 +32,8 @@ class CatalogPhoto:
     rating: int = 0
     favorite: bool = False
     path: Path | None = None
+    canonical_rel_path: str | None = None
+    other_locations: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -132,11 +134,23 @@ def _format_dimensions(width: int | None, height: int | None) -> str:
 
 
 def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto]:
-    """Carga fotos desde el catálogo SQLite (solo ubicaciones presentes)."""
-    photos: list[CatalogPhoto] = []
+    """Carga fotos desde el catálogo SQLite (solo ubicaciones presentes).
+
+    Agrupa por hash: una entrada por foto. Ubicación canónica = menor rel_path
+    en orden lexicográfico POSIX. El resto se guardan como ubicaciones alternativas.
+    """
     rows = catalog.list_present_locations()
+    grouped: dict[str, list] = {}
     for row in rows:
-        rel_path = Path(row["rel_path"])
+        grouped.setdefault(row["photo_hash"], []).append(row)
+
+    photos: list[CatalogPhoto] = []
+    for _photo_hash, items in grouped.items():
+        items_sorted = sorted(items, key=lambda r: str(r["rel_path"]))
+        canonical = items_sorted[0]
+        others = items_sorted[1:]
+
+        rel_path = Path(canonical["rel_path"])
         full_path = (library_path / rel_path).resolve()
         folder = str(rel_path.parent)
         if folder == ".":
@@ -144,8 +158,8 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
         else:
             folder = folder.replace(os.sep, "/")
 
-        extension = row["extension"] or rel_path.suffix
-        file_type = row["file_type"] or ""
+        extension = canonical["extension"] or rel_path.suffix
+        file_type = canonical["file_type"] or ""
         fmt = file_type.upper() if file_type else extension.lstrip(".").upper() or "—"
 
         size = ""
@@ -153,24 +167,28 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
             stat = full_path.stat()
             size = _format_size_from_bytes(stat.st_size)
         except OSError:
-            size = _format_size_from_bytes(row["size"])
+            size = _format_size_from_bytes(canonical["size"])
 
-        camera = _format_camera(row["camera_make"], row["camera_model"])
+        camera = _format_camera(canonical["camera_make"], canonical["camera_model"])
         photo = CatalogPhoto(
             name=rel_path.name,
-            taken=_format_taken(row["captured_at"]),
+            taken=_format_taken(canonical["captured_at"]),
             camera=camera,
-            lens=row["lens_model"] or "",
-            focal=_format_focal_length(row["focal_length"]),
-            aperture=_format_aperture(row["f_number"]),
-            shutter=_format_exposure_time(row["exposure_time"]),
-            iso=_format_iso(row["iso"]),
+            lens=canonical["lens_model"] or "",
+            focal=_format_focal_length(canonical["focal_length"]),
+            aperture=_format_aperture(canonical["f_number"]),
+            shutter=_format_exposure_time(canonical["exposure_time"]),
+            iso=_format_iso(canonical["iso"]),
             folder=folder,
             fmt=fmt,
-            dimensions=_format_dimensions(row["width"], row["height"]),
+            dimensions=_format_dimensions(canonical["width"], canonical["height"]),
             size=size,
-            location=_format_location(row["gps_latitude"], row["gps_longitude"]),
+            location=_format_location(canonical["gps_latitude"], canonical["gps_longitude"]),
             path=full_path,
+            canonical_rel_path=str(canonical["rel_path"]),
+            other_locations=tuple(str(r["rel_path"]) for r in others),
         )
         photos.append(photo)
+
+    photos.sort(key=lambda p: p.canonical_rel_path or p.name.lower())
     return photos
