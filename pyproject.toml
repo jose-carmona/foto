@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 foto = "foto.ui.app:main"
+foto-index = "foto.indexer.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -27,3 +28,9 @@ target-version = "py312"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]

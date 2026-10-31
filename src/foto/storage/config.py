@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+
 try:
     import tomllib
 except ImportError:
@@ -12,7 +14,6 @@ except ImportError:
         tomllib = None  # type: ignore
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import platformdirs
 
@@ -22,7 +23,7 @@ class AppConfig:
     """Configuración global de la aplicación."""
 
     config_path: Path
-    library_path: Optional[Path] = None
+    library_path: Path | None = None
     version: int = 1
 
 
@@ -36,7 +37,7 @@ def get_default_config_path() -> Path:
     return config_dir / "config.toml"
 
 
-def resolve_config_path(config_path: Optional[Path] = None) -> Path:
+def resolve_config_path(config_path: Path | None = None) -> Path:
     """Resuelve la ruta del fichero de configuración con precedencia."""
     if config_path is not None:
         return Path(config_path).expanduser().resolve()
@@ -56,7 +57,7 @@ def _expand_path(p: str, base_dir: Path) -> Path:
     return (base_dir / path).resolve()
 
 
-def load_config(config_path: Optional[Path] = None) -> AppConfig:
+def load_config(config_path: Path | None = None) -> AppConfig:
     """Carga la configuración global."""
     resolved = resolve_config_path(config_path)
     if not resolved.exists():
@@ -103,8 +104,7 @@ def save_config(config: AppConfig) -> None:
         tmp_path.write_text(content, encoding="utf-8")
         os.replace(tmp_path, config.config_path)
     finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except Exception:
-                pass
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            logging.getLogger(__name__).debug("No se pudo limpiar el temporal", exc_info=True)

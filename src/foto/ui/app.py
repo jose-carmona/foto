@@ -9,7 +9,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-from foto.core.library import list_images
+from foto.core.library import CatalogPhoto, load_from_catalog
+from foto.storage.catalog import Catalog
 from foto.storage.config import AppConfig, ConfigError, load_config, save_config
 from foto.ui.prototype import (
     THUMB_H,
@@ -92,45 +93,53 @@ def _thumbnail_icon(path: Path) -> tuple[QIcon, str]:
     return QIcon(cropped), f"{width} × {height} px"
 
 
-def _build_photo(path: Path, library_path: Path) -> tuple[Photo, QIcon]:
-    icon, dimensions = _thumbnail_icon(path)
-
-    try:
-        size = _format_size(path.stat().st_size)
-    except OSError:
-        size = ""
-
-    try:
-        folder = str(path.parent.relative_to(library_path))
-    except ValueError:
-        folder = str(path.parent)
-
-    photo = Photo(
-        name=path.name,
-        taken="",
-        camera="",
-        lens="",
-        focal="",
-        aperture="",
-        shutter="",
-        iso="",
-        folder="." if folder == "." else folder,
-        fmt=_format_name(path),
-        dimensions=dimensions,
-        size=size,
-        location="",
-        path=path,
+def _to_ui_photo(photo: CatalogPhoto) -> Photo:
+    return Photo(
+        name=photo.name,
+        taken=photo.taken,
+        camera=photo.camera,
+        lens=photo.lens,
+        focal=photo.focal,
+        aperture=photo.aperture,
+        shutter=photo.shutter,
+        iso=photo.iso,
+        folder=photo.folder,
+        fmt=photo.fmt,
+        dimensions=photo.dimensions,
+        size=photo.size,
+        location=photo.location,
+        rating=photo.rating,
+        favorite=photo.favorite,
+        path=photo.path,
     )
-    return photo, icon
 
 
 def load_photos(library_path: Path) -> tuple[list[Photo], dict[str, QIcon]]:
-    """Convierte los ficheros de la biblioteca en datos y miniaturas para la UI."""
-    photos: list[Photo] = []
+    """Carga las fotos desde el catálogo SQLite. Requiere un índice existente."""
+    catalog_path = library_path / ".foto" / "catalog.sqlite"
+    if not catalog_path.exists():
+        raise FileNotFoundError(
+            "No se encontró el índice de la fototeca. Ejecuta 'foto-index' "
+            "para crear <fototeca>/.foto/catalog.sqlite."
+        )
+
+    try:
+        catalog = Catalog.open(catalog_path)
+    except Exception as exc:
+        raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
+
+    try:
+        catalog_photos = load_from_catalog(catalog, library_path)
+    finally:
+        catalog.close()
+
+    photos = [_to_ui_photo(photo) for photo in catalog_photos]
     thumbnails: dict[str, QIcon] = {}
-    for path in list_images(library_path):
-        photo, icon = _build_photo(path, library_path)
-        photos.append(photo)
+    for photo in photos:
+        if photo.path is not None:
+            icon, _dimensions = _thumbnail_icon(photo.path)
+        else:
+            icon = _placeholder_icon(Path(photo.name))
         thumbnails[photo.key] = icon
     return photos, thumbnails
 
@@ -139,7 +148,11 @@ class MainWindow(PrototypeWindow):
     def __init__(self, library_path: Path, config: AppConfig) -> None:
         self.library_path = library_path
         self.config = config
-        photos, thumbnails = load_photos(library_path)
+        try:
+            photos, thumbnails = load_photos(library_path)
+        except Exception as exc:
+            QMessageBox.critical(None, "foto", str(exc))
+            sys.exit(1)
         super().__init__(
             photos,
             thumbnails=thumbnails,
@@ -157,7 +170,11 @@ class MainWindow(PrototypeWindow):
         if not self.library_path.is_dir():
             self.status.show_error("la fototeca no está disponible")
             return False
-        photos, thumbnails = load_photos(self.library_path)
+        try:
+            photos, thumbnails = load_photos(self.library_path)
+        except Exception as exc:
+            self.status.show_error(str(exc))
+            return False
         self.setWindowTitle(self._window_title())
         self.set_photos(photos, thumbnails)
         return True
@@ -199,9 +216,11 @@ class MainWindow(PrototypeWindow):
             self.status.show_message(f"biblioteca abierta: {target.name}", 3000)
 
     def _rescan(self) -> None:
-        self.status.show_message("reindexando…", 3000)
+        self.status.show_message("recargando desde el índice…", 3000)
         if self._reload_library():
-            self.status.show_message(f"{len(self.photos)} fotos indexadas", 3000)
+            self.status.show_message(f"{len(self.photos)} fotos cargadas", 3000)
+        else:
+            self.status.show_message("ejecuta 'foto-index' para generar/actualizar el índice", 4000)
 
 
 def main() -> None:
@@ -241,7 +260,13 @@ def main() -> None:
             )
             sys.exit(1)
 
-    window = MainWindow(library_path, config)
+    try:
+        window = MainWindow(library_path, config)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        QMessageBox.critical(None, "foto", str(exc))
+        sys.exit(1)
     window.show()
     sys.exit(app.exec())
 

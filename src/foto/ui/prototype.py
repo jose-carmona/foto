@@ -23,7 +23,6 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional
 
 from PySide6.QtCore import (
     QEvent,
@@ -261,7 +260,7 @@ class Photo:
     location: str
     rating: int = 0
     favorite: bool = False
-    path: Optional[Path] = None
+    path: Path | None = None
 
     @property
     def key(self) -> str:
@@ -299,7 +298,7 @@ COMMANDS = (
     Command("q", "salir de la aplicación"),
     Command("quit", "salir de la aplicación"),
     Command("open", "abrir una carpeta o biblioteca"),
-    Command("rescan", "volver a indexar la biblioteca"),
+    Command("rescan", "recargar desde el índice"),
     Command("sort date", "ordenar por fecha"),
     Command("sort name", "ordenar por nombre"),
     Command("sort camera", "ordenar por cámara"),
@@ -375,7 +374,7 @@ def make_thumbnail(index: int) -> QIcon:
     return QIcon(pixmap)
 
 
-def viewer_key_action(event) -> Optional[str]:
+def viewer_key_action(event) -> str | None:
     """Traduce una tecla del visor a una acción, o None si no aplica."""
     key = event.key()
     modifiers = event.modifiers()
@@ -458,7 +457,7 @@ class ImageLoadTask(QRunnable):
                 )
                 return
             self.signals.loaded.emit(self.key, image)
-        except Exception as exc:  # pragma: no cover - defensa ante plugins de imagen
+        except Exception as exc:  # noqa: BLE001  # pragma: no cover - plugins de imagen
             self.signals.failed.emit(self.key, str(exc))
 
 
@@ -467,17 +466,17 @@ class PhotoCanvas(QWidget):
 
     action_requested = Signal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAccessibleName("foto actual")
         self.setFocusPolicy(Qt.StrongFocus)
-        self._pixmap: Optional[QPixmap] = None
+        self._pixmap: QPixmap | None = None
         self._preview = False
-        self._zoom: Optional[float] = None
+        self._zoom: float | None = None
         self._pan = QPointF(0, 0)
         self.focus_ring = True
 
-    def set_image(self, pixmap: Optional[QPixmap], *, preview: bool = False) -> None:
+    def set_image(self, pixmap: QPixmap | None, *, preview: bool = False) -> None:
         self._pixmap = pixmap
         self._preview = preview
         self._zoom = None
@@ -746,7 +745,7 @@ class Filmstrip(QListWidget):
     action_requested = Signal(str)
     photo_selected = Signal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAccessibleName("tira de miniaturas")
         self.setViewMode(QListWidget.IconMode)
@@ -790,7 +789,7 @@ class Filmstrip(QListWidget):
         self.viewport().update()
         self.update()
 
-    def set_items(self, items: list[StripItem], current_key: Optional[str]) -> None:
+    def set_items(self, items: list[StripItem], current_key: str | None) -> None:
         self._syncing = True
         try:
             self.clear()
@@ -814,7 +813,7 @@ class Filmstrip(QListWidget):
         if current_key is not None:
             self.select_key(current_key)
 
-    def _item_for_key(self, key: str) -> Optional[QListWidgetItem]:
+    def _item_for_key(self, key: str) -> QListWidgetItem | None:
         for row in range(self.count()):
             item = self.item(row)
             if item.data(PHOTO_ROLE) == key:
@@ -886,7 +885,7 @@ class PhotoViewer(QWidget):
     photo_selected = Signal(str)
 
     def __init__(
-        self, parent: Optional[QWidget] = None, *, with_strip: bool = True
+        self, parent: QWidget | None = None, *, with_strip: bool = True
     ) -> None:
         super().__init__(parent)
         self.setAccessibleName("visor de fotos")
@@ -906,7 +905,7 @@ class PhotoViewer(QWidget):
         self.strip.action_requested.connect(self.action_requested)
         self.strip.photo_selected.connect(self.photo_selected)
 
-    def set_items(self, items: list[StripItem], current_key: Optional[str]) -> None:
+    def set_items(self, items: list[StripItem], current_key: str | None) -> None:
         self.strip.set_items(items, current_key)
 
     def select_key(self, key: str) -> None:
@@ -931,7 +930,7 @@ class PhotoGrid(QListWidget):
     action_requested = Signal(str)
     focus_panel = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAccessibleName("rejilla de fotos")
         # En el visor, la rejilla se limita a una fila horizontal.
@@ -1289,7 +1288,7 @@ class MetadataPanel(QFrame):
         label.setWordWrap(True)
         return label
 
-    def set_photo(self, photo: Optional[Photo]) -> None:
+    def set_photo(self, photo: Photo | None) -> None:
         if photo is None:
             self.show_empty("Sin selección")
             return
@@ -1528,7 +1527,7 @@ class StatusBar(QWidget):
     prompt_cancelled = Signal(str)
     prompt_closed = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAccessibleName("barra de estado")
         self.setFixedHeight(BAR_H)
@@ -1538,8 +1537,8 @@ class StatusBar(QWidget):
         self.setPalette(palette)
 
         self.prompt_active = False
-        self.prompt_mode: Optional[str] = None
-        self.error_text: Optional[str] = None
+        self.prompt_mode: str | None = None
+        self.error_text: str | None = None
         self.help_mode = False
         self._history: list[str] = []
         self._history_index = 0
@@ -1871,7 +1870,7 @@ class HelpOverlay(QFrame):
             "<code>q</code>/<code>Esc</code> volver a la rejilla<br><br>"
             "<b>Comandos</b><br>"
             "<code>:q</code>/<code>:quit</code> salir · <code>:open [ruta]</code> abrir · "
-            "<code>:rescan</code> reindexar<br>"
+            "<code>:rescan</code> recargar desde el índice<br>"
             "<code>:sort date|name|camera</code> ordenar · "
             "<code>:help</code> ayuda"
         )
@@ -1907,11 +1906,11 @@ class PrototypeWindow(QMainWindow):
         self,
         photos: list[Photo],
         *,
-        thumbnails: Optional[dict[str, QIcon]] = None,
-        title: Optional[str] = None,
+        thumbnails: dict[str, QIcon] | None = None,
+        title: str | None = None,
         initial_panel_visible: bool = True,
-        on_open: Optional[Callable[[str], None]] = None,
-        on_rescan: Optional[Callable[[], None]] = None,
+        on_open: Callable[[str], None] | None = None,
+        on_rescan: Callable[[], None] | None = None,
         grid_row: bool = False,
     ) -> None:
         super().__init__()
@@ -1923,7 +1922,7 @@ class PrototypeWindow(QMainWindow):
         self._on_open = on_open
         self._on_rescan = on_rescan
         self.search_text = ""
-        self._search_origin: Optional[str] = None
+        self._search_origin: str | None = None
         self.panel_visible = initial_panel_visible
         self.panel_overlay = False
         self._viewer_visible = False
@@ -1931,8 +1930,8 @@ class PrototypeWindow(QMainWindow):
         self._image_cache_order: list[str] = []
         self._loading_keys: set[str] = set()
         self._failed_images: set[str] = set()
-        self._pending_image_key: Optional[str] = None
-        self._displayed_key: Optional[str] = None
+        self._pending_image_key: str | None = None
+        self._displayed_key: str | None = None
         self._g_pending = False
         self._g_timer = QTimer(self)
         self._g_timer.setSingleShot(True)
@@ -2097,7 +2096,7 @@ class PrototypeWindow(QMainWindow):
     def set_photos(
         self,
         photos: list[Photo],
-        thumbnails: Optional[dict[str, QIcon]] = None,
+        thumbnails: dict[str, QIcon] | None = None,
     ) -> None:
         """Sustituye la biblioteca visible conservando la foto actual si sigue."""
         viewer_was_visible = self._viewer_visible
@@ -2240,13 +2239,13 @@ class PrototypeWindow(QMainWindow):
             self._layout_content()
         self.panel.focus_scroll()
 
-    def _current_photo(self) -> Optional[Photo]:
+    def _current_photo(self) -> Photo | None:
         item = self.grid.currentItem()
         if item is None:
             return None
         return self.photos.get(item.data(PHOTO_ROLE))
 
-    def _grid_item(self, key: str) -> Optional[QListWidgetItem]:
+    def _grid_item(self, key: str) -> QListWidgetItem | None:
         for row in range(self.grid.count()):
             item = self.grid.item(row)
             if item.data(PHOTO_ROLE) == key:
@@ -2411,7 +2410,7 @@ class PrototypeWindow(QMainWindow):
                     self.viewer.select_key(photo.key)
                 self._show_viewer_photo(photo)
 
-    def _fallback_pixmap(self, photo: Photo) -> Optional[QPixmap]:
+    def _fallback_pixmap(self, photo: Photo) -> QPixmap | None:
         icon = self.thumbnails.get(photo.key)
         if icon is None or icon.isNull():
             item = self._grid_item(photo.key)
@@ -2533,7 +2532,7 @@ class PrototypeWindow(QMainWindow):
                 self.empty_label.setText("Sin coincidencias\nEsc limpia la búsqueda")
             else:
                 self.empty_label.setText(
-                    "No hay fotos en esta biblioteca\n:open para abrir otra carpeta"
+                    "No hay fotos en el índice\nEjecuta 'foto-index' o :open para abrir otra carpeta"
                 )
             self.empty_label.show()
             self._position_empty_label()
@@ -2617,11 +2616,11 @@ class PrototypeWindow(QMainWindow):
             if self._on_rescan is not None:
                 self._on_rescan()
             else:
-                self.status.show_message("reindexando…", 3000)
+                self.status.show_message("recargando desde el índice…", 3000)
                 QTimer.singleShot(
                     1200,
                     lambda: self.status.show_message(
-                        f"{len(self.photos)} fotos indexadas", 3000
+                        f"{len(self.photos)} fotos cargadas", 3000
                     ),
                 )
             return

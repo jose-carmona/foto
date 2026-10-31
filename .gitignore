@@ -55,6 +55,9 @@ coverage.xml
 *.swp
 .cache/
 
+# --- Catálogos y datos derivados de una fototeca ---
+.foto/
+
 # --- Documentación generada ---
 docs/_build/
 site/

@@ -14,11 +14,20 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 
 - Prototipo funcional de UI en `src/foto/`: rejilla, visor con la rejilla en una
   fila, panel de metadatos y temas claro/oscuro.
-- La aplicación abre una carpeta y genera miniaturas con Qt; aún no hay catálogo
-  SQLite, XMP, `exiftool` ni indexado incremental.
+- Indexador `foto-index` completo en `src/foto/indexer/` + `core/` + `storage/`:
+  catálogo SQLite incremental, hashes SHA-256 de contenido, rutas relativas,
+  reconciliación de ausencias, `exiftool` opcional y lock de escritor único.
+- El catálogo vive en `<fototeca>/.foto/catalog.sqlite` y es reconstruible. El
+  indexador no importa Qt.
+- El visor **consume el catálogo** (`ADR 0003`): lee solo desde
+  `<fototeca>/.foto/catalog.sqlite` (ubicaciones `present`). Si no existe el
+  catálogo, la app avisa y se cierra. Las búsquedas y ordenaciones se hacen
+  contra el índice. `foto-index` es independiente (CLI/cron/systemd).
 - La imagen grande del visor se decodifica en segundo plano; la generación
-  inicial de miniaturas de la rejilla sigue en el hilo de UI.
-- `tests/` está vacío; pytest y ruff todavía no forman parte del entorno.
+  inicial de miniaturas de la rejilla sigue en el hilo de UI. La caché de
+  miniaturas y XMP no están implementados.
+- `tests/` contiene una suite pytest sin Qt ni pantalla. `pytest` y `ruff` están
+  en el grupo `dev` de `pyproject.toml`.
 - El MVP es **visualización y metadatos**, nada más. No adelantes edición,
   álbumes ni IA sin que se pida explícitamente.
 - No inventes comandos de instalación, CI ni badges que no existan.
@@ -48,10 +57,12 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 - Python 3.12+
 - PySide6 (LGPL, coherente con la licencia MIT del proyecto)
 - `platformdirs` para ubicar configuración, caché y datos en Linux y macOS
-- SQLite (índice y caché de miniaturas)
-- Sidecars XMP; `exiftool` para lectura/escritura de metadatos
-- pytest y ruff: configuración en `pyproject.toml`; pendiente instalarlos en el
-  entorno y crear la primera suite
+- SQLite (catálogo implementado en `storage/catalog.py`; WAL, `user_version`,
+  migraciones y `foreign_keys=ON`)
+- Sidecars XMP; `exiftool` para lectura/escritura de metadatos. En el indexador
+  actual es opcional y de solo lectura.
+- pytest y ruff como dependencias de desarrollo, declaradas en
+  `[dependency-groups].dev` de `pyproject.toml`
 - `uv` como gestor de entorno y dependencias
 
 Formatos de imagen: JPEG, HEIC y RAW vía `exiftool` + extracción de miniaturas
@@ -65,10 +76,11 @@ foto/
 │   ├── adr/          # decisiones de arquitectura
 │   └── diseno-ui.md  # reglas de interfaz
 ├── src/foto/
-│   ├── core/         # listado de imágenes
-│   ├── storage/      # configuración TOML
+│   ├── core/         # hashing, scanner, metadatos, indexado
+│   ├── indexer/      # CLI foto-index y __main__
+│   ├── storage/      # catálogo SQLite, exiftool, lock y config TOML
 │   └── ui/           # app real y prototipo de UI
-├── tests/
+├── tests/            # suite pytest sin Qt
 └── README.md
 ```
 
@@ -77,7 +89,12 @@ Comandos disponibles:
 ```sh
 uv sync
 uv run foto
+uv run foto-index --library ~/Fotos
+uv run foto-index --library ~/Fotos --dry-run --json
+uv run python -m foto.indexer --library ~/Fotos --help
 PYTHONPATH=src .venv/bin/python -m foto.ui.prototype
+uv run pytest
+uv run ruff check .
 ```
 
 ## Convenciones de código
@@ -111,12 +128,35 @@ Decisión completa en `docs/adr/0001-configuracion.md`. Resumen operativo:
 - **Prohibido:** `.env` como fuente de verdad y `QSettings`. La carga y la
   escritura de configuración no viven en la UI.
 
+## Indexador y catálogo
+
+Decisión completa en `docs/adr/0002-indexado.md`. Resumen operativo:
+
+- **Identidad:** `sha256:<64 hex>` del contenido. Una fila en `photos` por hash y
+  N filas en `locations` por ruta relativa POSIX.
+- **Escrituras:** solo en `<fototeca>/.foto/`. Nunca se modifican, mueven ni
+  borran originales. El catálogo es un índice reconstruible.
+- **Incremental:** firma `(size, mtime_ns, inode, device)`; el hash solo se
+  calcula para altas y cambios. `--full` fuerza un rehash completo y reextrae
+  metadatos. El resumen expone `hashed_files` y `metadata_extracted` para que ese
+  trabajo sea visible aunque `unchanged` no cambie.
+- **Ausencias:** se marcan `missing` por reconciliación con la tabla temporal
+  `seen`; un recorrido parcial o una raíz ausente no marcan nada. `--prune` solo
+  borra filas del catálogo.
+- **Metadatos:** EXIF de la imagen, normalizados; `exiftool` es opcional, de solo
+  lectura, sin shell y por lotes. Sin él quedan `pending`.
+- **Concurrencia:** WAL, `foreign_keys=ON`, `busy_timeout` y lock exclusivo en
+  `.foto/index.lock`. Un solo escritor; el futuro lector no debe bloquearse.
+- **Sin Qt:** `core/`, `storage/` e `indexer/` no importan `foto.ui` ni PySide6.
+
 ## Tests
 
 - `pytest` para todo; los tests de `core/` y `storage/` no deben necesitar Qt ni
   pantalla.
 - Usa `tmp_path` y fixtures con ficheros de imagen mínimos en lugar de imágenes
   reales grandes.
+- La suite cubre hash e identidad, indexado incremental, borrados y `--prune`,
+  recorrido parcial, metadatos, catálogo, bootstrap, lock y CLI.
 - Todo bug corregido lleva su test de regresión.
 
 ## Flujo de trabajo
@@ -134,6 +174,7 @@ Decisión completa en `docs/adr/0001-configuracion.md`. Resumen operativo:
 
 - No incluyas fotos, rutas personales, bases de datos ni sidecars XMP en el
   repositorio. Añade los patrones necesarios a `.gitignore` cuando aparezcan.
+- `.foto/` está ignorado: contiene catálogos y locks generados por el indexador.
 - Credenciales de S3 vía variables de entorno o llavero del sistema, nunca en
   el repo ni en ficheros de configuración versionados.
 - Los logs no deben volcar rutas completas de la biblioteca salvo en modo

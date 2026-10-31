@@ -3,15 +3,48 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import List
+
+from foto.storage.catalog import Catalog
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".heic", ".raf", ".cr2", ".nef", ".arw", ".dng", ".png", ".tif", ".tiff"}
 
 
-def list_images(library_path: Path) -> List[Path]:
-    """Lista imágenes en la biblioteca (recursivo)."""
-    images: List[Path] = []
+@dataclass(frozen=True)
+class CatalogPhoto:
+    """Foto cargada desde el catálogo para la UI."""
+
+    name: str
+    taken: str
+    camera: str
+    lens: str
+    focal: str
+    aperture: str
+    shutter: str
+    iso: str
+    folder: str
+    fmt: str
+    dimensions: str
+    size: str
+    location: str
+    rating: int = 0
+    favorite: bool = False
+    path: Path | None = None
+
+    @property
+    def key(self) -> str:
+        return str(self.path) if self.path is not None else self.name
+
+
+
+def list_images(library_path: Path) -> list[Path]:
+    """Lista imágenes en la biblioteca (recursivo).
+
+    Obsoleto para la UI: el visor consume el catálogo. Se mantiene por compatibilidad.
+    """
+    images: list[Path] = []
     if not library_path.exists():
         return images
     for root, dirs, files in os.walk(library_path):
@@ -25,3 +58,119 @@ def list_images(library_path: Path) -> List[Path]:
     # Ordenar por nombre para tener un orden estable
     images.sort(key=lambda p: str(p).lower())
     return images
+
+
+def _format_exposure_time(value: float | None) -> str:
+    if value is None or value <= 0:
+        return ""
+    if value >= 1:
+        text = f"{value:g}"
+        return f"{text.replace('.', ',')} s"
+    denominator = round(1 / value)
+    if denominator <= 0:
+        return ""
+    return f"1/{denominator} s"
+
+
+def _format_aperture(value: float | None) -> str:
+    if value is None:
+        return ""
+    text = f"f/{value:g}"
+    return text.replace(".", ",")
+
+
+def _format_focal_length(value: float | None) -> str:
+    if value is None:
+        return ""
+    text = f"{value:g} mm"
+    return text.replace(".", ",")
+
+
+def _format_iso(value: int | None) -> str:
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _format_taken(captured_at: str | None) -> str:
+    if not captured_at:
+        return ""
+    try:
+        dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, AttributeError):
+        return captured_at
+
+
+def _format_location(lat: float | None, lon: float | None) -> str:
+    if lat is None or lon is None:
+        return ""
+    lat_dir = "N" if lat >= 0 else "S"
+    lon_dir = "E" if lon >= 0 else "O"
+    return f"{abs(lat):.4f} {lat_dir} · {abs(lon):.4f} {lon_dir}"
+
+
+def _format_camera(make: str | None, model: str | None) -> str:
+    parts = [part for part in (make, model) if part]
+    return " ".join(parts)
+
+
+def _format_size_from_bytes(size: int | None) -> str:
+    if not size or size <= 0:
+        return ""
+    for unit, factor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
+        if size >= factor:
+            value = f"{size / factor:.1f}".rstrip("0").rstrip(".")
+            return f"{value.replace('.', ',')} {unit}"
+    return f"{size} B"
+
+
+def _format_dimensions(width: int | None, height: int | None) -> str:
+    if width and height:
+        return f"{width} × {height} px"
+    return ""
+
+
+def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto]:
+    """Carga fotos desde el catálogo SQLite (solo ubicaciones presentes)."""
+    photos: list[CatalogPhoto] = []
+    rows = catalog.list_present_locations()
+    for row in rows:
+        rel_path = Path(row["rel_path"])
+        full_path = (library_path / rel_path).resolve()
+        folder = str(rel_path.parent)
+        if folder == ".":
+            folder = "."
+        else:
+            folder = folder.replace(os.sep, "/")
+
+        extension = row["extension"] or rel_path.suffix
+        file_type = row["file_type"] or ""
+        fmt = file_type.upper() if file_type else extension.lstrip(".").upper() or "—"
+
+        size = ""
+        try:
+            stat = full_path.stat()
+            size = _format_size_from_bytes(stat.st_size)
+        except OSError:
+            size = _format_size_from_bytes(row["size"])
+
+        camera = _format_camera(row["camera_make"], row["camera_model"])
+        photo = CatalogPhoto(
+            name=rel_path.name,
+            taken=_format_taken(row["captured_at"]),
+            camera=camera,
+            lens=row["lens_model"] or "",
+            focal=_format_focal_length(row["focal_length"]),
+            aperture=_format_aperture(row["f_number"]),
+            shutter=_format_exposure_time(row["exposure_time"]),
+            iso=_format_iso(row["iso"]),
+            folder=folder,
+            fmt=fmt,
+            dimensions=_format_dimensions(row["width"], row["height"]),
+            size=size,
+            location=_format_location(row["gps_latitude"], row["gps_longitude"]),
+            path=full_path,
+        )
+        photos.append(photo)
+    return photos

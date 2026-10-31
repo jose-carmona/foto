@@ -7,10 +7,12 @@ depender de iCloud, del ecosistema Apple ni de una base de datos opaca. Los
 originales no se tocan, los metadatos viven en ficheros estándar y todo funciona
 sin conexión.
 
-> **Estado:** prototipo funcional de la UI. La aplicación abre una carpeta,
-> muestra la rejilla, el visor con la rejilla en una fila y el panel de
-> metadatos. Faltan el catálogo SQLite, la lectura/escritura de XMP y el indexado
-> incremental.
+> **Estado:** prototipo funcional de la UI e indexador de la fototeca. `foto`
+> abre una carpeta, muestra la rejilla, el visor con la rejilla en una fila y el
+> panel de metadatos. `foto-index` recorre la biblioteca, identifica las fotos
+> por el hash de su contenido y mantiene un catálogo SQLite incremental. Faltan
+> la integración del visor con el catálogo, la caché de miniaturas y la
+> lectura/escritura de XMP.
 
 ## Objetivo
 
@@ -42,7 +44,8 @@ La primera versión se centra en **ver y entender** las fotos, no en editarlas.
 - Lectura de metadatos: fecha de captura, cámara, objetivo, ISO, apertura,
   velocidad, distancia focal y geolocalización.
 - Favoritos y valoraciones, escritos en el XMP correspondiente.
-- Catálogo SQLite para búsquedas y miniaturas, regenerable desde los XMP.
+- Catálogo SQLite para búsquedas y miniaturas, regenerable desde los originales
+  y, para los metadatos de usuario, desde los XMP.
 
 Fuera del MVP, por ahora: edición, álbumes, reconocimiento de caras y cualquier
 forma de publicación o compartición.
@@ -50,10 +53,15 @@ forma de publicación o compartición.
 ## Roadmap
 
 - [ ] **Fase 1 — Visualización y metadatos** (MVP)
-  - Indexado de carpetas y generación de miniaturas
-  - Rejilla, visor con la rejilla en una fila y panel de metadatos (prototipo;
-    faltan metadatos reales)
-  - Favoritos persistidos en XMP
+  - [x] Indexado incremental de carpetas con catálogo SQLite, hashes de
+    contenido y metadatos EXIF normalizados
+  - [ ] Generación y caché de miniaturas desde el catálogo
+  - Rejilla, visor con la rejilla en una fila y panel de metadatos (prototipo).
+    El visor consume el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md)):
+    si no existe `catalog.sqlite`, avisa y se cierra. Las búsquedas y ordenaciones
+    se hacen contra el índice.
+  - [x] Integración del visor con el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md))
+  - [ ] Favoritos persistidos en XMP
 - [ ] **Fase 2 — Organización**
   - Álbumes manuales e inteligentes
   - Búsqueda y filtros por fecha, cámara, etiquetas y ubicación
@@ -70,32 +78,39 @@ forma de publicación o compartición.
 ## Arquitectura
 
 ```
-┌─────────────────────────────┐
-│  UI (Qt / PySide6)          │  rejilla, visor, panel de metadatos
-└──────────────┬──────────────┘
-               │
-┌──────────────▼──────────────┐
-│  Núcleo (Python)            │  importación, indexado, miniaturas
-└───────┬──────────────┬──────┘
-        │              │
-   SQLite          XMP sidecars
-   (índice)        (fuente de verdad)
-        │
-   originales en disco
-        │
-   copias: disco local + S3
+┌───────────────────┐        ┌────────────────────┐
+│ UI (Qt / PySide6) │        │ foto-index (CLI)   │
+└─────────┬─────────┘        └─────────┬──────────┘
+          │                            │
+┌─────────▼────────────────────────────▼─────────┐
+│ Núcleo (Python)                                │
+│ recorrido, hashing, metadatos, indexado        │
+└─────────┬────────────────────────────┬─────────┘
+          │                            │
+      SQLite (índice)          XMP sidecars (futuro)
+          │
+    originales en disco
+          │
+    copias: disco local + S3
 ```
 
 - **UI:** Qt mediante PySide6 (LGPL, compatible con una licencia MIT). Teclado
   primero, atajos de vim y lenguaje visual sobrio; reglas en
   `docs/diseno-ui.md`.
-- **Catálogo:** SQLite como índice rápido de búsqueda y miniaturas.
-- **Metadatos:** sidecars XMP junto a cada original. SQLite se puede reconstruir
-  a partir de ellos.
+- **Indexador:** ejecutable `foto-index`, sin Qt, que recorre la biblioteca,
+  calcula el hash de contenido y mantiene el catálogo. Se puede lanzar desde
+  bash, cron o un `systemd` oneshot.
+- **Catálogo:** SQLite como índice rápido de búsqueda y miniaturas. Es
+  reconstruible desde los originales; si se borra, la siguiente pasada lo
+  regenera.
+- **Metadatos:** EXIF leídos con `exiftool` (opcional) y normalizados en SQLite.
+  Los sidecars XMP serán la fuente de verdad de los metadatos de usuario en una
+  fase posterior.
 - **Copias de seguridad:** destino local y, opcionalmente, S3.
 - **Configuración:** TOML en el directorio de configuración del usuario; lo
   específico de cada biblioteca vive en `<fototeca>/.foto/`. Ver
-  `docs/adr/0001-configuracion.md`.
+  `docs/adr/0001-configuracion.md`, `docs/adr/0002-indexado.md` y
+  `docs/adr/0003-consumo-del-indice-desde-el-visor.md`.
 
 Estructura actual:
 
@@ -105,10 +120,11 @@ foto/
 │   ├── adr/        # decisiones de arquitectura
 │   └── diseno-ui.md
 ├── src/foto/
-│   ├── core/       # listado de imágenes
-│   ├── storage/    # configuración TOML
+│   ├── core/       # hashing, recorrido, metadatos e indexado
+│   ├── indexer/    # CLI foto-index y python -m foto.indexer
+│   ├── storage/    # SQLite, exiftool, lock y configuración TOML
 │   └── ui/         # aplicación real y prototipo de UI
-├── tests/
+├── tests/          # suite pytest sin Qt
 └── README.md
 ```
 
@@ -116,13 +132,17 @@ foto/
 
 - `docs/diseno-ui.md` — reglas de interfaz: teclado primero, atajos de vim,
   composición visual y accesibilidad.
-- `docs/adr/` — decisiones de arquitectura, empezando por la configuración
-  (`0001-configuracion.md`).
+- `docs/adr/` — decisiones de arquitectura:
+  - `0001-configuracion.md` — configuración global y de la biblioteca.
+  - `0002-indexado.md` — identidad por hash, catálogo SQLite e indexado
+    incremental.
+  - `0003-consumo-del-indice-desde-el-visor.md` — el visor consume el índice,
+    búsquedas/ordenaciones contra el catálogo y requisito del índice existente.
 
 ## Prototipo
 
 El repositorio ya contiene una UI ejecutable con datos reales de una carpeta,
-pero sin catálogo ni metadatos:
+pero todavía no consume el catálogo ni los metadatos indexados:
 
 ```sh
 uv sync
@@ -133,15 +153,115 @@ PYTHONPATH=src .venv/bin/python -m foto.ui.prototype
 `foto` abre la última biblioteca configurada o pide una carpeta. El prototipo
 usa fotos falsas para revisar la interfaz sin tocar discos.
 
+## Indexador
+
+`foto-index` es un proceso de una sola pasada, independiente de Qt, que recorre
+la biblioteca y mantiene `<fototeca>/.foto/catalog.sqlite`. Identifica cada foto
+por el SHA-256 de sus bytes: dos copias idénticas son una foto con dos
+ubicaciones. No modifica, mueve ni borra originales; solo escribe dentro de
+`.foto/`.
+
+```sh
+uv sync
+uv run foto-index --library ~/Fotos
+uv run foto-index --library ~/Fotos --json
+uv run foto-index --library ~/Fotos --dry-run --verbose
+uv run foto-index --library ~/Fotos --prune --prune-after 30
+uv run foto-index --library ~/Fotos --full
+```
+
+Opciones principales:
+
+| Opción | Comportamiento |
+| --- | --- |
+| `--library PATH` | Raíz de la biblioteca; máxima precedencia. |
+| `--config PATH` | Fichero de configuración global. |
+| `--full` | Rehashea y reextrae todo, ignorando las firmas de `stat`. |
+| `--prune` | Borra ubicaciones `missing` antiguas y fotos huérfanas del catálogo. |
+| `--prune-after DAYS` | Antigüedad mínima para `--prune`; 30 por defecto. |
+| `--dry-run` | No escribe nada; simula sobre una copia en memoria. |
+| `--json` | Resumen JSON en stdout; los logs van a stderr. |
+| `--quiet` / `--verbose` | Menos o más detalle en los logs. |
+
+El resumen de texto distingue lo que se ha procesado de lo que ha cambiado:
+
+```text
+Indexado full: ok
+  escaneados=6 sin_cambios=6 nuevas=0 modificadas=0 ausentes=0
+  fotos=6 ubicaciones=6 duplicadas=0 metadatos_extraidos=6 pendientes_metadatos=0
+  ficheros_hasheados=6 bytes_hasheados=5098349 errores=0 duración=0.319s
+```
+
+`sin_cambios` significa que el contenido no cambió; `ficheros_hasheados` confirma
+que `--full` leyó esos bytes y `metadatos_extraidos` cuenta las fotos cuyos
+metadatos se han vuelto a escribir en esta pasada. Con `--json` aparecen como
+`hashed_files` y `metadata_extracted`.
+
+La biblioteca se resuelve con la precedencia del ADR 0001: `--library` →
+`FOTO_LIBRARY` → `[library].path` de `config.toml`. El fichero de configuración,
+con `--config` → `FOTO_CONFIG` → `platformdirs`.
+
+Códigos de salida: `0` éxito, `1` error no fatal o recorrido parcial, `2`
+configuración/raíz/esquema inválidos, `3` otro indexador tiene el lock y `130`
+interrupción con `SIGINT`.
+
+Si `exiftool` no está instalado, el indexado de hashes y ubicaciones funciona
+igual y los metadatos quedan `pending`; se completan en la siguiente pasada
+cuando esté disponible.
+
+### Ejecución desatendida
+
+Cron:
+
+```cron
+0 3 * * * cd /ruta/al/repo && .venv/bin/foto-index --library "$HOME/Fotos" --quiet >> "$HOME/.local/state/foto-index.log" 2>&1
+```
+
+`systemd` de usuario, `~/.config/systemd/user/foto-index.service`:
+
+```ini
+[Unit]
+Description=Indexa la fototeca con foto-index
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/wrk/foto/.venv/bin/foto-index --library %h/Fotos --quiet
+```
+
+`~/.config/systemd/user/foto-index.timer`:
+
+```ini
+[Unit]
+Description=Indexa la fototeca cada noche
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now foto-index.timer
+```
+
+### Desarrollo
+
+```sh
+uv run pytest
+uv run ruff check .
+```
+
 ## Requisitos
 
 - Python 3.12 o superior
 - PySide6
 - Linux con Wayland (probado en Omarchy/Hyprland) o macOS
-- `exiftool` para la fase de metadatos (aún no integrado)
-
-Las instrucciones completas de instalación y uso se ampliarán cuando el MVP
-indexe metadatos reales.
+- `exiftool` opcional: sin él se indexan hashes y ubicaciones, pero los
+  metadatos quedan pendientes
 
 ## Licencia
 
