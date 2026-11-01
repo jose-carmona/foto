@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QFont, QIcon, QImage, QImageReader, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from foto.core.library import CatalogPhoto, load_from_catalog
@@ -76,11 +76,27 @@ def _placeholder_icon(path: Path) -> QIcon:
 
 
 def _thumbnail_icon(path: Path) -> tuple[QIcon, str]:
-    pixmap = QPixmap(str(path))
-    if pixmap.isNull():
-        return _placeholder_icon(path), ""
+    reader = QImageReader(str(path))
+    reader.setAutoTransform(True)
+    image = reader.read()
+    if image.isNull():
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            return _placeholder_icon(path), ""
+        width, height = pixmap.width(), pixmap.height()
+        scaled = pixmap.scaled(
+            THUMB_W,
+            THUMB_H,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
+        x = max(0, (scaled.width() - THUMB_W) // 2)
+        y = max(0, (scaled.height() - THUMB_H) // 2)
+        cropped = scaled.copy(x, y, THUMB_W, THUMB_H)
+        return QIcon(cropped), f"{width} × {height} px"
 
-    width, height = pixmap.width(), pixmap.height()
+    width, height = image.width(), image.height()
+    pixmap = QPixmap.fromImage(image)
     scaled = pixmap.scaled(
         THUMB_W,
         THUMB_H,
