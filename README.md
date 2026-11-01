@@ -61,7 +61,8 @@ forma de publicación o compartición.
     - [x] Caché persistente en `<fototeca>/.foto/thumbs/`
     - [ ] Poda y límite de tamaño de la caché
   - [ ] Endurecer el rendimiento para bibliotecas grandes
-    - [ ] Sustituir `QListWidget` por modelo/vista y acotar la memoria de miniaturas
+    - [x] Ventana de miniaturas en memoria y navegación con índices O(1)
+    - [ ] Evaluar un modelo/vista si el número de elementos empieza a pesar
   - Rejilla, visor con la rejilla en una fila y panel de metadatos (prototipo).
     El visor consume el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md)):
     si no existe `catalog.sqlite`, avisa y se cierra. Las búsquedas y ordenaciones
@@ -111,7 +112,8 @@ forma de publicación o compartición.
   regenera.
 - **Miniaturas:** derivados JPEG en `<fototeca>/.foto/thumbs/`, nombrados por
   hash de contenido, tamaño y versión. También son reconstruibles y nunca
-  sustituyen al original; la caché todavía no se poda automáticamente.
+  sustituyen al original; la caché todavía no se poda automáticamente. En
+  memoria solo se conserva una ventana acotada alrededor de lo visible.
 - **Metadatos:** EXIF leídos con `exiftool` (opcional) y normalizados en SQLite.
   Los sidecars XMP serán la fuente de verdad de los metadatos de usuario en una
   fase posterior.

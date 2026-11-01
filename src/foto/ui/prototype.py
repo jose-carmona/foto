@@ -74,6 +74,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from foto.core.thumbnails import eviction_candidates
+
 PHOTO_ROLE = Qt.UserRole + 1
 RATING_ROLE = Qt.UserRole + 2
 FAVORITE_ROLE = Qt.UserRole + 3
@@ -94,6 +96,9 @@ STRIP_H = STRIP_THUMB_H + 2 * STRIP_VPAD + 8
 CANVAS_MARGIN = 8
 PAN_STEP = 48
 IMAGE_CACHE_SIZE = 3
+# Ventana de miniaturas en memoria. Cada icono de 400×247 ocupa ~395 KB; 160
+# cubre de sobra un viewport 4K y limita la memoria a unos 63 MB.
+THUMBNAIL_CACHE_SIZE = 160
 
 
 def ui_font(size: int, weight: QFont.Weight = QFont.Normal) -> QFont:
@@ -948,6 +953,13 @@ class PhotoGrid(QListWidget):
         self.setAccessibleName("rejilla de fotos")
         # En el visor, la rejilla se limita a una fila horizontal.
         self.row_mode = False
+        self._visible_rows: list[int] = []
+        self._visible_positions: dict[int, int] = {}
+
+    def set_visible_rows(self, rows: list[int]) -> None:
+        """Cachea las filas no ocultas para navegar sin recorrer toda la lista."""
+        self._visible_rows = rows
+        self._visible_positions = {row: index for index, row in enumerate(rows)}
 
     def retheme(self) -> None:
         palette = _app_palette()
@@ -957,20 +969,14 @@ class PhotoGrid(QListWidget):
         self.viewport().update()
 
     def move_selection(self, action: str) -> bool:
-        visible = [
-            row for row in range(self.count()) if not self.item(row).isHidden()
-        ]
-        if not visible:
+        if not self._visible_rows:
             return True
-        try:
-            position = visible.index(self.currentRow())
-        except ValueError:
-            position = 0
+        position = self._visible_positions.get(self.currentRow(), 0)
 
         if action == "home":
             target = 0
         elif action == "end":
-            target = len(visible) - 1
+            target = len(self._visible_rows) - 1
         else:
             columns = max(1, self.viewport().width() // ITEM_W)
             page_rows = max(1, self.viewport().height() // ITEM_H)
@@ -985,9 +991,9 @@ class PhotoGrid(QListWidget):
                 "halfdown": max(1, page // 2),
                 "halfup": -max(1, page // 2),
             }[action]
-            target = max(0, min(len(visible) - 1, position + step))
+            target = max(0, min(len(self._visible_rows) - 1, position + step))
 
-        self.setCurrentItem(self.item(visible[target]))
+        self.setCurrentRow(self._visible_rows[target])
         self.scrollToItem(self.currentItem(), QAbstractItemView.EnsureVisible)
         return target != position
 
@@ -1975,6 +1981,10 @@ class PrototypeWindow(QMainWindow):
         self._placeholder_icon = placeholder_icon
         self._thumbnail_loader = thumbnail_loader
         self._grid_items: dict[str, QListWidgetItem] = {}
+        self._thumbnail_order: list[str] = list(self.thumbnails)
+        self._visible_keys_cache: list[str] = []
+        self._visible_positions_by_key: dict[str, int] = {}
+        self._viewport_keys: set[str] = set()
         self._visible_timer = QTimer(self)
         self._visible_timer.setSingleShot(True)
         self._visible_timer.setInterval(60)
@@ -2140,6 +2150,7 @@ class PrototypeWindow(QMainWindow):
             item.setText("")
             self.grid.addItem(item)
             self._grid_items[photo.key] = item
+        self._refresh_visible_cache()
         self._rebuild_strip()
         self._schedule_visible_thumbnails()
 
@@ -2161,6 +2172,7 @@ class PrototypeWindow(QMainWindow):
         self.photos = {photo.key: photo for photo in photos}
         if thumbnails is not None:
             self.thumbnails = dict(thumbnails)
+            self._thumbnail_order = list(self.thumbnails)
         self.search_text = ""
         self._search_origin = None
         self.grid.blockSignals(True)
@@ -2168,12 +2180,7 @@ class PrototypeWindow(QMainWindow):
             self._populate_grid(photos)
             self.grid.setCurrentRow(-1)
 
-            target = None
-            for row in range(self.grid.count()):
-                item = self.grid.item(row)
-                if item.data(PHOTO_ROLE) == current_key:
-                    target = item
-                    break
+            target = self._grid_items.get(current_key) if current_key else None
             if target is None and self.grid.count():
                 target = self.grid.item(0)
             if target is not None:
@@ -2300,6 +2307,58 @@ class PrototypeWindow(QMainWindow):
     def _grid_item(self, key: str) -> QListWidgetItem | None:
         return self._grid_items.get(key)
 
+    def _refresh_visible_cache(self) -> None:
+        """Recalcula las fotos no ocultas y su posición para navegación O(1)."""
+        rows: list[int] = []
+        keys: list[str] = []
+        for row in range(self.grid.count()):
+            item = self.grid.item(row)
+            if item is None or item.isHidden():
+                continue
+            key = item.data(PHOTO_ROLE)
+            if not key:
+                continue
+            rows.append(row)
+            keys.append(str(key))
+        self.grid.set_visible_rows(rows)
+        self._visible_keys_cache = keys
+        self._visible_positions_by_key = {key: index for index, key in enumerate(keys)}
+
+    def _remember_thumbnail(self, key: str, icon: QIcon) -> None:
+        if key in self.thumbnails:
+            try:
+                self._thumbnail_order.remove(key)
+            except ValueError:
+                pass
+        self.thumbnails[key] = icon
+        self._thumbnail_order.append(key)
+        self._trim_thumbnails()
+
+    def _trim_thumbnails(self) -> None:
+        """Descarta las miniaturas más antiguas fuera del viewport actual."""
+        keep = set(self._viewport_keys)
+        photo = self._current_photo()
+        if photo is not None:
+            keep.add(photo.key)
+
+        evicted = eviction_candidates(
+            self._thumbnail_order,
+            keep,
+            THUMBNAIL_CACHE_SIZE,
+        )
+        if not evicted:
+            return
+
+        for key in evicted:
+            try:
+                self._thumbnail_order.remove(key)
+            except ValueError:
+                pass
+            self.thumbnails.pop(key, None)
+            item = self._grid_items.get(key)
+            if item is not None:
+                item.setIcon(self._placeholder_icon or QIcon())
+
     def _schedule_visible_thumbnails(self, *_args) -> None:
         if self._thumbnail_loader is None:
             return
@@ -2364,21 +2423,26 @@ class PrototypeWindow(QMainWindow):
     def _request_visible_thumbnails(self) -> None:
         if self._thumbnail_loader is None:
             return
+        keys = self._visible_photo_keys()
+        self._viewport_keys = set(keys)
         requests: list[tuple[str, Path, str | None]] = []
-        for key in self._visible_photo_keys():
+        for key in keys:
             photo = self.photos.get(key)
             if photo is None or photo.path is None or key in self.thumbnails:
                 continue
             requests.append((key, photo.path, photo.photo_hash))
         self._thumbnail_loader(requests)
+        self._trim_thumbnails()
 
     def set_thumbnail(self, key: str, icon: QIcon) -> None:
         """Actualiza una miniatura cuando termina su carga en segundo plano."""
         if icon.isNull() or key not in self.photos:
             return
-        self.thumbnails[key] = icon
+        self._remember_thumbnail(key, icon)
         item = self._grid_items.get(key)
-        if item is not None:
+        # Si la ventana lo descartó por no estar visible, no dejamos el icono
+        # pegado al item: se volverá a pedir al acercarse.
+        if item is not None and key in self.thumbnails:
             item.setIcon(icon)
             self.grid.viewport().update()
         if not self.grid_row:
@@ -2397,12 +2461,10 @@ class PrototypeWindow(QMainWindow):
         if self.grid_row:
             return
         items: list[StripItem] = []
-        for row in range(self.grid.count()):
-            item = self.grid.item(row)
-            if item.isHidden():
-                continue
-            photo = self.photos.get(item.data(PHOTO_ROLE))
-            if photo is None:
+        for key in self._visible_keys_cache:
+            item = self._grid_items.get(key)
+            photo = self.photos.get(key)
+            if item is None or photo is None:
                 continue
             items.append(
                 StripItem(
@@ -2417,14 +2479,7 @@ class PrototypeWindow(QMainWindow):
         self.viewer.set_items(items, current.key if current else None)
 
     def _visible_keys(self) -> list[str]:
-        keys: list[str] = []
-        for row in range(self.grid.count()):
-            item = self.grid.item(row)
-            if not item.isHidden():
-                key = item.data(PHOTO_ROLE)
-                if key:
-                    keys.append(str(key))
-        return keys
+        return self._visible_keys_cache
 
     def _select_key(self, key: str) -> None:
         item = self._grid_item(key)
@@ -2441,7 +2496,11 @@ class PrototypeWindow(QMainWindow):
         if not keys:
             return
         photo = self._current_photo()
-        index = keys.index(photo.key) if photo is not None and photo.key in keys else 0
+        index = (
+            self._visible_positions_by_key.get(photo.key, 0)
+            if photo is not None
+            else 0
+        )
         target = max(0, min(len(keys) - 1, index + delta))
         if target == index:
             self.status.show_message("fin de la lista", 1500)
@@ -2551,6 +2610,7 @@ class PrototypeWindow(QMainWindow):
                 else:
                     self.viewer.select_key(photo.key)
                 self._show_viewer_photo(photo)
+        self._trim_thumbnails()
 
     def _fallback_pixmap(self, photo: Photo) -> QPixmap | None:
         icon = self.thumbnails.get(photo.key)
@@ -2637,9 +2697,9 @@ class PrototypeWindow(QMainWindow):
 
     def _prefetch_neighbors(self, photo: Photo) -> None:
         keys = self._visible_keys()
-        if photo.key not in keys:
+        index = self._visible_positions_by_key.get(photo.key)
+        if index is None:
             return
-        index = keys.index(photo.key)
         for offset in (-1, 1):
             neighbor_index = index + offset
             if 0 <= neighbor_index < len(keys):
@@ -2648,9 +2708,7 @@ class PrototypeWindow(QMainWindow):
                     self._ensure_image_loaded(neighbor)
 
     def _visible_count(self) -> int:
-        return sum(
-            1 for row in range(self.grid.count()) if not self.grid.item(row).isHidden()
-        )
+        return len(self._visible_keys_cache)
 
     def _position_empty_label(self) -> None:
         if not self.empty_label.isVisible():
@@ -2688,19 +2746,19 @@ class PrototypeWindow(QMainWindow):
 
     def _apply_filter(self, text: str) -> None:
         needle = text.strip().lower()
+        visible_items: list[QListWidgetItem] = []
         for row in range(self.grid.count()):
             item = self.grid.item(row)
             photo = self.photos.get(item.data(PHOTO_ROLE))
             visible = needle in photo.name.lower() if photo else True
             item.setHidden(not visible)
+            if visible:
+                visible_items.append(item)
+
+        self._refresh_visible_cache()
 
         current = self.grid.currentItem()
         if current is None or current.isHidden():
-            visible_items = [
-                self.grid.item(row)
-                for row in range(self.grid.count())
-                if not self.grid.item(row).isHidden()
-            ]
             if visible_items:
                 self.grid.setCurrentItem(visible_items[0])
             else:
@@ -2739,12 +2797,10 @@ class PrototypeWindow(QMainWindow):
         self._search_origin = None
         if not key:
             return
-        for row in range(self.grid.count()):
-            item = self.grid.item(row)
-            if item.data(PHOTO_ROLE) == key and not item.isHidden():
-                self.grid.setCurrentItem(item)
-                self.grid.scrollToItem(item, QAbstractItemView.EnsureVisible)
-                return
+        item = self._grid_items.get(key)
+        if item is not None and not item.isHidden():
+            self.grid.setCurrentItem(item)
+            self.grid.scrollToItem(item, QAbstractItemView.EnsureVisible)
 
     def _run_command(self, text: str) -> None:
         command = text.strip()
@@ -2810,11 +2866,9 @@ class PrototypeWindow(QMainWindow):
             self.grid.addItem(item)
 
         self.grid.setCurrentRow(-1)
-        for row in range(self.grid.count()):
-            item = self.grid.item(row)
-            if item.data(PHOTO_ROLE) == current_key:
-                self.grid.setCurrentItem(item)
-                break
+        target = self._grid_items.get(current_key) if current_key else None
+        if target is not None:
+            self.grid.setCurrentItem(target)
         self.grid.blockSignals(False)
 
         self._apply_filter(self.search_text)

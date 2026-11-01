@@ -7,6 +7,7 @@ import pytest
 from foto.core.thumbnails import (
     cache_filename,
     cover_size,
+    eviction_candidates,
     reader_scaled_size,
 )
 
@@ -80,3 +81,27 @@ def test_cache_filename_rejects_invalid_values() -> None:
         cache_filename(photo_hash, 400, 0)
     with pytest.raises(ValueError):
         cache_filename(photo_hash, 400, 247, version=0)
+
+
+def test_eviction_candidates_under_limit_keeps_everything() -> None:
+    assert eviction_candidates(["a", "b"], set(), 2) == []
+    assert eviction_candidates(["a", "b"], set(), 5) == []
+
+
+def test_eviction_candidates_removes_oldest_first() -> None:
+    assert eviction_candidates(["a", "b", "c", "d"], set(), 2) == ["a", "b"]
+
+
+def test_eviction_candidates_respects_kept_keys() -> None:
+    # Lo visible y la foto actual no se descartan aunque sean las más antiguas.
+    assert eviction_candidates(["a", "b", "c", "d"], {"a", "b"}, 2) == ["c", "d"]
+    assert eviction_candidates(["a", "b", "c"], {"a"}, 2) == ["b"]
+
+
+def test_eviction_candidates_may_exceed_limit_with_only_kept_keys() -> None:
+    assert eviction_candidates(["a", "b"], {"a", "b"}, 0) == []
+
+
+def test_eviction_candidates_rejects_negative_limit() -> None:
+    with pytest.raises(ValueError):
+        eviction_candidates(["a"], set(), -1)

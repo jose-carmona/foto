@@ -419,6 +419,10 @@ Requisitos:
   `<fototeca>/.foto/thumbs/` solo obliga a regenerarla. Todavía no se poda ni
   tiene un límite de tamaño, así que las fotos borradas o cambiadas pueden dejar
   ficheros huérfanos.
+- En memoria se conserva una ventana acotada de miniaturas (160 iconos). Al
+  alejarse, las más antiguas se descartan y se vuelven a pedir desde la caché en
+  disco si hace falta. La navegación usa índices de las filas visibles en vez de
+  recorrer toda la rejilla.
 
 Presupuestos orientativos en una biblioteca local:
 
@@ -479,6 +483,6 @@ Una pantalla o funcionalidad de UI no se considera terminada hasta que:
   múltiple de la fase 2.
 - Validar RAW/HEIC mediante miniaturas embebidas y medir la memoria de la caché
   de originales; si hace falta, cargar una versión intermedia para el visor.
-- Sustituir `QListWidget` por un modelo/vista y acotar la memoria de miniaturas
-  (solo las visibles y un margen) cuando la biblioteca empiece a ser grande.
+- Evaluar un modelo/vista si el número de `QListWidgetItem` empieza a pesar; la
+  memoria de miniaturas y la navegación ya están acotadas.
 - Podar las miniaturas huérfanas y medir el coste de la caché persistente en disco.

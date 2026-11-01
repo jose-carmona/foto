@@ -28,7 +28,8 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   una decodificación ya escalada, y se guardan en una caché persistente en
   `<fototeca>/.foto/thumbs/` indexada por hash de contenido, tamaño y versión.
   La caché es un derivado reconstruible; todavía no tiene poda ni límite de
-  tamaño. XMP no está implementado.
+  tamaño. En memoria solo se mantiene una ventana acotada de miniaturas y la
+  navegación usa índices de las filas visibles. XMP no está implementado.
 - `tests/` contiene una suite pytest sin Qt ni pantalla. `pytest` y `ruff` están
   en el grupo `dev` de `pyproject.toml`.
 - El MVP es **visualización y metadatos**, nada más. No adelantes edición,

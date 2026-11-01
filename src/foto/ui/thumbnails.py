@@ -213,7 +213,6 @@ class ThumbnailService(QObject):
         self._pending: dict[str, tuple[Path, str | None]] = {}
         self._order: deque[str] = deque()
         self._running: set[str] = set()
-        self._done: set[str] = set()
         self._failed: set[str] = set()
         self._generation = 0
 
@@ -230,7 +229,7 @@ class ThumbnailService(QObject):
         self._pending.clear()
         self._order.clear()
         for key, path, photo_hash in items:
-            if key in self._done or key in self._failed or key in self._running:
+            if key in self._failed or key in self._running:
                 continue
             if key in self._pending:
                 continue
@@ -244,7 +243,6 @@ class ThumbnailService(QObject):
         self._pending.clear()
         self._order.clear()
         self._running.clear()
-        self._done.clear()
         self._failed.clear()
         self._pool.clear()
 
@@ -258,7 +256,7 @@ class ThumbnailService(QObject):
         while self._order and len(self._running) < MAX_ACTIVE_THUMBNAILS:
             key = self._order.popleft()
             entry = self._pending.pop(key, None)
-            if entry is None or key in self._done or key in self._failed:
+            if entry is None or key in self._failed:
                 continue
             if key in self._running:
                 continue
@@ -280,7 +278,6 @@ class ThumbnailService(QObject):
         if generation != self._generation:
             return
         self._running.discard(key)
-        self._done.add(key)
         self.loaded.emit(key, image)
         self._dispatch()
 

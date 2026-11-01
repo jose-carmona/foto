@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import string
+from collections.abc import Sequence
 
 CACHE_VERSION = 1
 
@@ -80,3 +81,32 @@ def cache_filename(
     if version < 1:
         raise ValueError("La versión de caché debe ser positiva")
     return f"{_cache_key(photo_hash)}-{target_width}x{target_height}-v{version}.jpg"
+
+
+def eviction_candidates(
+    order: Sequence[str],
+    keep: set[str],
+    limit: int,
+) -> list[str]:
+    """Claves a descartar, de la más antigua a la más reciente.
+
+    ``order`` va de menos a más reciente y no debe contener duplicados. Las
+    claves de ``keep`` (lo visible y la selección actual) nunca se descartan,
+    aunque eso deje la ventana temporalmente por encima del límite.
+    """
+    if limit < 0:
+        raise ValueError("El límite de caché no puede ser negativo")
+
+    excess = len(order) - limit
+    if excess <= 0:
+        return []
+
+    candidates: list[str] = []
+    for key in order:
+        if excess <= 0:
+            break
+        if key in keep:
+            continue
+        candidates.append(key)
+        excess -= 1
+    return candidates
