@@ -23,9 +23,10 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   `<fototeca>/.foto/catalog.sqlite` (ubicaciones `present`). Si no existe el
   catálogo, la app avisa y se cierra. Las búsquedas y ordenaciones se hacen
   contra el índice. `foto-index` es independiente (CLI/cron/systemd).
-- La imagen grande del visor se decodifica en segundo plano; la generación
-  inicial de miniaturas de la rejilla sigue en el hilo de UI. La caché de
-  miniaturas y XMP no están implementados.
+- La imagen grande del visor se decodifica en segundo plano. Las miniaturas
+  visibles de la rejilla se generan en un pool de trabajo, pidiendo al lector
+  una decodificación ya escalada. La caché persistente de miniaturas y XMP no
+  están implementados.
 - `tests/` contiene una suite pytest sin Qt ni pantalla. `pytest` y `ruff` están
   en el grupo `dev` de `pyproject.toml`.
 - El MVP es **visualización y metadatos**, nada más. No adelantes edición,

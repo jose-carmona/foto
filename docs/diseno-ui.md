@@ -409,8 +409,9 @@ Requisitos:
   y siguiente cuando no hay trabajo pendiente.
 - Al cambiar de foto, un resultado antiguo no reemplaza a la foto actual; si
   llega, se guarda en caché o se descarta.
-- La generación inicial de miniaturas de la rejilla todavía es síncrona al abrir
-  la carpeta; es deuda conocida de rendimiento.
+- Las miniaturas de la rejilla se generan en segundo plano, solo para la zona
+  visible, y se piden al lector ya escaladas. La caché persistente sigue
+  pendiente y es la deuda de rendimiento actual.
 - Un cambio de foto en caché se percibe inmediato; si aún no está, se mantiene
   la miniatura, nunca un hueco blanco.
 
@@ -466,4 +467,4 @@ Una pantalla o funcionalidad de UI no se considera terminada hasta que:
   múltiple de la fase 2.
 - Validar RAW/HEIC mediante miniaturas embebidas y medir la memoria de la caché
   de originales; si hace falta, cargar una versión intermedia para el visor.
-- Mover la generación inicial de miniaturas de la rejilla fuera del hilo de UI.
+- Añadir la caché persistente de miniaturas y medir su coste en disco.

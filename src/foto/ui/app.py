@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QIcon, QImage, QImageReader, QPainter, QPalette, QPixmap
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QFont, QIcon, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from foto.core.library import CatalogPhoto, load_from_catalog
@@ -20,6 +21,9 @@ from foto.ui.prototype import (
     apply_theme,
     ui_font,
 )
+from foto.ui.thumbnails import ThumbnailService
+
+logger = logging.getLogger(__name__)
 
 _RAW_EXTENSIONS = {".arw", ".cr2", ".dng", ".nef", ".raf"}
 
@@ -75,40 +79,6 @@ def _placeholder_icon(path: Path) -> QIcon:
     return QIcon(pixmap)
 
 
-def _thumbnail_icon(path: Path) -> tuple[QIcon, str]:
-    reader = QImageReader(str(path))
-    reader.setAutoTransform(True)
-    image = reader.read()
-    if image.isNull():
-        pixmap = QPixmap(str(path))
-        if pixmap.isNull():
-            return _placeholder_icon(path), ""
-        width, height = pixmap.width(), pixmap.height()
-        scaled = pixmap.scaled(
-            THUMB_W,
-            THUMB_H,
-            Qt.KeepAspectRatioByExpanding,
-            Qt.SmoothTransformation,
-        )
-        x = max(0, (scaled.width() - THUMB_W) // 2)
-        y = max(0, (scaled.height() - THUMB_H) // 2)
-        cropped = scaled.copy(x, y, THUMB_W, THUMB_H)
-        return QIcon(cropped), f"{width} × {height} px"
-
-    width, height = image.width(), image.height()
-    pixmap = QPixmap.fromImage(image)
-    scaled = pixmap.scaled(
-        THUMB_W,
-        THUMB_H,
-        Qt.KeepAspectRatioByExpanding,
-        Qt.SmoothTransformation,
-    )
-    x = max(0, (scaled.width() - THUMB_W) // 2)
-    y = max(0, (scaled.height() - THUMB_H) // 2)
-    cropped = scaled.copy(x, y, THUMB_W, THUMB_H)
-    return QIcon(cropped), f"{width} × {height} px"
-
-
 def _to_ui_photo(photo: CatalogPhoto) -> Photo:
     return Photo(
         name=photo.name,
@@ -132,7 +102,7 @@ def _to_ui_photo(photo: CatalogPhoto) -> Photo:
     )
 
 
-def load_photos(library_path: Path) -> tuple[list[Photo], dict[str, QIcon]]:
+def load_photos(library_path: Path) -> list[Photo]:
     """Carga las fotos desde el catálogo SQLite. Requiere un índice existente."""
     catalog_path = library_path / ".foto" / "catalog.sqlite"
     if not catalog_path.exists():
@@ -151,15 +121,7 @@ def load_photos(library_path: Path) -> tuple[list[Photo], dict[str, QIcon]]:
     finally:
         catalog.close()
 
-    photos = [_to_ui_photo(photo) for photo in catalog_photos]
-    thumbnails: dict[str, QIcon] = {}
-    for photo in photos:
-        if photo.path is not None:
-            icon, _dimensions = _thumbnail_icon(photo.path)
-        else:
-            icon = _placeholder_icon(Path(photo.name))
-        thumbnails[photo.key] = icon
-    return photos, thumbnails
+    return [_to_ui_photo(photo) for photo in catalog_photos]
 
 
 class MainWindow(PrototypeWindow):
@@ -167,34 +129,55 @@ class MainWindow(PrototypeWindow):
         self.library_path = library_path
         self.config = config
         try:
-            photos, thumbnails = load_photos(library_path)
+            photos = load_photos(library_path)
         except Exception as exc:
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)
+
+        service = ThumbnailService(QSize(THUMB_W, THUMB_H))
         super().__init__(
             photos,
-            thumbnails=thumbnails,
+            thumbnails={},
+            placeholder_icon=_placeholder_icon(Path()),
+            thumbnail_loader=service.load_visible,
             title=self._window_title(),
             initial_panel_visible=False,
             on_open=self._open_library,
             on_rescan=self._rescan,
             grid_row=True,
         )
+        self._thumbnail_service = service
+        service.setParent(self)
+        service.loaded.connect(self._on_thumbnail_loaded)
+        service.failed.connect(self._on_thumbnail_failed)
 
     def _window_title(self) -> str:
         return f"foto — {self.library_path.name}"
+
+    def closeEvent(self, event):
+        self._thumbnail_service.shutdown()
+        super().closeEvent(event)
+
+    def _on_thumbnail_loaded(self, key: str, image: QImage) -> None:
+        pixmap = QPixmap.fromImage(image)
+        if not pixmap.isNull():
+            self.set_thumbnail(key, QIcon(pixmap))
+
+    def _on_thumbnail_failed(self, key: str, message: str) -> None:
+        logger.debug("Miniatura fallida para %s: %s", key, message)
 
     def _reload_library(self) -> bool:
         if not self.library_path.is_dir():
             self.status.show_error("la fototeca no está disponible")
             return False
         try:
-            photos, thumbnails = load_photos(self.library_path)
+            photos = load_photos(self.library_path)
         except Exception as exc:
             self.status.show_error(str(exc))
             return False
+        self._thumbnail_service.cancel_all()
         self.setWindowTitle(self._window_title())
-        self.set_photos(photos, thumbnails)
+        self.set_photos(photos, thumbnails={})
         return True
 
     def _open_library(self, argument: str) -> None:

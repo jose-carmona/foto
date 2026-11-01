@@ -845,6 +845,13 @@ class Filmstrip(QListWidget):
         item.setData(Qt.AccessibleTextRole, accessible_name)
         self.viewport().update()
 
+    def update_icon(self, key: str, icon: QIcon) -> None:
+        item = self._item_for_key(key)
+        if item is None:
+            return
+        item.setIcon(icon)
+        self.viewport().update()
+
     def _on_current_changed(self, current, previous) -> None:
         if self._syncing or current is None:
             return
@@ -917,6 +924,9 @@ class PhotoViewer(QWidget):
         self, key: str, rating: int, favorite: bool, accessible_name: str
     ) -> None:
         self.strip.update_item(key, rating, favorite, accessible_name)
+
+    def update_icon(self, key: str, icon: QIcon) -> None:
+        self.strip.update_icon(key, icon)
 
     def focus_canvas(self) -> None:
         self.canvas.setFocus()
@@ -1925,6 +1935,8 @@ class PrototypeWindow(QMainWindow):
         photos: list[Photo],
         *,
         thumbnails: dict[str, QIcon] | None = None,
+        placeholder_icon: QIcon | None = None,
+        thumbnail_loader: Callable[[list[tuple[str, Path]]], None] | None = None,
         title: str | None = None,
         initial_panel_visible: bool = True,
         on_open: Callable[[str], None] | None = None,
@@ -1957,6 +1969,13 @@ class PrototypeWindow(QMainWindow):
         self._g_timer.timeout.connect(self._clear_g_pending)
         self._loader_pool = QThreadPool(self)
         self._loader_pool.setMaxThreadCount(2)
+        self._placeholder_icon = placeholder_icon
+        self._thumbnail_loader = thumbnail_loader
+        self._grid_items: dict[str, QListWidgetItem] = {}
+        self._visible_timer = QTimer(self)
+        self._visible_timer.setSingleShot(True)
+        self._visible_timer.setInterval(60)
+        self._visible_timer.timeout.connect(self._request_visible_thumbnails)
 
         self.setWindowTitle(title or "foto — prototipo de UI")
         self.resize(1280, 960)
@@ -2032,6 +2051,10 @@ class PrototypeWindow(QMainWindow):
         self.grid.itemDoubleClicked.connect(self._on_grid_double_clicked)
         self.grid.action_requested.connect(self._on_action)
         self.grid.focus_panel.connect(self._focus_panel)
+        self.grid.verticalScrollBar().valueChanged.connect(self._schedule_visible_thumbnails)
+        self.grid.horizontalScrollBar().valueChanged.connect(
+            self._schedule_visible_thumbnails
+        )
         self.viewer.action_requested.connect(self._on_viewer_action)
         self.viewer.photo_selected.connect(self._on_strip_photo_selected)
         self.panel.scroll.focus_back.connect(self._focus_current_view)
@@ -2096,11 +2119,15 @@ class PrototypeWindow(QMainWindow):
 
     def _populate_grid(self, photos: list[Photo]) -> None:
         self.grid.clear()
+        self._grid_items.clear()
         for index, photo in enumerate(photos):
             item = QListWidgetItem()
             icon = self.thumbnails.get(photo.key)
             if icon is None or icon.isNull():
-                icon = make_thumbnail(index)
+                if self._placeholder_icon is not None:
+                    icon = self._placeholder_icon
+                else:
+                    icon = make_thumbnail(index)
             item.setIcon(icon)
             item.setData(PHOTO_ROLE, photo.key)
             item.setData(RATING_ROLE, photo.rating)
@@ -2109,7 +2136,9 @@ class PrototypeWindow(QMainWindow):
             item.setSizeHint(QSize(ITEM_W, ITEM_H))
             item.setText("")
             self.grid.addItem(item)
+            self._grid_items[photo.key] = item
         self._rebuild_strip()
+        self._schedule_visible_thumbnails()
 
     def set_photos(
         self,
@@ -2211,6 +2240,7 @@ class PrototypeWindow(QMainWindow):
         if self.content_blocker.isVisible():
             self.content_blocker.setGeometry(0, 0, width, height)
             self.content_blocker.raise_()
+        self._schedule_visible_thumbnails()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2265,11 +2295,100 @@ class PrototypeWindow(QMainWindow):
         return self.photos.get(item.data(PHOTO_ROLE))
 
     def _grid_item(self, key: str) -> QListWidgetItem | None:
-        for row in range(self.grid.count()):
+        return self._grid_items.get(key)
+
+    def _schedule_visible_thumbnails(self, *_args) -> None:
+        if self._thumbnail_loader is None:
+            return
+        self._visible_timer.start()
+
+    def _visible_photo_keys(self) -> list[str]:
+        if self.grid.count() == 0:
+            return []
+        viewport = self.grid.viewport().rect()
+        first = self.grid.indexAt(QPoint(viewport.left() + 1, viewport.top() + 1))
+        if not first.isValid():
+            first = self.grid.indexAt(QPoint(viewport.center().x(), viewport.top() + 1))
+        if not first.isValid():
+            current = self._current_photo()
+            return [current.key] if current is not None else []
+
+        # ``indexAt`` devuelve un elemento concreto de la fila visual; retrocede
+        # hasta la primera celda de esa fila para no perder las de su izquierda.
+        start = first.row()
+        if self.grid.row_mode:
+            # En el visor la rejilla es una sola fila horizontal: avanza hasta
+            # salir por la derecha en lugar de buscar el borde inferior.
+            keys: list[str] = []
+            row = start
+            while row < self.grid.count():
+                item = self.grid.item(row)
+                if item is None:
+                    break
+                rect = self.grid.visualItemRect(item)
+                if rect.left() > viewport.right():
+                    break
+                if not item.isHidden() and rect.right() >= viewport.left():
+                    key = item.data(PHOTO_ROLE)
+                    if key:
+                        keys.append(str(key))
+                row += 1
+            return keys
+
+        first_top = self.grid.visualItemRect(self.grid.item(start)).top()
+        while start > 0:
+            previous = self.grid.item(start - 1)
+            if previous is None or self.grid.visualItemRect(previous).top() != first_top:
+                break
+            start -= 1
+
+        keys = []
+        row = start
+        while row < self.grid.count():
             item = self.grid.item(row)
-            if item.data(PHOTO_ROLE) == key:
-                return item
-        return None
+            if item is None:
+                break
+            rect = self.grid.visualItemRect(item)
+            if rect.top() > viewport.bottom():
+                break
+            if not item.isHidden() and rect.bottom() >= viewport.top():
+                key = item.data(PHOTO_ROLE)
+                if key:
+                    keys.append(str(key))
+            row += 1
+        return keys
+
+    def _request_visible_thumbnails(self) -> None:
+        if self._thumbnail_loader is None:
+            return
+        requests: list[tuple[str, Path]] = []
+        for key in self._visible_photo_keys():
+            photo = self.photos.get(key)
+            if photo is None or photo.path is None or key in self.thumbnails:
+                continue
+            requests.append((key, photo.path))
+        self._thumbnail_loader(requests)
+
+    def set_thumbnail(self, key: str, icon: QIcon) -> None:
+        """Actualiza una miniatura cuando termina su carga en segundo plano."""
+        if icon.isNull() or key not in self.photos:
+            return
+        self.thumbnails[key] = icon
+        item = self._grid_items.get(key)
+        if item is not None:
+            item.setIcon(icon)
+            self.grid.viewport().update()
+        if not self.grid_row:
+            self.viewer.update_icon(key, icon)
+        if (
+            self._viewer_visible
+            and self._displayed_key == key
+            and self._pending_image_key == key
+        ):
+            self.viewer.canvas.set_image(
+                icon.pixmap(QSize(THUMB_W, THUMB_H)),
+                preview=True,
+            )
 
     def _rebuild_strip(self) -> None:
         if self.grid_row:
@@ -2594,6 +2713,7 @@ class PrototypeWindow(QMainWindow):
         canonical = photo.canonical_rel_path if photo else None
         self.status.set_counts(self._visible_count(), len(self.photos), filename, canonical)
         self._update_empty_state()
+        self._schedule_visible_thumbnails()
 
     def _commit_search(self, text: str) -> None:
         self.search_text = text.strip()

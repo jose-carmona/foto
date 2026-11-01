@@ -11,8 +11,7 @@ sin conexión.
 > abre una carpeta, muestra la rejilla, el visor con la rejilla en una fila y el
 > panel de metadatos. `foto-index` recorre la biblioteca, identifica las fotos
 > por el hash de su contenido y mantiene un catálogo SQLite incremental. Faltan
-> la integración del visor con el catálogo, la caché de miniaturas y la
-> lectura/escritura de XMP.
+> la caché de miniaturas y la lectura/escritura de XMP.
 
 ## Objetivo
 
@@ -56,6 +55,8 @@ forma de publicación o compartición.
   - [x] Indexado incremental de carpetas con catálogo SQLite, hashes de
     contenido y metadatos EXIF normalizados
   - [ ] Generación y caché de miniaturas desde el catálogo
+    - [x] Generación asíncrona de las miniaturas visibles y decodificación escalada
+    - [ ] Caché persistente en `<fototeca>/.foto/thumbs/`
   - Rejilla, visor con la rejilla en una fila y panel de metadatos (prototipo).
     El visor consume el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md)):
     si no existe `catalog.sqlite`, avisa y se cierra. Las búsquedas y ordenaciones
