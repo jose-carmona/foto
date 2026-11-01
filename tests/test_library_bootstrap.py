@@ -7,7 +7,7 @@ import uuid
 import pytest
 
 from foto.core.errors import LibraryError
-from foto.storage.library import LIBRARY_VERSION, ensure_library, load_library
+from foto.storage.library import LIBRARY_VERSION, ensure_library, load_library, thumbs_dir
 
 
 def test_bootstrap_creates_uuid_and_version_and_is_idempotent(tmp_path):
@@ -37,6 +37,12 @@ def test_bootstrap_dry_run_does_not_create_anything(tmp_path):
     assert result.would_create is True
     assert result.created is False
     assert not (root / ".foto").exists()
+
+
+def test_thumbs_dir_lives_inside_foto_dir(tmp_path):
+    root = tmp_path / "biblioteca"
+
+    assert thumbs_dir(root) == root / ".foto" / "thumbs"
 
 
 def test_bootstrap_rejects_missing_root(tmp_path):

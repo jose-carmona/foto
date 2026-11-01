@@ -21,6 +21,7 @@ from foto.core.errors import LibraryError
 LIBRARY_VERSION = 1
 FOTO_DIR_NAME = ".foto"
 LIBRARY_FILE_NAME = "library.toml"
+THUMBS_DIR_NAME = "thumbs"
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,11 @@ def foto_dir(root: Path) -> Path:
 def library_file(root: Path) -> Path:
     """Ruta del descriptor de la biblioteca."""
     return foto_dir(root) / LIBRARY_FILE_NAME
+
+
+def thumbs_dir(root: Path) -> Path:
+    """Directorio de la caché persistente de miniaturas."""
+    return foto_dir(root) / THUMBS_DIR_NAME
 
 
 def load_library(root: Path) -> LibraryConfig:

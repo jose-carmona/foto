@@ -263,6 +263,7 @@ class Photo:
     path: Path | None = None
     canonical_rel_path: str | None = None
     other_locations: tuple[str, ...] = ()
+    photo_hash: str | None = None
 
     @property
     def key(self) -> str:
@@ -1936,7 +1937,9 @@ class PrototypeWindow(QMainWindow):
         *,
         thumbnails: dict[str, QIcon] | None = None,
         placeholder_icon: QIcon | None = None,
-        thumbnail_loader: Callable[[list[tuple[str, Path]]], None] | None = None,
+        thumbnail_loader: Callable[
+            [list[tuple[str, Path, str | None]]], None
+        ] | None = None,
         title: str | None = None,
         initial_panel_visible: bool = True,
         on_open: Callable[[str], None] | None = None,
@@ -2361,12 +2364,12 @@ class PrototypeWindow(QMainWindow):
     def _request_visible_thumbnails(self) -> None:
         if self._thumbnail_loader is None:
             return
-        requests: list[tuple[str, Path]] = []
+        requests: list[tuple[str, Path, str | None]] = []
         for key in self._visible_photo_keys():
             photo = self.photos.get(key)
             if photo is None or photo.path is None or key in self.thumbnails:
                 continue
-            requests.append((key, photo.path))
+            requests.append((key, photo.path, photo.photo_hash))
         self._thumbnail_loader(requests)
 
     def set_thumbnail(self, key: str, icon: QIcon) -> None:

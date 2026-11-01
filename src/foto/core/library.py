@@ -34,6 +34,7 @@ class CatalogPhoto:
     path: Path | None = None
     canonical_rel_path: str | None = None
     other_locations: tuple[str, ...] = ()
+    photo_hash: str | None = None
 
     @property
     def key(self) -> str:
@@ -98,7 +99,7 @@ def _format_taken(captured_at: str | None) -> str:
     if not captured_at:
         return ""
     try:
-        dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(captured_at)
         return dt.strftime("%Y-%m-%d %H:%M")
     except (ValueError, AttributeError):
         return captured_at
@@ -145,7 +146,7 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
         grouped.setdefault(row["photo_hash"], []).append(row)
 
     photos: list[CatalogPhoto] = []
-    for _photo_hash, items in grouped.items():
+    for photo_hash, items in grouped.items():
         items_sorted = sorted(items, key=lambda r: str(r["rel_path"]))
         canonical = items_sorted[0]
         others = items_sorted[1:]
@@ -187,6 +188,7 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
             path=full_path,
             canonical_rel_path=str(canonical["rel_path"]),
             other_locations=tuple(str(r["rel_path"]) for r in others),
+            photo_hash=photo_hash,
         )
         photos.append(photo)
 

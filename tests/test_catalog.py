@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from foto.core.errors import CatalogVersionError
+from foto.core.library import load_from_catalog
 from foto.storage.catalog import SCHEMA_VERSION, Catalog
 
 NOW = "2026-10-30T12:00:00+00:00"
@@ -93,3 +94,28 @@ def test_dry_run_without_catalog_uses_memory_schema(tmp_path):
         catalog.close()
 
     assert not path.exists()
+
+
+def test_load_from_catalog_exposes_content_hash(tmp_path):
+    root, catalog = _open_catalog(tmp_path)
+    photo_hash = "sha256:" + "c" * 64
+    (root / "2024").mkdir()
+    (root / "2024" / "una.jpg").write_bytes(b"datos")
+    try:
+        catalog.insert_photo(photo_hash, ".jpg", "JPEG", NOW)
+        catalog.insert_location(
+            rel_path="2024/una.jpg",
+            photo_hash=photo_hash,
+            size=5,
+            mtime_ns=1,
+            inode=1,
+            device=1,
+            now=NOW,
+        )
+        catalog.commit()
+        photos = load_from_catalog(catalog, root)
+    finally:
+        catalog.close()
+
+    assert len(photos) == 1
+    assert photos[0].photo_hash == photo_hash

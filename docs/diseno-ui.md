@@ -410,10 +410,22 @@ Requisitos:
 - Al cambiar de foto, un resultado antiguo no reemplaza a la foto actual; si
   llega, se guarda en caché o se descarta.
 - Las miniaturas de la rejilla se generan en segundo plano, solo para la zona
-  visible, y se piden al lector ya escaladas. La caché persistente sigue
-  pendiente y es la deuda de rendimiento actual.
+  visible, y se piden al lector ya escaladas. Se guardan en una caché persistente
+  en `<fototeca>/.foto/thumbs/` indexada por hash de contenido, tamaño y versión;
+  las escrituras son atómicas y un fallo de caché no impide mostrarla.
 - Un cambio de foto en caché se percibe inmediato; si aún no está, se mantiene
   la miniatura, nunca un hueco blanco.
+- La caché de miniaturas es un derivado reconstruible: borrar
+  `<fototeca>/.foto/thumbs/` solo obliga a regenerarla. Todavía no se poda ni
+  tiene un límite de tamaño, así que las fotos borradas o cambiadas pueden dejar
+  ficheros huérfanos.
+
+Presupuestos orientativos en una biblioteca local:
+
+- primera ventana visible en menos de 500 ms;
+- primeras miniaturas visibles en menos de 300 ms;
+- arranque en caliente con caché en menos de 500 ms;
+- ningún bloqueo del hilo de UI superior a 50 ms.
 
 ## Accesibilidad
 
@@ -467,4 +479,6 @@ Una pantalla o funcionalidad de UI no se considera terminada hasta que:
   múltiple de la fase 2.
 - Validar RAW/HEIC mediante miniaturas embebidas y medir la memoria de la caché
   de originales; si hace falta, cargar una versión intermedia para el visor.
-- Añadir la caché persistente de miniaturas y medir su coste en disco.
+- Sustituir `QListWidget` por un modelo/vista y acotar la memoria de miniaturas
+  (solo las visibles y un margen) cuando la biblioteca empiece a ser grande.
+- Podar las miniaturas huérfanas y medir el coste de la caché persistente en disco.

@@ -25,8 +25,10 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   contra el índice. `foto-index` es independiente (CLI/cron/systemd).
 - La imagen grande del visor se decodifica en segundo plano. Las miniaturas
   visibles de la rejilla se generan en un pool de trabajo, pidiendo al lector
-  una decodificación ya escalada. La caché persistente de miniaturas y XMP no
-  están implementados.
+  una decodificación ya escalada, y se guardan en una caché persistente en
+  `<fototeca>/.foto/thumbs/` indexada por hash de contenido, tamaño y versión.
+  La caché es un derivado reconstruible; todavía no tiene poda ni límite de
+  tamaño. XMP no está implementado.
 - `tests/` contiene una suite pytest sin Qt ni pantalla. `pytest` y `ruff` están
   en el grupo `dev` de `pyproject.toml`.
 - El MVP es **visualización y metadatos**, nada más. No adelantes edición,
@@ -80,7 +82,7 @@ foto/
 │   ├── core/         # hashing, scanner, metadatos, indexado
 │   ├── indexer/      # CLI foto-index y __main__
 │   ├── storage/      # catálogo SQLite, exiftool, lock y config TOML
-│   └── ui/           # app real y prototipo de UI
+│   └── ui/           # app real, miniaturas en segundo plano y prototipo
 ├── tests/            # suite pytest sin Qt
 └── README.md
 ```
@@ -157,7 +159,8 @@ Decisión completa en `docs/adr/0002-indexado.md`. Resumen operativo:
 - Usa `tmp_path` y fixtures con ficheros de imagen mínimos en lugar de imágenes
   reales grandes.
 - La suite cubre hash e identidad, indexado incremental, borrados y `--prune`,
-  recorrido parcial, metadatos, catálogo, bootstrap, lock y CLI.
+  recorrido parcial, metadatos, catálogo, bootstrap, lock y CLI; la geometría y
+  los nombres de la caché de miniaturas se prueban sin Qt.
 - Todo bug corregido lleva su test de regresión.
 
 ## Flujo de trabajo

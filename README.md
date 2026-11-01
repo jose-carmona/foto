@@ -10,8 +10,9 @@ sin conexión.
 > **Estado:** prototipo funcional de la UI e indexador de la fototeca. `foto`
 > abre una carpeta, muestra la rejilla, el visor con la rejilla en una fila y el
 > panel de metadatos. `foto-index` recorre la biblioteca, identifica las fotos
-> por el hash de su contenido y mantiene un catálogo SQLite incremental. Faltan
-> la caché de miniaturas y la lectura/escritura de XMP.
+> por el hash de su contenido, mantiene un catálogo SQLite incremental y cachea
+> las miniaturas en `<fototeca>/.foto/thumbs/`. Falta la lectura/escritura de
+> XMP.
 
 ## Objetivo
 
@@ -43,8 +44,9 @@ La primera versión se centra en **ver y entender** las fotos, no en editarlas.
 - Lectura de metadatos: fecha de captura, cámara, objetivo, ISO, apertura,
   velocidad, distancia focal y geolocalización.
 - Favoritos y valoraciones, escritos en el XMP correspondiente.
-- Catálogo SQLite para búsquedas y miniaturas, regenerable desde los originales
-  y, para los metadatos de usuario, desde los XMP.
+- Catálogo SQLite para búsquedas y metadatos, y caché de miniaturas en disco,
+  regenerables desde los originales y, para los metadatos de usuario, desde los
+  XMP.
 
 Fuera del MVP, por ahora: edición, álbumes, reconocimiento de caras y cualquier
 forma de publicación o compartición.
@@ -54,9 +56,12 @@ forma de publicación o compartición.
 - [ ] **Fase 1 — Visualización y metadatos** (MVP)
   - [x] Indexado incremental de carpetas con catálogo SQLite, hashes de
     contenido y metadatos EXIF normalizados
-  - [ ] Generación y caché de miniaturas desde el catálogo
+  - [x] Generación y caché de miniaturas desde el catálogo
     - [x] Generación asíncrona de las miniaturas visibles y decodificación escalada
-    - [ ] Caché persistente en `<fototeca>/.foto/thumbs/`
+    - [x] Caché persistente en `<fototeca>/.foto/thumbs/`
+    - [ ] Poda y límite de tamaño de la caché
+  - [ ] Endurecer el rendimiento para bibliotecas grandes
+    - [ ] Sustituir `QListWidget` por modelo/vista y acotar la memoria de miniaturas
   - Rejilla, visor con la rejilla en una fila y panel de metadatos (prototipo).
     El visor consume el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md)):
     si no existe `catalog.sqlite`, avisa y se cierra. Las búsquedas y ordenaciones
@@ -101,17 +106,21 @@ forma de publicación o compartición.
 - **Indexador:** ejecutable `foto-index`, sin Qt, que recorre la biblioteca,
   calcula el hash de contenido y mantiene el catálogo. Se puede lanzar desde
   bash, cron o un `systemd` oneshot.
-- **Catálogo:** SQLite como índice rápido de búsqueda y miniaturas. Es
-  reconstruible desde los originales; si se borra, la siguiente pasada lo
+- **Catálogo:** SQLite como índice rápido de búsqueda y metadatos normalizados.
+  Es reconstruible desde los originales; si se borra, la siguiente pasada lo
   regenera.
+- **Miniaturas:** derivados JPEG en `<fototeca>/.foto/thumbs/`, nombrados por
+  hash de contenido, tamaño y versión. También son reconstruibles y nunca
+  sustituyen al original; la caché todavía no se poda automáticamente.
 - **Metadatos:** EXIF leídos con `exiftool` (opcional) y normalizados en SQLite.
   Los sidecars XMP serán la fuente de verdad de los metadatos de usuario en una
   fase posterior.
 - **Copias de seguridad:** destino local y, opcionalmente, S3.
 - **Configuración:** TOML en el directorio de configuración del usuario; lo
   específico de cada biblioteca vive en `<fototeca>/.foto/`. Ver
-  `docs/adr/0001-configuracion.md`, `docs/adr/0002-indexado.md` y
-  `docs/adr/0003-consumo-del-indice-desde-el-visor.md`.
+  `docs/adr/0001-configuracion.md`, `docs/adr/0002-indexado.md`,
+  `docs/adr/0003-consumo-del-indice-desde-el-visor.md` y
+  `docs/adr/0004-cache-de-miniaturas.md`.
 
 Estructura actual:
 
@@ -124,7 +133,7 @@ foto/
 │   ├── core/       # hashing, recorrido, metadatos e indexado
 │   ├── indexer/    # CLI foto-index y python -m foto.indexer
 │   ├── storage/    # SQLite, exiftool, lock y configuración TOML
-│   └── ui/         # aplicación real y prototipo de UI
+│   └── ui/         # app real, miniaturas en segundo plano y prototipo
 ├── tests/          # suite pytest sin Qt
 └── README.md
 ```
@@ -139,20 +148,24 @@ foto/
     incremental.
   - `0003-consumo-del-indice-desde-el-visor.md` — el visor consume el índice,
     búsquedas/ordenaciones contra el catálogo y requisito del índice existente.
+  - `0004-cache-de-miniaturas.md` — caché derivada en `.foto/thumbs/`, clave por
+    hash de contenido, tamaño y versión, y escritura atómica.
 
-## Prototipo
+## UI
 
-El repositorio ya contiene una UI ejecutable con datos reales de una carpeta,
-pero todavía no consume el catálogo ni los metadatos indexados:
+`foto` abre la última biblioteca configurada o pide una carpeta y consume el
+catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md)). Si no
+existe `catalog.sqlite`, avisa y se cierra. La rejilla pide solo las miniaturas
+visibles a un pool de trabajo y las guarda en `<fototeca>/.foto/thumbs/`; el
+visor decodifica el original en segundo plano.
 
 ```sh
 uv sync
 uv run foto
-PYTHONPATH=src .venv/bin/python -m foto.ui.prototype
 ```
 
-`foto` abre la última biblioteca configurada o pide una carpeta. El prototipo
-usa fotos falsas para revisar la interfaz sin tocar discos.
+`PYTHONPATH=src .venv/bin/python -m foto.ui.prototype` abre el prototipo con
+fotos falsas para revisar la interfaz sin tocar discos.
 
 ## Indexador
 

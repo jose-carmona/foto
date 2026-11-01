@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from foto.core.library import CatalogPhoto, load_from_catalog
 from foto.storage.catalog import Catalog
 from foto.storage.config import AppConfig, ConfigError, load_config, save_config
+from foto.storage.library import thumbs_dir
 from foto.ui.prototype import (
     THUMB_H,
     THUMB_W,
@@ -99,6 +100,7 @@ def _to_ui_photo(photo: CatalogPhoto) -> Photo:
         path=photo.path,
         canonical_rel_path=photo.canonical_rel_path,
         other_locations=photo.other_locations,
+        photo_hash=photo.photo_hash,
     )
 
 
@@ -134,7 +136,10 @@ class MainWindow(PrototypeWindow):
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)
 
-        service = ThumbnailService(QSize(THUMB_W, THUMB_H))
+        service = ThumbnailService(
+            QSize(THUMB_W, THUMB_H),
+            cache_dir=thumbs_dir(library_path),
+        )
         super().__init__(
             photos,
             thumbnails={},
@@ -176,6 +181,7 @@ class MainWindow(PrototypeWindow):
             self.status.show_error(str(exc))
             return False
         self._thumbnail_service.cancel_all()
+        self._thumbnail_service.set_cache_dir(thumbs_dir(self.library_path))
         self.setWindowTitle(self._window_title())
         self.set_photos(photos, thumbnails={})
         return True
