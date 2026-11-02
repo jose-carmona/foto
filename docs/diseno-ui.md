@@ -203,7 +203,7 @@ Vocabulario mínimo:
 | `:q`, `:quit` | Salir de la aplicación |
 | `:open [ruta]` | Abrir una carpeta o biblioteca; sin ruta, selector nativo |
 | `:rescan` | Volver a indexar la biblioteca actual |
-| `:sort date`, `:sort name`, `:sort camera` | Cambiar el orden de la rejilla |
+| `:sort date`, `:sort camera` | Cambiar el orden de la rejilla (por defecto, fecha) |
 | `:help` | Abrir la ayuda |
 
 Regla de extensibilidad: cualquier acción nueva que no tenga una tecla propia

@@ -64,7 +64,7 @@ Se mantendrá `Photo.path` para que `PhotoCanvas` siga decodificando el original
 Toda la lógica de filtrado, búsqueda y ordenación deberá hacerse **contra los datos del catálogo**, no contra el resultado de un recorrido del filesystem.
 
 - **Búsqueda (`/`)**: se filtra por nombre de fichero, ruta relativa, cámara, objetivo o cualquier campo indexado. El filtrado se hace en memoria sobre la lista cargada desde el catálogo.
-- **Ordenación (`:sort`)**: se ordenará por campos disponibles en el índice (`captured_at`, `camera_model`, `name`/`rel_path`, etc.). Si `captured_at` es `NULL`, se aplicará un criterio secundario estable (por ejemplo, `rel_path`).
+- **Ordenación (`:sort`)**: solo se admite por `captured_at` (más reciente primero) y por `camera_model`. Las fotos sin fecha o sin cámara quedan al final. El orden por defecto es fecha. Los empates se resuelven por nombre de fichero.
 - **Conteos**: `visible/total` se basarán en el conjunto cargado desde el catálogo (una foto por hash, independientemente del número de ubicaciones).
 - **Duplicados**: al buscar/ordenar se considera la foto una sola vez; las ubicaciones alternativas no crean entradas duplicadas en la rejilla.
 

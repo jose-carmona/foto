@@ -301,10 +301,33 @@ COMMANDS = (
     Command("q", "salir de la aplicación"),
     Command("quit", "salir de la aplicación"),
     Command("sort date", "ordenar por fecha"),
-    Command("sort name", "ordenar por nombre"),
     Command("sort camera", "ordenar por cámara"),
     Command("help", "mostrar la ayuda"),
 )
+
+DEFAULT_SORT = "date"
+SORT_KEYS = ("date", "camera")
+
+
+def photo_sort_value(photo: Photo, key: str) -> tuple[bool, str]:
+    """Clave de ordenación; las fotos sin dato quedan siempre al final."""
+    if key == "camera":
+        camera = photo.camera.strip().casefold()
+        return (not camera, camera)
+    taken = photo.taken.strip()
+    # Con reverse=True, True ordena antes: las fotos con fecha van primero.
+    return (bool(taken), taken)
+
+
+def sorted_photos(photos: list[Photo], key: str) -> list[Photo]:
+    """Ordena por fecha (más nueva primero) o cámara; desempata por nombre."""
+    ordered = sorted(photos, key=lambda photo: photo.name.casefold())
+    ordered.sort(
+        key=lambda photo: photo_sort_value(photo, key),
+        reverse=(key == "date"),
+    )
+    return ordered
+
 
 CAMERAS = (
     ("Fujifilm X100V", "XF23mmF2 R WR", "23 mm"),
@@ -1875,7 +1898,7 @@ class HelpOverlay(QFrame):
             "<code>q</code>/<code>Esc</code> volver a la rejilla<br><br>"
             "<b>Comandos</b><br>"
             "<code>:q</code>/<code>:quit</code> salir · "
-            "<code>:sort date|name|camera</code> ordenar · "
+            "<code>:sort date|camera</code> ordenar · "
             "<code>:help</code> ayuda"
         )
         body.setFont(ui_font(13))
@@ -1926,6 +1949,7 @@ class PrototypeWindow(QMainWindow):
         # filmstrip histórico. La app real y el prototipo pasan True.
         self.grid_row = grid_row
         self.photos = {photo.key: photo for photo in photos}
+        self._sort_key = DEFAULT_SORT
         self.thumbnails = dict(thumbnails or {})
         self._on_open = on_open
         self._on_rescan = on_rescan
@@ -2102,7 +2126,7 @@ class PrototypeWindow(QMainWindow):
     def _populate_grid(self, photos: list[Photo]) -> None:
         self.grid.clear()
         self._grid_items.clear()
-        for index, photo in enumerate(photos):
+        for index, photo in enumerate(sorted_photos(photos, self._sort_key)):
             item = QListWidgetItem()
             icon = self.thumbnails.get(photo.key)
             if icon is None or icon.isNull():
@@ -2781,10 +2805,10 @@ class PrototypeWindow(QMainWindow):
             return
         if command == "sort" or command.startswith("sort "):
             key = command[4:].strip()
-            if key in ("date", "name", "camera"):
+            if key in SORT_KEYS:
                 self._sort_grid(key)
                 return
-            self.status.show_error("uso: :sort date | name | camera")
+            self.status.show_error("uso: :sort date | camera")
             return
         self.status.show_error(
             f"comando desconocido: {command} · :help para ver los comandos"
@@ -2794,18 +2818,15 @@ class PrototypeWindow(QMainWindow):
         current = self.grid.currentItem()
         current_key = current.data(PHOTO_ROLE) if current else None
 
+        self._sort_key = key
         self.grid.blockSignals(True)
         items = [self.grid.takeItem(0) for _ in range(self.grid.count())]
 
         def sort_key(item: QListWidgetItem):
-            photo_key = item.data(PHOTO_ROLE)
-            photo = self.photos[photo_key]
-            if key == "date":
-                return photo.taken
-            if key == "camera":
-                return (photo.camera.lower(), photo.name.lower())
-            return photo.name.lower()
+            photo = self.photos[item.data(PHOTO_ROLE)]
+            return photo_sort_value(photo, key)
 
+        items.sort(key=lambda item: self.photos[item.data(PHOTO_ROLE)].name.casefold())
         items.sort(key=sort_key, reverse=(key == "date"))
         for item in items:
             self.grid.addItem(item)
