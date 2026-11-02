@@ -1655,10 +1655,7 @@ class StatusBar(QWidget):
 
     def set_counts(self, visible: int, total: int, filename: str, canonical_rel_path: str | None = None) -> None:
         suffix = f" · {filename}" if filename else ""
-        if canonical_rel_path:
-            self._idle_right = f"{visible} de {total}{suffix} · {canonical_rel_path}"
-        else:
-            self._idle_right = f"{visible} de {total}{suffix}"
+        self._idle_right = f"{visible} de {total}{suffix}"
         self._search_right = f"{visible} de {total}"
         self.refresh_right()
 

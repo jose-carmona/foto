@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QFont, QIcon, QImage, QPainter, QPalette, QPixmap
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from foto.core.library import CatalogPhoto, load_from_catalog
@@ -274,7 +276,48 @@ def main() -> None:
     except Exception as exc:
         QMessageBox.critical(None, "foto", str(exc))
         sys.exit(1)
-    window.show()
+    if sys.platform == "darwin":
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            window.setGeometry(screen.availableGeometry())
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        QApplication.processEvents()
+        try:
+            pid = os.getpid()
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    f'tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true',
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        def _focus():
+            try:
+                window.raise_()
+                window.activateWindow()
+                pid = os.getpid()
+                subprocess.run(
+                    [
+                        "osascript",
+                        "-e",
+                        f'tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true',
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+        QTimer.singleShot(50, _focus)
+    else:
+        window.show()
+        window.raise_()
+        window.activateWindow()
     sys.exit(app.exec())
 
 
