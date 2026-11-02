@@ -305,8 +305,6 @@ class Command:
 COMMANDS = (
     Command("q", "salir de la aplicación"),
     Command("quit", "salir de la aplicación"),
-    Command("open", "abrir una carpeta o biblioteca"),
-    Command("rescan", "recargar desde el índice"),
     Command("sort date", "ordenar por fecha"),
     Command("sort name", "ordenar por nombre"),
     Command("sort camera", "ordenar por cámara"),
@@ -2800,28 +2798,6 @@ class PrototypeWindow(QMainWindow):
             return
         if command == "help":
             self._toggle_help()
-            return
-        if command == "rescan":
-            if self._on_rescan is not None:
-                self._on_rescan()
-            else:
-                self.status.show_message("recargando desde el índice…", 3000)
-                QTimer.singleShot(
-                    1200,
-                    lambda: self.status.show_message(
-                        f"{len(self.photos)} fotos cargadas", 3000
-                    ),
-                )
-            return
-        if command == "open" or command.startswith("open "):
-            argument = command[5:].strip()
-            if self._on_open is not None:
-                self._on_open(argument)
-            else:
-                suffix = f": {argument}" if argument else ""
-                self.status.show_message(
-                    f"selector nativo no implementado en el prototipo{suffix}", 4000
-                )
             return
         if command == "sort" or command.startswith("sort "):
             key = command[4:].strip()
