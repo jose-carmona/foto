@@ -112,7 +112,7 @@ actualizar el ADR.
   completo de exiftool: infla la base de datos y no es la fuente de verdad.
 - Los metadatos intrínsecos (EXIF) son iguales para bytes iguales. Los
   metadatos derivados del contenido (caras, embeddings) también podrán
-  calcularse una sola vez por hash. Los metadatos de usuario (valoraciones,
+  calcularse una sola vez por hash. Los metadatos de usuario (favoritos,
   tags) no son función del contenido y tendrán su propia política cuando se
   implemente XMP; déjalo documentado en el ADR.
 
@@ -674,7 +674,7 @@ No implementes en esta entrega:
 - miniaturas ni caché de miniaturas;
 - integración del visor con el catálogo;
 - lectura o escritura de XMP;
-- tags, favoritos, valoraciones;
+- tags, favoritos;
 - caras, embeddings, OCR, escenas o IA;
 - deduplicación perceptual;
 - daemon, watcher o `inotify`/FSEvents;

@@ -43,7 +43,7 @@ La primera versión se centra en **ver y entender** las fotos, no en editarlas.
 - Vista individual con zoom y navegación entre fotos.
 - Lectura de metadatos: fecha de captura, cámara, objetivo, ISO, apertura,
   velocidad, distancia focal y geolocalización.
-- Favoritos y valoraciones, escritos en el XMP correspondiente.
+- Favoritos, escritos en el XMP correspondiente.
 - Catálogo SQLite para búsquedas y metadatos, y caché de miniaturas en disco,
   regenerables desde los originales y, para los metadatos de usuario, desde los
   XMP.

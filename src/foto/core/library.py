@@ -29,7 +29,6 @@ class CatalogPhoto:
     dimensions: str
     size: str
     location: str
-    rating: int = 0
     favorite: bool = False
     path: Path | None = None
     canonical_rel_path: str | None = None

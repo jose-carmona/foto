@@ -30,8 +30,8 @@ cambia la regla aquí o no se implementa.
    decorativos, sombras ni degradados.
 5. **Una sola acción por tecla.** Ninguna tecla cambia de significado según el
    contexto salvo lo documentado en este fichero.
-6. **Nada destructivo en el MVP.** No hay borrar, mover ni sobrescribir. Las
-   valoraciones y favoritos se escriben en XMP y son reversibles.
+6. **Nada destructivo en el MVP.** No hay borrar, mover ni sobrescribir. Los
+   favoritos se escriben en XMP y son reversibles.
 7. **Silencio visual.** Un único color de acento, tres niveles de texto y
    espacio en blanco como separador principal.
 8. **Nada bloquea.** Indexar o generar miniaturas ocurre fuera del hilo de UI;
@@ -120,8 +120,6 @@ hasta 500 ms entre pulsaciones.
 | `Home` / `End` | Primera / última foto |
 | `Enter` u `o` | Abrir la foto en el visor |
 | `f` | Alternar favorito |
-| `1`–`5` | Asignar valoración |
-| `0` | Quitar la valoración |
 | `q` | Sin efecto; sugiere `Ctrl+q` en la barra de estado |
 
 El cursor se mueve al instante, sin esperar a que cargue la miniatura. En los
@@ -160,8 +158,6 @@ Reglas de la fila:
 | `z` | Alternar entre ajustar a la ventana y 100 % |
 | `i` | Mostrar u ocultar metadatos |
 | `f` | Alternar favorito |
-| `1`–`5` | Asignar valoración |
-| `0` | Quitar la valoración |
 | `q` | Volver a la rejilla |
 | `Esc` | Restablecer zoom; si ya está ajustado, volver a la rejilla |
 
@@ -296,9 +292,9 @@ ancho que la foto, excluyendo el panel de metadatos.
   llenar el recuadro sin deformar la imagen. Sin marco ni borde alrededor de la
   miniatura.
 - Separación de 16 px entre miniaturas; margen exterior según composición.
-- Favorito y valoración se muestran como insignias discretas en una esquina,
-  sobre un velo semitransparente para garantizar legibilidad sobre cualquier
-  foto. Nunca aparecen solo al pasar el ratón.
+- El favorito se muestra como una insignia discreta en una esquina, sobre un
+  velo semitransparente para garantizar legibilidad sobre cualquier foto. Nunca
+  aparece solo al pasar el ratón.
 - Al estar seleccionada, se añade un leve sombreado al recuadro y un borde fino.
   Con el foco en la rejilla, el borde usa el acento; sin foco, un gris neutro.
   No se recolorea la miniatura.
@@ -383,9 +379,9 @@ Requisitos:
 
 ## Comportamiento y feedback
 
-- **Favoritos y valoraciones:** actualización optimista de la insignia y
-  escritura inmediata en el XMP. Si la escritura falla, se revierte el cambio y
-  se muestra un error persistente. Nunca se falla en silencio.
+- **Favoritos:** actualización optimista de la insignia y escritura inmediata en
+  el XMP. Si la escritura falla, se revierte el cambio y se muestra un error
+  persistente. Nunca se falla en silencio.
 - **Mensajes:** los éxitos y las acciones habituales aparecen en la barra de
   estado durante unos 3 s. Los errores permanecen hasta que el usuario los
   descarta con `Esc`.

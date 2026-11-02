@@ -77,8 +77,7 @@ from PySide6.QtWidgets import (
 from foto.core.thumbnails import eviction_candidates
 
 PHOTO_ROLE = Qt.UserRole + 1
-RATING_ROLE = Qt.UserRole + 2
-FAVORITE_ROLE = Qt.UserRole + 3
+FAVORITE_ROLE = Qt.UserRole + 2
 
 THUMB_W = 400
 THUMB_H = 247
@@ -263,7 +262,6 @@ class Photo:
     dimensions: str
     size: str
     location: str
-    rating: int = 0
     favorite: bool = False
     path: Path | None = None
     canonical_rel_path: str | None = None
@@ -280,8 +278,6 @@ def photo_accessible_name(photo: Photo) -> str:
     parts = [photo.name]
     if photo.favorite:
         parts.append("favorito")
-    if photo.rating:
-        parts.append(f"valoración {photo.rating} de 5")
     return ", ".join(parts)
 
 
@@ -291,7 +287,6 @@ class StripItem:
 
     key: str
     icon: QIcon
-    rating: int
     favorite: bool
     accessible_name: str
 
@@ -340,7 +335,6 @@ def make_photos() -> list[Photo]:
                 dimensions=f"{6240 - (i % 3) * 240} × {4160 - (i % 3) * 160} px",
                 size=f"{18 + (i % 11) * 2},{(i * 3) % 10} MB",
                 location="" if i % 7 == 1 else f"41,{3800 + i} N · 2,{1600 + i} E",
-                rating=(i * 3) % 6,
                 favorite=i % 4 == 0,
             )
         )
@@ -428,8 +422,6 @@ def viewer_key_action(event) -> str | None:
         return "search"
     if key in (Qt.Key_Tab, Qt.Key_Backtab):
         return "focus_panel"
-    if Qt.Key_0 <= key <= Qt.Key_5:
-        return f"rating:{key - Qt.Key_0}"
     return None
 
 
@@ -711,15 +703,9 @@ class ThumbnailDelegate(QStyledItemDelegate):
                 6 + inset,
             )
 
-        rating = int(index.data(RATING_ROLE) or 0)
         favorite = bool(index.data(FAVORITE_ROLE))
-        if rating or favorite:
-            parts: list[str] = []
-            if favorite:
-                parts.append("♥")
-            if rating:
-                parts.append(f"★{rating}")
-            text = " ".join(parts)
+        if favorite:
+            text = "♥"
 
             font = ui_font(11, QFont.DemiBold)
             painter.setFont(font)
@@ -803,7 +789,6 @@ class Filmstrip(QListWidget):
                 row = QListWidgetItem()
                 row.setIcon(item.icon)
                 row.setData(PHOTO_ROLE, item.key)
-                row.setData(RATING_ROLE, item.rating)
                 row.setData(FAVORITE_ROLE, item.favorite)
                 row.setData(Qt.AccessibleTextRole, item.accessible_name)
                 row.setSizeHint(
@@ -839,12 +824,11 @@ class Filmstrip(QListWidget):
             self.scrollToItem(item, QAbstractItemView.PositionAtCenter)
 
     def update_item(
-        self, key: str, rating: int, favorite: bool, accessible_name: str
+        self, key: str, favorite: bool, accessible_name: str
     ) -> None:
         item = self._item_for_key(key)
         if item is None:
             return
-        item.setData(RATING_ROLE, rating)
         item.setData(FAVORITE_ROLE, favorite)
         item.setData(Qt.AccessibleTextRole, accessible_name)
         self.viewport().update()
@@ -925,9 +909,9 @@ class PhotoViewer(QWidget):
         self.strip.select_key(key)
 
     def update_item(
-        self, key: str, rating: int, favorite: bool, accessible_name: str
+        self, key: str, favorite: bool, accessible_name: str
     ) -> None:
-        self.strip.update_item(key, rating, favorite, accessible_name)
+        self.strip.update_item(key, favorite, accessible_name)
 
     def update_icon(self, key: str, icon: QIcon) -> None:
         self.strip.update_icon(key, icon)
@@ -1879,8 +1863,7 @@ class HelpOverlay(QFrame):
             "a la rejilla<br>"
             "<code>j k h l</code> o flechas mover · <code>PgUp/PgDn</code> página · "
             "<code>Ctrl+d/u</code> media página · <code>Home/End</code> extremos<br>"
-            "<code>f</code> favorito · <code>1–5</code> valoración · "
-            "<code>0</code> quitar · <code>Tab</code> foco del panel<br>"
+            "<code>f</code> favorito · <code>Tab</code> foco del panel<br>"
             "<b>Visor</b><br>"
             "La fila inferior es la misma rejilla: "
             "<code>h</code>/<code>l</code> foto anterior/siguiente · "
@@ -2129,7 +2112,6 @@ class PrototypeWindow(QMainWindow):
                     icon = make_thumbnail(index)
             item.setIcon(icon)
             item.setData(PHOTO_ROLE, photo.key)
-            item.setData(RATING_ROLE, photo.rating)
             item.setData(FAVORITE_ROLE, photo.favorite)
             item.setData(Qt.AccessibleTextRole, photo_accessible_name(photo))
             item.setSizeHint(QSize(ITEM_W, ITEM_H))
@@ -2456,7 +2438,6 @@ class PrototypeWindow(QMainWindow):
                 StripItem(
                     key=photo.key,
                     icon=item.icon(),
-                    rating=photo.rating,
                     favorite=photo.favorite,
                     accessible_name=photo_accessible_name(photo),
                 )
@@ -2916,8 +2897,6 @@ class PrototypeWindow(QMainWindow):
         if action == "f":
             self._toggle_favorite()
             return
-        if action.isdigit():
-            self._set_rating(int(action))
 
     def _on_viewer_action(self, action: str) -> None:
         if action != "g" and self._g_pending:
@@ -2949,9 +2928,6 @@ class PrototypeWindow(QMainWindow):
             return
         if action == "favorite":
             self._toggle_favorite()
-            return
-        if action.startswith("rating:"):
-            self._set_rating(int(action.split(":", 1)[1]))
             return
         if action == "help":
             self._toggle_help()
@@ -3057,33 +3033,11 @@ class PrototypeWindow(QMainWindow):
         if not self.grid_row:
             self.viewer.update_item(
                 updated.key,
-                updated.rating,
                 updated.favorite,
                 photo_accessible_name(updated),
             )
         self.status.show_message(
             "favorito" if updated.favorite else "sin favorito", 2000
-        )
-
-    def _set_rating(self, rating: int) -> None:
-        photo = self._current_photo()
-        item = self.grid.currentItem()
-        if photo is None or item is None:
-            return
-        updated = replace(photo, rating=rating)
-        self.photos[photo.key] = updated
-        item.setData(RATING_ROLE, updated.rating)
-        item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
-        self.grid.viewport().update()
-        if not self.grid_row:
-            self.viewer.update_item(
-                updated.key,
-                updated.rating,
-                updated.favorite,
-                photo_accessible_name(updated),
-            )
-        self.status.show_message(
-            f"valoración {rating}" if rating else "sin valoración", 2000
         )
 
     def keyPressEvent(self, event):
@@ -3141,9 +3095,6 @@ class PrototypeWindow(QMainWindow):
                     Qt.Key_L: "l",
                 }[key]
             )
-            return
-        if Qt.Key_0 <= key <= Qt.Key_5:
-            self._set_rating(key - Qt.Key_0)
             return
         super().keyPressEvent(event)
 
