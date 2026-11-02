@@ -1891,8 +1891,7 @@ class HelpOverlay(QFrame):
             "<code>H J K L</code> desplazar con zoom<br>"
             "<code>q</code>/<code>Esc</code> volver a la rejilla<br><br>"
             "<b>Comandos</b><br>"
-            "<code>:q</code>/<code>:quit</code> salir · <code>:open [ruta]</code> abrir · "
-            "<code>:rescan</code> recargar desde el índice<br>"
+            "<code>:q</code>/<code>:quit</code> salir · "
             "<code>:sort date|name|camera</code> ordenar · "
             "<code>:help</code> ayuda"
         )
