@@ -1312,7 +1312,21 @@ class MetadataPanel(QFrame):
             self.show_empty("Sin selección")
             return
 
-        sections = (
+        file_rows: list[tuple[str, str]] = []
+        if photo.fmt:
+            file_rows.append(("Formato", photo.fmt))
+        if photo.dimensions:
+            file_rows.append(("Dimensiones", photo.dimensions))
+        if photo.size:
+            file_rows.append(("Peso", photo.size))
+        canonical = photo.canonical_rel_path or (str(photo.path) if photo.path else "")
+        if canonical:
+            file_rows.append(("Fichero", canonical))
+        for other in photo.other_locations:
+            if other and other != canonical:
+                file_rows.append(("Fichero", other))
+
+        sections = [
             (
                 "Captura",
                 (
@@ -1330,33 +1344,11 @@ class MetadataPanel(QFrame):
                     ("ISO", photo.iso),
                 ),
             ),
-            (
-                "Archivo",
-                (
-                    ("Carpeta", photo.folder),
-                    ("Formato", photo.fmt),
-                    ("Dimensiones", photo.dimensions),
-                    ("Peso", photo.size),
-                ),
-            ),
-            (
-                "Ubicación",
-                (("Coordenadas", photo.location),),
-            ),
-            (
-                "Ubicaciones",
-                (
-                    (
-                        "Canónica",
-                        photo.canonical_rel_path or (str(photo.path) if photo.path else ""),
-                    ),
-                    *(
-                        ("Otra", other)
-                        for other in photo.other_locations
-                    ),
-                ),
-            ),
-        )
+        ]
+        if file_rows:
+            sections.append(("Archivo", file_rows))
+        if photo.location:
+            sections.append(("Ubicación", (("Coordenadas", photo.location),)))
 
         content = QWidget()
         layout = QVBoxLayout(content)
