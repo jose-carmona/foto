@@ -43,6 +43,7 @@ from PySide6.QtGui import (
     QAction,
     QColor,
     QFont,
+    QFontDatabase,
     QFontMetrics,
     QGuiApplication,
     QIcon,
@@ -70,6 +71,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStyle,
     QStyledItemDelegate,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -2154,7 +2156,215 @@ class ContentArea(QWidget):
         self.resized.emit()
 
 
+def _help_markdown() -> str:
+    """El documento de ayuda empaquetado con la aplicación."""
+    from importlib import resources
+
+    import foto
+
+    return (resources.files(foto) / "resources" / "ayuda.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def _help_color(role: QPalette.ColorRole) -> str:
+    palette = _app_palette()
+    return palette.color(role).name(QColor.HexArgb)
+
+
+def _help_muted() -> str:
+    """Token fg.muted: texto atenuado con contraste suficiente."""
+    palette = _app_palette()
+    window = palette.color(QPalette.Window)
+    text = palette.color(QPalette.WindowText)
+    ratio = 0.62 if window.lightness() > 128 else 0.72
+    return QColor(
+        round(window.red() + (text.red() - window.red()) * ratio),
+        round(window.green() + (text.green() - window.green()) * ratio),
+        round(window.blue() + (text.blue() - window.blue()) * ratio),
+    ).name(QColor.HexArgb)
+
+
+def _help_chip_font() -> QFont:
+    mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    mono.setPixelSize(12)
+    return mono
+
+
+def _help_cell_width(cell: str) -> int:
+    """Ancho aproximado de una celda de teclas con sus fichas."""
+    mono = QFontMetrics(_help_chip_font())
+    text = QFontMetrics(ui_font(13))
+    total = 0
+    for index, chunk in enumerate(cell.split("`")):
+        if not chunk:
+            continue
+        if index % 2:
+            total += mono.horizontalAdvance(_help_chip_pad(chunk))
+        else:
+            total += text.horizontalAdvance(f"{chunk} ")
+    return total
+
+
+def _help_chip(text: str) -> str:
+    """Ficha de tecla: monoespaciada, sobre la superficie secundaria."""
+    mono = QFontDatabase.systemFont(QFontDatabase.FixedFont).family()
+    return (
+        f'<span style="background-color:{_help_color(QPalette.AlternateBase)};'
+        f" color:{_help_color(QPalette.WindowText)};"
+        f" font-family:'{mono}'; font-size:12px;"
+        f'">{_help_chip_pad(text)}</span>'
+    )
+
+
+def _help_chip_pad(text: str) -> str:
+    """Texto de la ficha con su margen interior, para medir con métricas."""
+    return f"\u00a0\u00a0{text}\u00a0\u00a0"
+
+
+def _help_inline(text: str) -> str:
+    """Convierte ``teclas`` entre acentos en fichas; el resto queda igual."""
+    pieces = []
+    for index, chunk in enumerate(text.split("`")):
+        if not chunk:
+            continue
+        pieces.append(_help_chip(chunk) if index % 2 else chunk)
+    return " ".join(pieces)
+
+
+def _help_heading(label: str, level: int) -> str:
+    size = 26 if level == 1 else 20
+    return (
+        f'<p style="margin-top:{"0" if level == 1 else "18"}px; margin-bottom:6px;'
+        f" font-size:{size}px; font-weight:600;"
+        f' color:{_help_color(QPalette.WindowText)}">{label}</p>'
+        f'<hr style="color:{_help_color(QPalette.Mid)};">'
+    )
+
+
+def _help_keys_width(tables: list[list[list[str]]]) -> int:
+    """Ancho de la columna de teclas: el de la fila más ancha del documento.
+
+    Con un ancho fijo la celda partía filas largas como ``h j k l / flechas``;
+    con el natural de la fila más ancha todas las columnas de teclas quedan
+    alineadas y nada cae de línea.
+    """
+    widths = [
+        _help_cell_width(cells[0])
+        for table in tables
+        for cells in table
+        if cells
+    ]
+    return (max(widths) + 12) if widths else 170
+
+
+def _help_row(cells: list[str], header: bool, keys_width: int) -> str:
+    keys = _help_inline(cells[0]) if cells else ""
+    description = _help_inline(cells[1]) if len(cells) > 1 else ""
+    if header:
+        keys, description = f"<b>{keys}</b>", f"<b>{description}</b>"
+    padding = "2px" if header else "8px"
+    return (
+        "<tr>"
+        f'<td width="{keys_width}" style="vertical-align:top;">'
+        f'<p style="margin-top:{padding}; margin-bottom:{padding};">{keys}</p></td>'
+        "<td style=\"vertical-align:top;\">"
+        f"<p style=\"margin-top:{padding}; margin-bottom:{padding};\">"
+        f"{description}</p></td>"
+        "</tr>"
+    )
+
+
+def _help_table(rows: list[list[str]], keys_width: int) -> str:
+    """Tabla del markdown: filas con aire, sin líneas de separación."""
+    chunks = [
+        (
+            '<table width="100%" cellspacing="0" cellpadding="0">'
+            f"{_help_row(rows[0], header=True, keys_width=keys_width)}</table>"
+        )
+    ]
+    for row in rows[1:]:
+        chunks.append(
+            '<table width="100%" cellspacing="0" cellpadding="0">'
+            + _help_row(row, header=False, keys_width=keys_width)
+            + "</table>"
+        )
+    return "".join(chunks)
+
+
+def render_help(markdown: str) -> str:
+    """Markdown restringido de ``ayuda.md`` → HTML enriquecido.
+
+    ``setMarkdown`` de Qt pierde el formato de los spans de código y no se
+    puede estilar, así que el overlay renderiza el subset que usa el
+    documento: encabezados ``#``/``##``, tablas de dos columnas y teclas
+    entre acentos. Todo lo que no encaje en ese subset no se renderiza.
+    """
+    blocks: list[tuple[str, object]] = []
+    rows: list[list[str]] = []
+
+    for line in markdown.splitlines():
+        bare = line.strip()
+        if bare.startswith("|"):
+            cells = [cell.strip() for cell in bare.strip("|").split("|")]
+            if all(set(cell) <= {"-", ":", " "} for cell in cells):
+                continue  # separador de cabecera
+            rows.append(cells)
+            continue
+        if rows:
+            blocks.append(("table", rows))
+            rows = []
+        if not bare:
+            continue
+        if bare.startswith("##"):
+            blocks.append(("heading", (bare[2:].strip(), 2)))
+        elif bare.startswith("#"):
+            blocks.append(("heading", (bare[1:].strip(), 1)))
+        else:
+            blocks.append(("paragraph", bare))
+    if rows:
+        blocks.append(("table", rows))
+
+    # La columna de teclas es única para todo el documento: todas las tablas
+    # quedan alineadas y no hay filas partidas como ``h j k l / flechas``.
+    width = _help_keys_width(
+        [rows_ for kind, rows_ in blocks if kind == "table" and rows_]
+    )
+
+    html: list[str] = []
+    for kind, data in blocks:
+        if kind == "heading":
+            label, level = data  # type: ignore[misc]
+            html.append(_help_heading(label, level))
+        elif kind == "table":
+            html.append(_help_table(data, width))  # type: ignore[misc]
+        else:
+            html.append(f"<p>{_help_inline(data)}</p>")  # type: ignore[misc]
+    return "".join(html)
+
+
 class HelpOverlay(QFrame):
+    """Ayuda de atajos, renderizada desde ``foto/resources/ayuda.md``."""
+
+    BODY_STYLESHEET = """
+        QTextBrowser {
+            background: transparent;
+            color: palette(window-text);
+        }
+        QScrollBar:vertical {
+            background: transparent;
+            width: 8px;
+        }
+        QScrollBar::handle:vertical {
+            background: palette(mid);
+            min-height: 24px;
+            border-radius: 4px;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0;
+        }
+    """
+
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.setAccessibleName("ayuda")
@@ -2167,54 +2377,63 @@ class HelpOverlay(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(12)
+        layout.setSpacing(6)
 
-        title = QLabel("Ayuda")
-        title.setFont(ui_font(20, QFont.DemiBold))
-        layout.addWidget(title)
-
-        body = QLabel(
-            "<b>Teclas</b><br>"
-            "<code>:</code> comando · <code>/</code> búsqueda · "
-            "<code>i</code> metadatos · <code>Ctrl+q</code> salir<br>"
-            "<code>Enter</code>/<code>o</code> visor · <code>q</code>/<code>Esc</code> volver "
-            "a la rejilla<br>"
-            "<code>j k h l</code> o flechas mover · <code>PgUp/PgDn</code> página · "
-            "<code>Ctrl+d/u</code> media página · <code>Home/End</code> extremos<br>"
-            "<code>0</code>/<code>$</code> primera/última foto del grupo · "
-            "<code>g g</code>/<code>G</code> extremos de la lista<br>"
-            "<code>f</code> favorito · <code>Tab</code> foco del panel<br>"
-            "<b>Visor</b><br>"
-            "La fila inferior es la misma rejilla: "
-            "<code>h</code>/<code>l</code> foto anterior/siguiente · "
-            "<code>j</code>/<code>k</code> bloque de columnas<br>"
-            "<code>0</code>/<code>$</code> extremos del grupo · "
-            "<code>g g</code>/<code>G</code> extremos de la lista · "
-            "<code>PgUp/PgDn</code> página · <code>Ctrl+d/u</code> media página<br>"
-            "<code>+</code>/<code>-</code> zoom · <code>z</code> ajuste/100 % · "
-            "<code>H J K L</code> desplazar con zoom<br>"
-            "<code>q</code>/<code>Esc</code> volver a la rejilla<br><br>"
-            "<b>Comandos</b><br>"
-            "<code>:q</code>/<code>:quit</code> salir · "
-            "<code>:sort date|camera</code> ordenar · "
-            "<code>:help</code> ayuda"
-        )
-        body.setFont(ui_font(13))
-        body.setWordWrap(True)
+        body = QTextBrowser()
+        body.setFrameShape(QFrame.NoFrame)
+        body.setOpenExternalLinks(False)
+        body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        body.setLineWidth(0)
+        body.setFont(ui_font(13))
+        document = body.document()
+        document.setDefaultFont(ui_font(13))
+        document.setDocumentMargin(0)
+        body.setStyleSheet(self.BODY_STYLESHEET)
         layout.addWidget(body)
-        layout.addStretch(1)
+        self.body = body
+        self._render()
 
-        hint = QLabel("Esc o q para cerrar")
-        hint.setFont(ui_font(11))
-        set_muted(hint)
-        layout.addWidget(hint)
+    def _render(self) -> None:
+        """Renderiza el documento con la paleta del momento.
+
+        ``setMarkdown`` no sirve aquí (pierde los spans de código y no admite
+        estilos), así que el markdown restringido de ``ayuda.md`` se convierte
+        a HTML propio; el navegador se queda con el documento desplazable en
+        vertical y con reflujo según el ancho real del overlay.
+        """
+        document = self.body.document()
+        document.setTextWidth(-1)  # el navegador decide con su ancho de vista
+        self.body.setHtml(render_help(_help_markdown()))
 
     def retheme(self) -> None:
         palette = _app_palette()
         palette.setColor(QPalette.Window, palette.color(QPalette.AlternateBase))
         self.setPalette(palette)
+        scroll = self.body.verticalScrollBar().value()
+        self._render()
+        self.body.verticalScrollBar().setValue(scroll)
         self.update()
+
+    def keyPressEvent(self, event) -> None:
+        """Mueve el scroll de la ayuda con las flechas o con ``j``/``k``.
+
+        El resto de teclas cae a la ventana, que cerrará el overlay cuando
+        sea ``Esc`` o ``q``.
+        """
+        bar = self.body.verticalScrollBar()
+        key = event.key()
+        step = 40
+        if key in (Qt.Key_Down, Qt.Key_J):
+            bar.setValue(bar.value() + step)
+            event.accept()
+            return
+        if key in (Qt.Key_Up, Qt.Key_K):
+            bar.setValue(bar.value() - step)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def focusNextPrevChild(self, next: bool) -> bool:
         return True
@@ -2582,8 +2801,8 @@ class PrototypeWindow(QMainWindow):
 
     def _center_help(self) -> None:
         content_rect = self.content.geometry()
-        width = min(560, max(320, content_rect.width() - 64))
-        height = min(380, max(260, content_rect.height() - 64))
+        width = min(760, max(320, content_rect.width() - 64))
+        height = min(760, max(260, content_rect.height() - 64))
         x = content_rect.x() + (content_rect.width() - width) // 2
         y = content_rect.y() + (content_rect.height() - height) // 2
         self.help_overlay.setGeometry(x, y, width, height)

@@ -89,17 +89,20 @@ Reglas:
   cierra con `Ctrl+q` (o `⌘Q` en macOS) o con `:q`.
 - No hay modo inserción. Escribir texto requiere `/` o `:` de forma explícita.
 
-El mapa de teclas vivirá en un único módulo de la UI y será la fuente de verdad
-para la ayuda integrada, que se genera a partir de él. Un test detectará teclas
-duplicadas o acciones sin documentar. Las teclas distinguen mayúsculas solo
-donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias como `g g` admiten
-hasta 500 ms entre pulsaciones.
+La ayuda integrada vive en un único documento markdown,
+`src/foto/resources/ayuda.md`, empaquetado con la aplicación; el overlay
+(`?` / `F1` / `:help`) lo lee y lo renderiza con el tema activo. Los atajos del
+documento son la fuente de verdad de lo documentado, y un test comprueba que
+cada atajo básico de la rejilla está en la ayuda. Las teclas distinguen
+mayúsculas solo donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias como
+`g g` admiten hasta 500 ms entre pulsaciones.
 
 ### Atajos globales
 
 | Tecla | Acción |
 | --- | --- |
 | `?` / `F1` | Mostrar u ocultar la ayuda de atajos |
+| `↑` / `↓` o `j` / `k` | Mover el scroll de la ayuda |
 | `:` | Abrir la línea de comandos |
 | `/` | Abrir la búsqueda |
 | `i` | Mostrar u ocultar el panel de metadatos |
@@ -462,8 +465,10 @@ Presupuestos orientativos en una biblioteca local:
 Una pantalla o funcionalidad de UI no se considera terminada hasta que:
 
 - [ ] Se puede usar entera sin ratón.
-- [ ] Todos sus atajos aparecen en la ayuda (`?`) y en este documento.
-- [ ] La ayuda se genera desde el mapa de teclas, no se escribe a mano.
+- [ ] Todos sus atajos aparecen en la ayuda (`?`), en este documento y en
+      `src/foto/resources/ayuda.md`.
+- [ ] La ayuda se lee del documento markdown empaquetado y se renderiza, no se
+      escribe a mano en el código.
 - [ ] No hay teclas duplicadas ni significados nuevos sin documentar.
 - [ ] Funciona a 640×480 y a 1920×1080 en una ventana en mosaico.
 - [ ] El panel de metadatos se comporta bien en ventanas estrechas.
