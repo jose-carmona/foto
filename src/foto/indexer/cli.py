@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -20,10 +19,11 @@ from foto.core.errors import (
 )
 from foto.core.indexing import Indexer, IndexingOptions, IndexingSummary
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
-from foto.storage.config import ConfigError, load_config
+from foto.storage.config import ConfigError
 from foto.storage.exiftool import ExifToolExtractor
 from foto.storage.library import ensure_library, foto_dir
 from foto.storage.lock import LOCK_FILE_NAME, IndexerLock
+from foto.storage.resolver import resolve_library_path
 
 logger = logging.getLogger("foto.indexer")
 
@@ -106,15 +106,7 @@ def _configure_logging(args: argparse.Namespace) -> None:
 
 
 def _resolve_library(args: argparse.Namespace) -> Path | None:
-    if args.library is not None:
-        return args.library.expanduser().resolve()
-
-    environment = os.environ.get("FOTO_LIBRARY")
-    if environment:
-        return Path(environment).expanduser().resolve()
-
-    config = load_config(args.config)
-    return config.library_path
+    return resolve_library_path(args.library, config_path=args.config).library_path
 
 
 def _emit_summary(summary: IndexingSummary, args: argparse.Namespace) -> None:
@@ -186,20 +178,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.info("Biblioteca preparada con un nuevo .foto/library.toml")
 
     catalog_path = foto_dir(root) / CATALOG_FILE_NAME
-    try:
-        if args.dry_run:
-            catalog = Catalog.open_dry_run(catalog_path)
-        else:
-            catalog = Catalog.open(catalog_path)
-    except CatalogVersionError as exc:
-        logger.error("%s", exc)
-        return 2
-    except CatalogError as exc:
-        logger.error("No se pudo abrir el catálogo: %s", exc)
-        return 2
 
     lock: IndexerLock | None = None
+    catalog: Catalog | None = None
     try:
+        # El lock se adquiere antes de abrir el catálogo: la apertura puede
+        # activar WAL y crear o migrar el esquema, y son escrituras que deben
+        # quedarse dentro de la garantía de escritor único.
         if not args.dry_run:
             lock = IndexerLock(foto_dir(root) / LOCK_FILE_NAME)
             try:
@@ -210,6 +195,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             except LockError as exc:
                 logger.error("%s", exc)
                 return 2
+
+        try:
+            if args.dry_run:
+                catalog = Catalog.open_dry_run(catalog_path)
+            else:
+                catalog = Catalog.open(catalog_path)
+        except CatalogVersionError as exc:
+            logger.error("%s", exc)
+            return 2
+        except CatalogError as exc:
+            logger.error("No se pudo abrir el catálogo: %s", exc)
+            return 2
 
         if args.verbose:
             logger.debug("Indexando la biblioteca en %s", root)
@@ -251,6 +248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             logger.error("Error inesperado durante el indexado: %s", exc)
         return 1
     finally:
-        catalog.close()
+        if catalog is not None:
+            catalog.close()
         if lock is not None:
             lock.release()

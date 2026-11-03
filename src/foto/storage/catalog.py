@@ -111,10 +111,17 @@ class CatalogCounts:
 class Catalog:
     """Conexión SQLite con esquema, migraciones y operaciones del indexador."""
 
-    def __init__(self, connection: sqlite3.Connection, path: Path, memory: bool = False) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        path: Path,
+        memory: bool = False,
+        read_only: bool = False,
+    ) -> None:
         self._conn = connection
         self.path = path
         self.memory = memory
+        self.read_only = read_only
         try:
             self._configure()
             self._migrate()
@@ -136,6 +143,20 @@ class Catalog:
         except sqlite3.Error as exc:
             raise CatalogError(f"No se pudo abrir el catálogo: {exc}") from exc
         return cls(connection, path)
+
+    @classmethod
+    def open_read_only(cls, path: Path) -> Catalog:
+        """Abre el catálogo en modo solo lectura, sin crearlo ni migrarlo.
+
+        Pensado para los lectores (la UI): usa URI ``mode=ro``, activa
+        ``PRAGMA query_only``, no toca el journal y valida la versión del
+        esquema sin aplicar migraciones. Nunca crea el fichero.
+        """
+        try:
+            connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        except sqlite3.Error as exc:
+            raise CatalogError(f"No se pudo abrir el catálogo: {exc}") from exc
+        return cls(connection, path, read_only=True)
 
     @classmethod
     def open_in_memory(cls) -> Catalog:
@@ -176,10 +197,12 @@ class Catalog:
     def _configure(self) -> None:
         self._conn.row_factory = sqlite3.Row
         try:
+            if self.read_only:
+                self._conn.execute("PRAGMA query_only = ON")
             self._conn.execute("PRAGMA foreign_keys = ON")
             self._conn.execute("PRAGMA busy_timeout = 5000")
             self._conn.execute("PRAGMA temp_store = MEMORY")
-            if not self.memory:
+            if not self.memory and not self.read_only:
                 self._conn.execute("PRAGMA journal_mode = WAL")
         except sqlite3.Error as exc:
             raise CatalogError(f"No se pudo configurar SQLite: {exc}") from exc
@@ -195,6 +218,15 @@ class Catalog:
             raise CatalogVersionError(
                 f"El catálogo usa el esquema {version}, más nuevo que el soportado "
                 f"({SCHEMA_VERSION}). Actualiza foto antes de indexar."
+            )
+
+        if self.read_only:
+            if version == SCHEMA_VERSION:
+                return
+            raise CatalogError(
+                f"El catálogo tiene el esquema {version}, que no se puede leer con "
+                f"la versión soportada ({SCHEMA_VERSION}). Ejecuta 'foto-index' "
+                "para crear o actualizar el índice."
             )
 
         if version == SCHEMA_VERSION:

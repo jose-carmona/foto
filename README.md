@@ -157,7 +157,8 @@ foto/
 
 `foto` abre la última biblioteca configurada o pide una carpeta y consume el
 catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md)). Si no
-existe `catalog.sqlite`, avisa y se cierra. La rejilla pide solo las miniaturas
+existe `catalog.sqlite`, avisa y se cierra. La rejilla agrupa las miniaturas por
+año y mes o por cámara según la ordenación activa. Pide solo las miniaturas
 visibles a un pool de trabajo y las guarda en `<fototeca>/.foto/thumbs/`; el
 visor decodifica el original en segundo plano.
 

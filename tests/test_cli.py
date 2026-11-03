@@ -152,6 +152,57 @@ def test_cli_lock_busy_exits_3(tmp_path, capsys):
     assert "Otro proceso" in capsys.readouterr().err
 
 
+def test_cli_lock_busy_leaves_pending_schema_untouched(tmp_path, capsys):
+    """Un lock ocupado no debe configurar ni migrar el catálogo (I02)."""
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    ensure_library(root)
+    catalog_path = root / ".foto" / "catalog.sqlite"
+    connection = sqlite3.connect(catalog_path)
+    connection.execute("PRAGMA user_version = 0")
+    connection.close()
+
+    lock = IndexerLock(root / ".foto" / "index.lock")
+    lock.acquire()
+    try:
+        code = main(["--library", str(root), "--json"])
+    finally:
+        lock.release()
+
+    connection = sqlite3.connect(catalog_path)
+    try:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        journal = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        tables = connection.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert code == 3
+    assert "Otro proceso" in capsys.readouterr().err
+    assert version == 0
+    assert journal.lower() != "wal"
+    assert tables == 0
+
+
+def test_cli_lock_busy_does_not_create_the_catalog(tmp_path, capsys):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    ensure_library(root)
+    catalog_path = root / ".foto" / "catalog.sqlite"
+
+    lock = IndexerLock(root / ".foto" / "index.lock")
+    lock.acquire()
+    try:
+        code = main(["--library", str(root), "--json"])
+    finally:
+        lock.release()
+
+    assert code == 3
+    assert not catalog_path.exists()
+
+
 def test_cli_partial_scan_exits_1(tmp_path, monkeypatch, capsys):
     root = tmp_path / "biblioteca"
     write_image(root / "visible.jpg", b"visible")

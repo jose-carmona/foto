@@ -12,10 +12,12 @@ from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
+from foto.core.errors import CatalogError, LibraryError
 from foto.core.library import CatalogPhoto, load_from_catalog
 from foto.storage.catalog import Catalog
 from foto.storage.config import AppConfig, ConfigError, load_config, save_config
-from foto.storage.library import thumbs_dir
+from foto.storage.library import LibraryConfig, library_file, load_library, thumbs_dir
+from foto.storage.resolver import resolve_library_path
 from foto.ui.prototype import (
     THUMB_H,
     THUMB_W,
@@ -105,8 +107,28 @@ def _to_ui_photo(photo: CatalogPhoto) -> Photo:
     )
 
 
+def _validated_library(library_path: Path) -> LibraryConfig:
+    """Carga y valida el descriptor de la biblioteca sin crearlo (C04).
+
+    El catálogo solo se abre una vez validado ``library.toml``: descriptor
+    ausente, TOML corrupto, UUID inválido o versión futura producen un error
+    explícito, nunca la creación del descriptor desde la UI.
+    """
+    if not library_file(library_path).exists():
+        raise RuntimeError(
+            "La biblioteca no tiene descriptor (.foto/library.toml). Ejecuta "
+            "'foto-index' en ella para prepararla."
+        )
+    try:
+        return load_library(library_path)
+    except LibraryError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def load_photos(library_path: Path) -> list[Photo]:
-    """Carga las fotos desde el catálogo SQLite. Requiere un índice existente."""
+    """Carga las fotos de una biblioteca validada y con índice existente."""
+    _validated_library(library_path)
+
     catalog_path = library_path / ".foto" / "catalog.sqlite"
     if not catalog_path.exists():
         raise FileNotFoundError(
@@ -115,8 +137,8 @@ def load_photos(library_path: Path) -> list[Photo]:
         )
 
     try:
-        catalog = Catalog.open(catalog_path)
-    except Exception as exc:
+        catalog = Catalog.open_read_only(catalog_path)
+    except CatalogError as exc:
         raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
 
     try:
@@ -133,6 +155,8 @@ class MainWindow(PrototypeWindow):
         self.config = config
         try:
             photos = load_photos(library_path)
+            # C04: el modelo validado del descriptor se conserva explícitamente.
+            self._library_config = _validated_library(library_path)
         except Exception as exc:
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)
@@ -149,7 +173,6 @@ class MainWindow(PrototypeWindow):
             title=self._window_title(),
             initial_panel_visible=False,
             on_open=self._open_library,
-            on_rescan=self._rescan,
             grid_row=True,
         )
         self._thumbnail_service = service
@@ -177,10 +200,12 @@ class MainWindow(PrototypeWindow):
             self.status.show_error("la fototeca no está disponible")
             return False
         try:
+            library_config = _validated_library(self.library_path)
             photos = load_photos(self.library_path)
         except Exception as exc:
             self.status.show_error(str(exc))
             return False
+        self._library_config = library_config
         self._thumbnail_service.cancel_all()
         self._thumbnail_service.set_cache_dir(thumbs_dir(self.library_path))
         self.setWindowTitle(self._window_title())
@@ -207,6 +232,14 @@ class MainWindow(PrototypeWindow):
                 return
             target = Path(directory).resolve()
 
+        # C04: la biblioteca destino debe validar su descriptor antes de
+        # convertirse en la biblioteca elegida y guardarse en config.toml.
+        try:
+            _validated_library(target)
+        except RuntimeError as exc:
+            self.status.show_error(str(exc))
+            return
+
         new_config = AppConfig(
             config_path=self.config.config_path,
             library_path=target,
@@ -214,7 +247,7 @@ class MainWindow(PrototypeWindow):
         )
         try:
             save_config(new_config)
-        except OSError as exc:
+        except (OSError, ConfigError) as exc:
             self.status.show_error(f"no se pudo guardar la configuración: {exc}")
             return
 
@@ -222,13 +255,6 @@ class MainWindow(PrototypeWindow):
         self.library_path = target
         if self._reload_library():
             self.status.show_message(f"biblioteca abierta: {target.name}", 3000)
-
-    def _rescan(self) -> None:
-        self.status.show_message("recargando desde el índice…", 3000)
-        if self._reload_library():
-            self.status.show_message(f"{len(self.photos)} fotos cargadas", 3000)
-        else:
-            self.status.show_message("ejecuta 'foto-index' para generar/actualizar el índice", 4000)
 
 
 def main() -> None:
@@ -238,11 +264,13 @@ def main() -> None:
 
     try:
         config = load_config()
+        # C03: misma precedencia que foto-index (--library no se expone aquí,
+        # solo es aplicable a la CLI), con FOTO_LIBRARY y [library].path.
+        library_path = resolve_library_path().library_path
     except ConfigError as exc:
         QMessageBox.critical(None, "foto", str(exc))
         sys.exit(1)
 
-    library_path = config.library_path
     if library_path is None or not library_path.is_dir():
         directory = QFileDialog.getExistingDirectory(
             None,
@@ -260,7 +288,7 @@ def main() -> None:
         )
         try:
             save_config(config)
-        except OSError as exc:
+        except (OSError, ConfigError) as exc:
             QMessageBox.critical(
                 None,
                 "foto",

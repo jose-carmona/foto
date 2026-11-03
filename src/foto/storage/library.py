@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,10 @@ LIBRARY_VERSION = 1
 FOTO_DIR_NAME = ".foto"
 LIBRARY_FILE_NAME = "library.toml"
 THUMBS_DIR_NAME = "thumbs"
+CREATION_LOCK_NAME = ".library.toml.creating"
+_CREATION_LOCK_POLL = 0.02
+_CREATION_LOCK_ATTEMPTS = 30
+_CREATION_LOCK_STALE_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -95,43 +100,103 @@ def load_library(root: Path) -> LibraryConfig:
     return LibraryConfig(version=version, id=canonical_id)
 
 
-def _serialize(config: LibraryConfig) -> str:
+def _serialized(config: LibraryConfig) -> str:
     return f"version = {config.version}\nid = \"{config.id}\"\n"
 
 
-def _write_atomic_new(path: Path, content: str) -> bool:
-    """Crea ``path`` sin sobrescribir; devuelve si lo creó este proceso."""
-    directory = path.parent
+def _write_content_temporary(directory: Path, content: str) -> Path:
+    """Escribe el contenido completo en un temporal del directorio y lo devuelve.
+
+    El destino nunca contiene contenido parcial: o está ausente, o está
+    publicado de una pieza mediante un ``os.replace``/``os.link``.
+    """
     descriptor, temporary = tempfile.mkstemp(
         dir=directory, prefix=".library.", suffix=".tmp"
     )
     temporary_path = Path(temporary)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return temporary_path
+
+
+def _publish(temporary_path: Path, path: Path) -> bool:
+    """Publica el temporal completo en ``path`` sin sobrescribir nada.
+
+    Debe llamarse con el lock de creación adquirido. Devuelve ``False`` si
+    ``path`` ya existía (el descriptor de otro creador se respeta siempre).
+    """
+    if path.exists():
+        return False
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temporary_path, path)
-        except FileExistsError:
-            return False
-        except OSError:
-            # exFAT, SMB y otros sistemas no admiten hardlinks. Se reserva el
-            # nombre de forma exclusiva y se escribe el contenido ahí mismo.
-            try:
-                descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            except FileExistsError:
-                return False
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-    finally:
-        try:
-            temporary_path.unlink()
-        except FileNotFoundError:
-            pass
+        os.link(temporary_path, path)
+    except FileExistsError:
+        return False
+    except OSError:
+        # exFAT, SMB y otros sistemas no admiten hardlinks. El temporal ya
+        # está completo y sincronizado en disco, así que la publicación
+        # sigue siendo atómica con un rename dentro del mismo directorio.
+        os.replace(temporary_path, path)
     return True
+
+
+def _creation_lock(descriptor: Path) -> Path:
+    return descriptor.parent / CREATION_LOCK_NAME
+
+
+def _creation_lock_is_stale(lock_path: Path) -> bool:
+    try:
+        return time.time() - lock_path.stat().st_mtime > _CREATION_LOCK_STALE_SECONDS
+    except OSError:
+        return False
+
+
+def _create_descriptor(descriptor: Path, config: LibraryConfig) -> bool:
+    """Crea el descriptor de forma atómica, con exclusión entre creadores.
+
+    Devuelve ``True`` si este proceso lo publicó y ``False`` si otro se
+    adelantó (y su descriptor debe adoptarse).
+    """
+    lock_path = _creation_lock(descriptor)
+    for _ in range(_CREATION_LOCK_ATTEMPTS):
+        try:
+            reserved = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            if _creation_lock_is_stale(lock_path):
+                try:
+                    lock_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            time.sleep(_CREATION_LOCK_POLL)
+            continue
+        except OSError as exc:
+            reason = exc.strerror or type(exc).__name__
+            raise LibraryError(f"No se pudo crear library.toml: {reason}") from exc
+
+        os.close(reserved)
+        temporary_path: Path | None = None
+        try:
+            temporary_path = _write_content_temporary(descriptor.parent, _serialized(config))
+            try:
+                return _publish(temporary_path, descriptor)
+            except OSError as exc:
+                reason = exc.strerror or type(exc).__name__
+                raise LibraryError(f"No se pudo crear library.toml: {reason}") from exc
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    raise LibraryError("Otro proceso está creando library.toml en esta biblioteca")
+
 
 
 def ensure_library(root: Path, dry_run: bool = False) -> LibraryBootstrap:
@@ -168,13 +233,14 @@ def ensure_library(root: Path, dry_run: bool = False) -> LibraryBootstrap:
         raise LibraryError(f"No se pudo crear .foto: {reason}") from exc
 
     try:
-        created = _write_atomic_new(descriptor, _serialize(config))
+        created = _create_descriptor(descriptor, config)
     except OSError as exc:
         reason = exc.strerror or type(exc).__name__
         raise LibraryError(f"No se pudo crear library.toml: {reason}") from exc
 
     if not created:
-        # Otro proceso se adelantó: se usa su descriptor, nunca se sobrescribe.
+        # Otro proceso se adelantó (o su descriptor ya existía): se usa su
+        # descriptor, nunca se sobrescribe.
         return LibraryBootstrap(
             foto_dir=derived_dir,
             config=load_library(root),

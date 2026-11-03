@@ -78,6 +78,8 @@ from foto.core.thumbnails import eviction_candidates
 
 PHOTO_ROLE = Qt.UserRole + 1
 FAVORITE_ROLE = Qt.UserRole + 2
+GROUP_ROLE = Qt.UserRole + 3
+HEADER_ROLE = Qt.UserRole + 4
 
 THUMB_W = 400
 THUMB_H = 247
@@ -85,6 +87,7 @@ GRID_GAP = 16
 GRID_MARGIN = 16
 ITEM_W = THUMB_W + GRID_GAP
 ITEM_H = THUMB_H + GRID_GAP
+GROUP_HEADER_H = 52
 PANEL_W = 426
 BAR_H = 28
 STRIP_THUMB_H = 96
@@ -281,6 +284,33 @@ def photo_accessible_name(photo: Photo) -> str:
     return ", ".join(parts)
 
 
+def photo_search_text(photo: Photo) -> str:
+    """Documento de búsqueda normalizado, una entrada por foto (V03).
+
+    Examina nombre, ruta relativa (carpeta y ubicación canónica), réplicas,
+    cámara, objetivo, tipo, fecha y el resto de campos indexados que el
+    catálogo aporta al modelo de UI. El filtrado es en memoria, contra este
+    documento, sin volver a recorrer el filesystem (ADR 0003).
+    """
+    parts = (
+        photo.name,
+        photo.taken,
+        photo.camera,
+        photo.lens,
+        photo.focal,
+        photo.aperture,
+        photo.shutter,
+        photo.iso,
+        photo.folder,
+        photo.fmt,
+        photo.location,
+        photo.canonical_rel_path or "",
+        " ".join(photo.other_locations),
+        photo.photo_hash or "",
+    )
+    return " ".join(part.casefold() for part in parts if part)
+
+
 @dataclass(frozen=True)
 class StripItem:
     """Una miniatura de la tira inferior del visor."""
@@ -308,6 +338,21 @@ COMMANDS = (
 DEFAULT_SORT = "date"
 SORT_KEYS = ("date", "camera")
 
+MONTH_NAMES = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+
 
 def photo_sort_value(photo: Photo, key: str) -> tuple[bool, str]:
     """Clave de ordenación; las fotos sin dato quedan siempre al final."""
@@ -327,6 +372,30 @@ def sorted_photos(photos: list[Photo], key: str) -> list[Photo]:
         reverse=(key == "date"),
     )
     return ordered
+
+
+def photo_group(photo: Photo, key: str) -> tuple[str, str]:
+    """Devuelve la clave y la etiqueta del grupo de una foto."""
+    if key == "camera":
+        camera = photo.camera.strip()
+        if not camera:
+            return "", "Sin cámara"
+        return camera.casefold(), camera
+
+    taken = photo.taken.strip()
+    if not taken:
+        return "", "Sin fecha"
+    date = taken.split(" ", 1)[0]
+    parts = date.split("-")
+    if len(parts) >= 2:
+        try:
+            year = int(parts[0])
+            month = int(parts[1])
+        except ValueError:
+            return date, date
+        if 1 <= month <= 12:
+            return f"{year:04d}-{month:02d}", f"{MONTH_NAMES[month - 1]} de {year}"
+    return date, date
 
 
 CAMERAS = (
@@ -689,6 +758,17 @@ class ThumbnailDelegate(QStyledItemDelegate):
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
 
+        if index.data(HEADER_ROLE):
+            painter.setFont(ui_font(14, QFont.DemiBold))
+            painter.setPen(option.palette.color(QPalette.WindowText))
+            painter.drawText(
+                option.rect.adjusted(8, 0, -8, 0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                str(index.data(Qt.DisplayRole) or ""),
+            )
+            painter.restore()
+            return
+
         icon_size = option.decorationSize
         if not icon_size.isValid():
             icon_size = QSize(THUMB_W, THUMB_H)
@@ -960,6 +1040,32 @@ class PhotoGrid(QListWidget):
         self.row_mode = False
         self._visible_rows: list[int] = []
         self._visible_positions: dict[int, int] = {}
+        self._header_width = 0
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_header_widths()
+
+    def mousePressEvent(self, event):
+        index = self.indexAt(event.position().toPoint())
+        if index.isValid() and index.data(HEADER_ROLE):
+            return
+        super().mousePressEvent(event)
+
+    def update_header_widths(self) -> None:
+        """Hace que cada cabecera ocupe la fila completa y fuerce la ruptura."""
+        width = max(1, self.viewport().width())
+        if width == self._header_width:
+            return
+        self._header_width = width
+        changed = False
+        for row in range(self.count()):
+            item = self.item(row)
+            if item is not None and item.data(HEADER_ROLE):
+                item.setSizeHint(QSize(width, GROUP_HEADER_H))
+                changed = True
+        if changed:
+            self.doItemsLayout()
 
     def set_visible_rows(self, rows: list[int]) -> None:
         """Cachea las filas no ocultas para navegar sin recorrer toda la lista."""
@@ -1650,7 +1756,7 @@ class StatusBar(QWidget):
         painter.setPen(self.palette().color(QPalette.Mid))
         painter.drawLine(0, 0, self.width(), 0)
 
-    def set_counts(self, visible: int, total: int, filename: str, canonical_rel_path: str | None = None) -> None:
+    def set_counts(self, visible: int, total: int, filename: str) -> None:
         suffix = f" · {filename}" if filename else ""
         self._idle_right = f"{visible} de {total}{suffix}"
         self._search_right = f"{visible} de {total}"
@@ -1941,7 +2047,6 @@ class PrototypeWindow(QMainWindow):
         title: str | None = None,
         initial_panel_visible: bool = True,
         on_open: Callable[[str], None] | None = None,
-        on_rescan: Callable[[], None] | None = None,
         grid_row: bool = False,
     ) -> None:
         super().__init__()
@@ -1952,7 +2057,6 @@ class PrototypeWindow(QMainWindow):
         self._sort_key = DEFAULT_SORT
         self.thumbnails = dict(thumbnails or {})
         self._on_open = on_open
-        self._on_rescan = on_rescan
         self.search_text = ""
         self._search_origin: str | None = None
         self.panel_visible = initial_panel_visible
@@ -2002,7 +2106,7 @@ class PrototypeWindow(QMainWindow):
         self.grid.setSpacing(0)
         self.grid.setFrameShape(QListWidget.NoFrame)
         self.grid.setIconSize(QSize(THUMB_W, THUMB_H))
-        self.grid.setUniformItemSizes(True)
+        self.grid.setUniformItemSizes(False)
         self.grid.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.grid.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.grid.setItemDelegate(ThumbnailDelegate(self.grid))
@@ -2080,8 +2184,10 @@ class PrototypeWindow(QMainWindow):
         self.addAction(quit_action)
 
         self.status.set_counts(len(photos), len(photos), photos[0].name if photos else "")
-        if photos:
-            self.grid.setCurrentRow(0)
+        if photos and self._visible_keys_cache:
+            first = self._grid_items.get(self._visible_keys_cache[0])
+            if first is not None:
+                self.grid.setCurrentItem(first)
         self._layout_content()
         QTimer.singleShot(0, self._focus_current_view)
         QTimer.singleShot(
@@ -2123,10 +2229,24 @@ class PrototypeWindow(QMainWindow):
             apply_theme(app)
             self.retheme()
 
+    def _add_group_header(self, group_key: str, label: str) -> None:
+        item = QListWidgetItem(label)
+        item.setData(HEADER_ROLE, True)
+        item.setData(GROUP_ROLE, group_key)
+        item.setData(Qt.AccessibleTextRole, f"grupo {label}")
+        item.setFlags(Qt.NoItemFlags)
+        item.setSizeHint(QSize(max(1, self.grid.viewport().width()), GROUP_HEADER_H))
+        self.grid.addItem(item)
+
     def _populate_grid(self, photos: list[Photo]) -> None:
         self.grid.clear()
         self._grid_items.clear()
+        current_group: str | None = None
         for index, photo in enumerate(sorted_photos(photos, self._sort_key)):
+            group_key, group_label = photo_group(photo, self._sort_key)
+            if group_key != current_group:
+                self._add_group_header(group_key, group_label)
+                current_group = group_key
             item = QListWidgetItem()
             icon = self.thumbnails.get(photo.key)
             if icon is None or icon.isNull():
@@ -2137,14 +2257,32 @@ class PrototypeWindow(QMainWindow):
             item.setIcon(icon)
             item.setData(PHOTO_ROLE, photo.key)
             item.setData(FAVORITE_ROLE, photo.favorite)
+            item.setData(GROUP_ROLE, group_key)
             item.setData(Qt.AccessibleTextRole, photo_accessible_name(photo))
             item.setSizeHint(QSize(ITEM_W, ITEM_H))
             item.setText("")
             self.grid.addItem(item)
             self._grid_items[photo.key] = item
+        self.grid.update_header_widths()
+        self._update_group_headers()
         self._refresh_visible_cache()
         self._rebuild_strip()
         self._schedule_visible_thumbnails()
+
+    def _update_group_headers(self) -> None:
+        """Oculta las cabeceras de grupos sin fotos visibles y en modo fila."""
+        visible_groups: set[str] = set()
+        for row in range(self.grid.count()):
+            item = self.grid.item(row)
+            if item is None or item.data(HEADER_ROLE) or item.isHidden():
+                continue
+            visible_groups.add(str(item.data(GROUP_ROLE) or ""))
+        for row in range(self.grid.count()):
+            item = self.grid.item(row)
+            if item is None or not item.data(HEADER_ROLE):
+                continue
+            group_key = str(item.data(GROUP_ROLE) or "")
+            item.setHidden(self.grid.row_mode or group_key not in visible_groups)
 
     def set_photos(
         self,
@@ -2173,8 +2311,8 @@ class PrototypeWindow(QMainWindow):
             self.grid.setCurrentRow(-1)
 
             target = self._grid_items.get(current_key) if current_key else None
-            if target is None and self.grid.count():
-                target = self.grid.item(0)
+            if target is None and self._visible_keys_cache:
+                target = self._grid_items.get(self._visible_keys_cache[0])
             if target is not None:
                 self.grid.setCurrentItem(target)
                 self.grid.scrollToItem(target, QAbstractItemView.EnsureVisible)
@@ -2186,8 +2324,7 @@ class PrototypeWindow(QMainWindow):
         self.status.clear_error()
         photo = self._current_photo()
         filename = photo.name if photo else ""
-        canonical = photo.canonical_rel_path if photo else None
-        self.status.set_counts(self._visible_count(), len(self.photos), filename, canonical)
+        self.status.set_counts(self._visible_count(), len(self.photos), filename)
         self._update_empty_state()
         self._on_current_changed(self.grid.currentItem(), None)
         if viewer_was_visible and not self.photos:
@@ -2533,6 +2670,8 @@ class PrototypeWindow(QMainWindow):
             self.grid.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             self.grid.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             self.grid.setFocusPolicy(Qt.StrongFocus)
+        self._update_group_headers()
+        self.grid.doItemsLayout()
 
     def _open_viewer(self) -> None:
         if self._viewer_visible:
@@ -2577,17 +2716,18 @@ class PrototypeWindow(QMainWindow):
             self._select_key(key)
 
     def _on_grid_double_clicked(self, item: QListWidgetItem) -> None:
-        if self._viewer_visible or item is None:
+        if self._viewer_visible or item is None or item.data(HEADER_ROLE):
             return
         self.grid.setCurrentItem(item)
         self._open_viewer()
 
     def _on_current_changed(self, current, previous) -> None:
+        if current is not None and current.data(HEADER_ROLE):
+            return
         photo = self._current_photo()
         self.panel.set_photo(photo)
         filename = photo.name if photo else ""
-        canonical = photo.canonical_rel_path if photo else None
-        self.status.set_counts(self._visible_count(), len(self.photos), filename, canonical)
+        self.status.set_counts(self._visible_count(), len(self.photos), filename)
         if self._viewer_visible:
             if photo is None:
                 self._close_viewer()
@@ -2736,20 +2876,25 @@ class PrototypeWindow(QMainWindow):
             self.empty_label.hide()
 
     def _apply_filter(self, text: str) -> None:
-        needle = text.strip().lower()
+        needle = text.strip().casefold()
         visible_items: list[QListWidgetItem] = []
         for row in range(self.grid.count()):
             item = self.grid.item(row)
+            if item is None or item.data(HEADER_ROLE):
+                continue
             photo = self.photos.get(item.data(PHOTO_ROLE))
-            visible = needle in photo.name.lower() if photo else True
+            visible = photo is None or needle in photo_search_text(photo)
             item.setHidden(not visible)
             if visible:
                 visible_items.append(item)
 
+        self._update_group_headers()
         self._refresh_visible_cache()
 
         current = self.grid.currentItem()
-        if current is None or current.isHidden():
+        if current is not None and (current.data(HEADER_ROLE) or current.isHidden()):
+            current = None
+        if current is None:
             if visible_items:
                 self.grid.setCurrentItem(visible_items[0])
             else:
@@ -2762,8 +2907,7 @@ class PrototypeWindow(QMainWindow):
 
         photo = self._current_photo()
         filename = photo.name if photo else ""
-        canonical = photo.canonical_rel_path if photo else None
-        self.status.set_counts(self._visible_count(), len(self.photos), filename, canonical)
+        self.status.set_counts(self._visible_count(), len(self.photos), filename)
         self._update_empty_state()
         self._schedule_visible_thumbnails()
 
@@ -2817,25 +2961,19 @@ class PrototypeWindow(QMainWindow):
     def _sort_grid(self, key: str) -> None:
         current = self.grid.currentItem()
         current_key = current.data(PHOTO_ROLE) if current else None
+        if current is not None and current.data(HEADER_ROLE):
+            current_key = None
 
         self._sort_key = key
         self.grid.blockSignals(True)
-        items = [self.grid.takeItem(0) for _ in range(self.grid.count())]
-
-        def sort_key(item: QListWidgetItem):
-            photo = self.photos[item.data(PHOTO_ROLE)]
-            return photo_sort_value(photo, key)
-
-        items.sort(key=lambda item: self.photos[item.data(PHOTO_ROLE)].name.casefold())
-        items.sort(key=sort_key, reverse=(key == "date"))
-        for item in items:
-            self.grid.addItem(item)
-
-        self.grid.setCurrentRow(-1)
-        target = self._grid_items.get(current_key) if current_key else None
-        if target is not None:
-            self.grid.setCurrentItem(target)
-        self.grid.blockSignals(False)
+        try:
+            self._populate_grid(list(self.photos.values()))
+            self.grid.setCurrentRow(-1)
+            target = self._grid_items.get(current_key) if current_key else None
+            if target is not None:
+                self.grid.setCurrentItem(target)
+        finally:
+            self.grid.blockSignals(False)
 
         self._apply_filter(self.search_text)
         self._on_current_changed(self.grid.currentItem(), None)

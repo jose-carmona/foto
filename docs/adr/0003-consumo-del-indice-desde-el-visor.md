@@ -36,7 +36,7 @@ La UI leerá desde `storage/catalog`:
 - `photos`: metadatos normalizados (captura, cámara, objetivo, exposición, dimensiones, tipo/extensión, estado de metadatos).
 - `locations`: rutas relativas a la raíz de la biblioteca con `status = 'present'`. Solo se mostrarán ubicaciones presentes.
 
-**Duplicados por contenido:** si el mismo hash aparece en varias ubicaciones `present`, la foto se mostrará **una sola vez** en la rejilla. Se elegirá una **ubicación canónica** de forma determinista (primera en orden lexicográfico POSIX de `rel_path`). Las demás ubicaciones se considerarán réplicas y se mostrarán en el panel de metadatos. La ubicación canónica se mostrará en la barra de estado (abajo a la derecha).
+**Duplicados por contenido:** si el mismo hash aparece en varias ubicaciones `present`, la foto se mostrará **una sola vez** en la rejilla. Se elegirá una **ubicación canónica** de forma determinista (primera en orden lexicográfico POSIX de `rel_path`). Las demás ubicaciones se considerarán réplicas y se mostrarán en el panel de metadatos, junto con la canónica. La barra de estado muestra solo el nombre del fichero de la selección *(enmendado el 2026-11-03: la barra de estado no muestra la ubicación canónica)*.
 
 Para construir `foto.ui.prototype.Photo` se usarán, preferentemente:
 
@@ -68,9 +68,9 @@ Toda la lógica de filtrado, búsqueda y ordenación deberá hacerse **contra lo
 - **Conteos**: `visible/total` se basarán en el conjunto cargado desde el catálogo (una foto por hash, independientemente del número de ubicaciones).
 - **Duplicados**: al buscar/ordenar se considera la foto una sola vez; las ubicaciones alternativas no crean entradas duplicadas en la rejilla.
 
-### 4. Sincronización con el indexador
+### 4. Sincronización con el indexador *(enmendada el 2026-11-03)*
 
-- La UI **no** invoca `foto-index`. La acción `:rescan` recargará los datos desde el catálogo (no volverá a recorrer el filesystem). Si se desea reindexar, se debe ejecutar `foto-index` externamente.
+- La UI **no** invoca `foto-index` y el visor **no expone ninguna orden de recarga o reindexado** (no existe `:rescan`). La sincronización del índice es siempre una operación **externa**: shell, servicio o cron ejecutan `foto-index`, y el visor muestra el catálogo actualizado al reiniciar la aplicación o al abrir otra biblioteca.
 - El visor convivirá con el indexador gracias a SQLite en WAL (ya habilitado en ADR 0002). La UI abrirá el catálogo en modo lectura.
 - Los estados `missing` se ignoran por completo. Las fotos ausentes no se muestran.
 
@@ -115,7 +115,7 @@ Toda la lógica de filtrado, búsqueda y ordenación deberá hacerse **contra lo
 - Filtrar explícitamente por `locations.status = 'present'`.
 - Si falta el catálogo, mostrar mensaje de error y salir con código distinto de cero.
 - Agrupar por `photo_hash`: una entrada por foto, ubicación canónica = menor `rel_path` en orden lexicográfico POSIX.
-- Mostrar ubicación canónica en la barra de estado (derecha). Mostrar el resto de ubicaciones `present` en el panel de metadatos.
+- Mostrar la ubicación canónica y las réplicas en el panel de metadatos. La barra de estado muestra solo el nombre del fichero (decisión enmendada en 2026-11-03).
 - Mantener compatibilidad con el flujo actual de decodificación de originales en segundo plano.
 - Las búsquedas y ordenaciones deben operar sobre los datos cargados del catálogo (una entrada por foto).
 
@@ -123,3 +123,24 @@ Toda la lógica de filtrado, búsqueda y ordenación deberá hacerse **contra lo
 
 - **ADR 0001**: sigue aplicándose para la localización de la biblioteca y la configuración.
 - **ADR 0002**: este ADR extiende la integración prevista; el catálogo sigue siendo reconstruible y solo lo escribe `foto-index`.
+
+## Enmiendas
+
+- **2026-11-03** — Se elimina la orden `:rescan` del visor (antes definida en la
+  sección 4 como «recarga de los datos desde el catálogo»). La reindexación y
+  la sincronización del índice se ejecutan siempre desde la shell, un servicio
+  o cron lanzando `foto-index`; el visor refleja el catálogo actualizado al
+  reiniciar la aplicación o al abrir otra biblioteca. Origen de la enmienda:
+  hallazgo V02 de `docs/informe-discrepancias-adr-codigo.md` — la acción
+  estaba implementada internamente pero era inalcanzable (no estaba en el
+  vocabulario de comandos ni se despachaba), y la carga de datos ocurre ya al
+  abrir la aplicación y al cambiar de biblioteca, de modo que una orden de
+  recarga propia no aporta flujo de uso adicional.
+- **2026-11-03** — La barra de estado muestra **solo el nombre del fichero** de
+  la selección; antes se convenía mostrar la ubicación canónica en la esquina
+  inferior derecha. La ubicación canónica y las réplicas siguen visibles en el
+  panel de metadatos, que es donde residen los datos de ubicación. Origen de
+  la enmienda: hallazgo V05 de `docs/informe-discrepancias-adr-codigo.md` — la
+  implementación ya ignoraba el parámetro de ubicación canónica, y la decisión
+  es mantener ese comportamiento simplificado en vez de ampliarlo. Elimina el
+  contrato incumplido en vez de añadir el dato a la barra.

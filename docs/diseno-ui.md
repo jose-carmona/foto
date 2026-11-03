@@ -180,7 +180,12 @@ en horizontal. Un clic en una miniatura selecciona esa foto.
 
 ### Búsqueda
 
-- `/` abre un filtro incremental por nombre de fichero sobre la vista actual.
+- `/` abre un filtro incremental que examina **el índice**, no solo el nombre
+  de fichero: nombre, ruta relativa (carpeta y ubicación canónica), réplicas,
+  cámara, objetivo, tipo de fichero, fecha y el resto de campos indexados del
+  catálogo (ver ADR 0003).
+- El filtrado se hace en memoria sobre la lista cargada del catálogo, con una
+  entrada por foto (por hash); las réplicas no crean entradas adicionales.
 - El texto se escribe en la barra de estado, junto al indicador de modo.
 - `Enter` confirma y devuelve el foco a la rejilla o al visor.
 - `Esc` cancela y restaura el estado anterior.
@@ -188,8 +193,6 @@ en horizontal. Un clic en una miniatura selecciona esa foto.
   activo para editarlo.
 - No hay `n`/`N`: el filtro oculta las fotos que no coinciden, y `j`/`k`
   recorren los resultados.
-- La búsqueda por metadatos, fechas o ubicación llega en la fase 2; este
-  documento solo fija el comportamiento del filtro del MVP.
 
 ### Línea de comandos
 
@@ -202,9 +205,13 @@ Vocabulario mínimo:
 | --- | --- |
 | `:q`, `:quit` | Salir de la aplicación |
 | `:open [ruta]` | Abrir una carpeta o biblioteca; sin ruta, selector nativo |
-| `:rescan` | Volver a indexar la biblioteca actual |
 | `:sort date`, `:sort camera` | Cambiar el orden de la rejilla (por defecto, fecha) |
 | `:help` | Abrir la ayuda |
+
+No existe `:rescan`: según ADR 0003 (enmendado), la reindexación y la
+sincronización del índice se ejecutan desde shell, servicio o cron con
+`foto-index`, y el visor muestra el catálogo actualizado al reiniciarse o al
+abrir otra biblioteca.
 
 Regla de extensibilidad: cualquier acción nueva que no tenga una tecla propia
 debe ser alcanzable por `:`. No se añaden botones para compensar.
@@ -288,6 +295,11 @@ ancho que la foto, excluyendo el panel de metadatos.
 
 - Las miniaturas fluyen de izquierda a derecha, fila a fila, con ajuste al ancho de
   la ventana (sin rejilla fija de columnas).
+- La rejilla se agrupa según la ordenación activa. `:sort date` agrupa por año y
+  mes, del grupo más reciente al más antiguo; `:sort camera` agrupa por cámara,
+  en orden alfabético. Cada grupo muestra una cabecera y, debajo, sus miniaturas.
+  Las fotos sin fecha o sin cámara quedan al final en `Sin fecha` o `Sin cámara`.
+  Un filtro oculta las cabeceras cuyos grupos se quedan sin coincidencias.
 - Tamaño de miniatura: 400 × 247 px (proporción áurea). Recorte centrado para
   llenar el recuadro sin deformar la imagen. Sin marco ni borde alrededor de la
   miniatura.
@@ -308,8 +320,9 @@ ancho que la foto, excluyendo el panel de metadatos.
 - La fila inferior es la misma rejilla limitada a una fila de alto: celdas de
   416 × 263 px (miniatura de 400 × 247 px y 16 px de separación), de borde a
   borde del contenido. No muestra scrollbars; la rueda la desplaza en horizontal.
-  Usa el mismo recorte centrado, las mismas insignias, el mismo sombreado de
-  selección y el mismo foco que la rejilla.
+  No muestra las cabeceras de grupo de la rejilla principal. Usa el mismo recorte
+  centrado, las mismas insignias, el mismo sombreado de selección y el mismo foco
+  que la rejilla.
 - La fila muestra solo las fotos visibles bajo el filtro activo. La miniatura
   actual queda seleccionada y resaltada; la foto grande no. La fila no se
   autocentra: usa `EnsureVisible` para mantener la miniatura a la vista con el
