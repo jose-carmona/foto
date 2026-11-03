@@ -20,7 +20,7 @@ este comportamiento.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -372,6 +372,41 @@ def sorted_photos(photos: list[Photo], key: str) -> list[Photo]:
         reverse=(key == "date"),
     )
     return ordered
+
+
+def vertical_row_target(
+    action: str,
+    rows: Sequence[tuple[int, tuple[int, ...]]],
+    *,
+    row_index: int,
+    step_top: int,
+) -> int:
+    """Índice de línea visual destino para un movimiento vertical.
+
+    ``rows`` describe la rejilla renderizada: una entrada ``(top, centros_x)``
+    por línea visual con fotos; las cabeceras de grupo no aparecen, de modo
+    que ``j``/``k`` las saltan. Con la agrupación por fecha o cámara las
+    líneas pueden ser parciales, así que el destino se deduce de la geometría
+    (altura de línea) y no de un número fijo de elementos por línea.
+    """
+    if action == "j":
+        return min(row_index + 1, len(rows) - 1)
+    if action == "k":
+        return max(row_index - 1, 0)
+    if action in ("pagedown", "pageup", "halfdown", "halfup"):
+        top = rows[row_index][0]
+        if action in ("pagedown", "halfdown"):
+            threshold = top + step_top
+            for index in range(row_index + 1, len(rows)):
+                if rows[index][0] >= threshold:
+                    return index
+            return len(rows) - 1
+        threshold = top - step_top
+        for index in range(row_index - 1, -1, -1):
+            if rows[index][0] <= threshold:
+                return index
+        return 0
+    raise ValueError(f"acción vertical desconocida: {action}")
 
 
 def photo_group(photo: Photo, key: str) -> tuple[str, str]:
@@ -1079,15 +1114,58 @@ class PhotoGrid(QListWidget):
         self.setPalette(palette)
         self.viewport().update()
 
+    def _visual_rows(self) -> list[list[int]] | None:
+        """Agrupa las filas de fotos en líneas visuales usando la geometría real.
+
+        Con agrupación por fecha o cámara, las cabeceras ocupan la fila
+        completa y la última fila de cada grupo puede ser parcial: las filas
+        ya no tienen todas el mismo número de fotos, así que el paso vertical
+        no puede ser un número fijo de elementos. Devuelve ``None`` si la
+        geometría aún no es fiable (sin layout).
+        """
+        rows: list[list[int]] = []
+        row: list[int] = []
+        row_top: int | None = None
+        for visible_row in self._visible_rows:
+            item = self.item(visible_row)
+            if item is None:
+                continue
+            rect = self.visualItemRect(item)
+            if rect.width() <= 1 and rect.height() <= 1:
+                return None
+            top = rect.top()
+            if row and abs(top - row_top) > 2:
+                rows.append(row)
+                row = []
+            if not row:
+                row_top = top
+            row.append(visible_row)
+        if row:
+            rows.append(row)
+        return rows or None
+
+    def _row_center_x(self, visible_row: int) -> int:
+        item = self.item(visible_row)
+        if item is None:
+            return 0
+        return int(self.visualItemRect(item).center().x())
+
     def move_selection(self, action: str) -> bool:
         if not self._visible_rows:
             return True
         position = self._visible_positions.get(self.currentRow(), 0)
+        # h/l y Home/End se mueven por índice. En modo fila (visor) el paso
+        # vertical por índice conserva el comportamiento de siempre.
+        if action in ("h", "l", "home", "end") or self.row_mode:
+            return self._move_indexed(action, position)
+        return self._move_vertical(action, position)
 
+    def _move_indexed(self, action: str, position: int) -> bool:
+        last = len(self._visible_rows) - 1
         if action == "home":
             target = 0
         elif action == "end":
-            target = len(self._visible_rows) - 1
+            target = last
         else:
             columns = max(1, self.viewport().width() // ITEM_W)
             page_rows = max(1, self.viewport().height() // ITEM_H)
@@ -1102,9 +1180,55 @@ class PhotoGrid(QListWidget):
                 "halfdown": max(1, page // 2),
                 "halfup": -max(1, page // 2),
             }[action]
-            target = max(0, min(len(self._visible_rows) - 1, position + step))
+            target = max(0, min(last, position + step))
 
         self.setCurrentRow(self._visible_rows[target])
+        self.scrollToItem(self.currentItem(), QAbstractItemView.EnsureVisible)
+        return target != position
+
+    def _move_vertical(self, action: str, position: int) -> bool:
+        """Mueve el cursor verticalmente siguiendo la geometría renderizada.
+
+        ``j``/``k`` pasan a la línea visual contigua (las cabeceras de grupo no
+        cuentan: solo quedan en ``_visible_rows`` filas con fotos); el tamaño
+        de página salta por altura de viewport. Como la línea destino puede
+        tener menos fotos (cabecera que corta el flujo), la celda elegida es
+        la de centro horizontal más próximo a la columna actual.
+        """
+        visual_rows = self._visual_rows()
+        current_row = self._visible_rows[position]
+        if visual_rows is None:
+            return self._move_indexed(action, position)
+        if self.item(current_row) is None:
+            return False
+
+        row_index = 0
+        geometry: list[tuple[int, tuple[int, ...]]] = []
+        for index, row in enumerate(visual_rows):
+            if current_row in row:
+                row_index = index
+            geometry.append(
+                (
+                    self.visualItemRect(self.item(row[0])).top(),
+                    tuple(self._row_center_x(visible_row) for visible_row in row),
+                )
+            )
+
+        page_rows = max(1, self.viewport().height() // ITEM_H)
+        step_top = page_rows * ITEM_H
+        if action in ("halfdown", "halfup"):
+            step_top = max(1, step_top // 2)
+
+        target_index = vertical_row_target(action, geometry, row_index=row_index, step_top=step_top)
+        # La línea destino puede tener menos fotos: elige la celda más
+        # cercana a la columna actual.
+        current_x = self._row_center_x(current_row)
+        visible_row = min(
+            visual_rows[target_index],
+            key=lambda row: abs(self._row_center_x(row) - current_x),
+        )
+        target = self._visible_positions.get(visible_row, position)
+        self.setCurrentRow(visible_row)
         self.scrollToItem(self.currentItem(), QAbstractItemView.EnsureVisible)
         return target != position
 
