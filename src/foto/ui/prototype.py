@@ -507,6 +507,25 @@ def make_thumbnail(index: int) -> QIcon:
     return QIcon(pixmap)
 
 
+def is_group_start(key: int, shift: bool) -> bool:
+    """Detecta ``0``: primera foto del grupo.
+
+    Se saca ``0`` del rango de dígitos reservado para que no caiga como acción
+    suelta sin consumidor.
+    """
+    return key == Qt.Key_0 and not shift
+
+
+def is_group_end(key: int, shift: bool) -> bool:
+    """Detecta ``$``: última foto del grupo.
+
+    El ``$`` vive en su propia tecla en algunas distribuciones y en ``Shift+4``
+    o ``Shift+5`` en otras; se aceptan ambas hasta que llegue el nuevo uso de
+    esos dígitos.
+    """
+    return key == Qt.Key_Dollar or (shift and key in (Qt.Key_4, Qt.Key_5))
+
+
 def viewer_key_action(event) -> str | None:
     """Traduce una tecla del visor a una acción, o None si no aplica."""
     key = event.key()
@@ -515,6 +534,10 @@ def viewer_key_action(event) -> str | None:
     if modifiers & (Qt.ControlModifier | Qt.MetaModifier):
         return None
 
+    if is_group_start(key, shift):
+        return "group_first"
+    if is_group_end(key, shift):
+        return "group_last"
     if key == Qt.Key_J:
         return "pan_down" if shift else "next"
     if key == Qt.Key_K:
@@ -1160,11 +1183,41 @@ class PhotoGrid(QListWidget):
         if not self._visible_rows:
             return True
         position = self._visible_positions.get(self.currentRow(), 0)
+        if action in ("0", "$"):
+            return self._move_group(action)
         # h/l y Home/End se mueven por índice. En modo fila (visor) el paso
         # vertical por índice conserva el comportamiento de siempre.
         if action in ("h", "l", "home", "end") or self.row_mode:
             return self._move_indexed(action, position)
         return self._move_vertical(action, position)
+
+    def _move_group(self, action: str) -> bool:
+        """Salta a la primera (``0``) o última (``$``) foto del grupo actual.
+
+        Los límites salen de los datos de grupo de las celdas visibles, no de
+        la geometría: bastan para delimitar el grupo con filtros activos y
+        sirven igual en la fila del visor, donde las cabeceras están ocultas
+        pero cada celda conserva su grupo. Igual que el resto de movimientos,
+        no hay salto circular: si el cursor ya está en el extremo del grupo se
+        queda donde está y la ventana lo hace saber.
+        """
+        current_row = self.currentRow()
+        item = self.item(current_row)
+        if item is None:
+            return True
+        group_key = str(item.data(GROUP_ROLE) or "")
+        members = [
+            position
+            for position, visible_row in enumerate(self._visible_rows)
+            if (cell := self.item(visible_row)) is not None
+            and str(cell.data(GROUP_ROLE) or "") == group_key
+        ]
+        if not members:
+            return True
+        target = members[0] if action == "0" else members[-1]
+        self.setCurrentRow(self._visible_rows[target])
+        self.scrollToItem(self.currentItem(), QAbstractItemView.EnsureVisible)
+        return target != self._visible_positions.get(current_row, 0)
 
     def _move_indexed(self, action: str, position: int) -> bool:
         last = len(self._visible_rows) - 1
@@ -1306,6 +1359,12 @@ class PhotoGrid(QListWidget):
         if key == Qt.Key_End:
             self.action_requested.emit("end")
             return
+        if is_group_start(key, shift):
+            self.action_requested.emit("0")
+            return
+        if is_group_end(key, shift):
+            self.action_requested.emit("$")
+            return
         if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_O):
             self.action_requested.emit("open_viewer")
             return
@@ -1351,7 +1410,7 @@ class PhotoGrid(QListWidget):
         if key == Qt.Key_Escape:
             self.action_requested.emit("esc")
             return
-        if Qt.Key_0 <= key <= Qt.Key_5:
+        if not shift and Qt.Key_0 <= key <= Qt.Key_5:
             self.action_requested.emit(str(key - Qt.Key_0))
             return
 
@@ -2122,12 +2181,15 @@ class HelpOverlay(QFrame):
             "a la rejilla<br>"
             "<code>j k h l</code> o flechas mover · <code>PgUp/PgDn</code> página · "
             "<code>Ctrl+d/u</code> media página · <code>Home/End</code> extremos<br>"
+            "<code>0</code>/<code>$</code> primera/última foto del grupo · "
+            "<code>g g</code>/<code>G</code> extremos de la lista<br>"
             "<code>f</code> favorito · <code>Tab</code> foco del panel<br>"
             "<b>Visor</b><br>"
             "La fila inferior es la misma rejilla: "
             "<code>h</code>/<code>l</code> foto anterior/siguiente · "
             "<code>j</code>/<code>k</code> bloque de columnas<br>"
-            "<code>g g</code>/<code>G</code> extremos · "
+            "<code>0</code>/<code>$</code> extremos del grupo · "
+            "<code>g g</code>/<code>G</code> extremos de la lista · "
             "<code>PgUp/PgDn</code> página · <code>Ctrl+d/u</code> media página<br>"
             "<code>+</code>/<code>-</code> zoom · <code>z</code> ajuste/100 % · "
             "<code>H J K L</code> desplazar con zoom<br>"
@@ -2775,6 +2837,26 @@ class PrototypeWindow(QMainWindow):
         if keys:
             self._select_key(keys[-1])
 
+    def _viewer_group_edge(self, first: bool) -> None:
+        """Salta a la primera o última foto del grupo actual en el visor.
+
+        Como el visor solo muestra fotos (sin cabeceras), el grupo se deduce
+        del criterio de ordenación activo sobre las claves visibles.
+        """
+        keys = self._visible_keys()
+        photo = self._current_photo()
+        if not keys or photo is None:
+            return
+        group_key = photo_group(photo, self._sort_key)[0]
+        members = [
+            key
+            for key in keys
+            if photo_group(self.photos[key], self._sort_key)[0] == group_key
+        ]
+        if not members:
+            return
+        self._select_key(members[0] if first else members[-1])
+
     def _handle_g(self) -> None:
         if self._g_pending:
             self._g_pending = False
@@ -3128,6 +3210,8 @@ class PrototypeWindow(QMainWindow):
             "l",
             "home",
             "end",
+            "0",
+            "$",
             "pagedown",
             "pageup",
             "halfdown",
@@ -3142,6 +3226,8 @@ class PrototypeWindow(QMainWindow):
                     self._on_viewer_action("pan_left")
                 elif action == "l":
                     self._on_viewer_action("pan_right")
+                elif action in ("0", "$"):
+                    self._viewer_group_edge(action == "0")
                 elif action == "home":
                     self._viewer_first()
                 elif action == "end":
@@ -3202,6 +3288,12 @@ class PrototypeWindow(QMainWindow):
             return
         if action == "last":
             self._viewer_last()
+            return
+        if action == "group_first":
+            self._viewer_group_edge(first=True)
+            return
+        if action == "group_last":
+            self._viewer_group_edge(first=False)
             return
         if action == "g":
             self._handle_g()

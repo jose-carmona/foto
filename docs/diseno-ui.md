@@ -115,6 +115,7 @@ hasta 500 ms entre pulsaciones.
 | `h` `j` `k` `l` o flechas | Mover el cursor por la rejilla |
 | `g g` | Primera foto |
 | `G` | Última foto |
+| `0` / `$` | Primera / última foto del grupo |
 | `Ctrl+d` / `Ctrl+u` | Media página abajo / arriba |
 | `PgDn` / `PgUp` | Una página abajo / arriba |
 | `Home` / `End` | Primera / última foto |
@@ -150,6 +151,7 @@ Reglas de la fila:
 | `h` / `l` o `←` / `→` | Foto anterior / siguiente |
 | `j` / `k` o `↓` / `↑` | Avanzar / retroceder un bloque de columnas visibles |
 | `g g` / `G` | Primera / última foto |
+| `0` / `$` | Primera / última foto del grupo |
 | `Ctrl+d` / `Ctrl+u` | Media página abajo / arriba |
 | `PgDn` / `PgUp` | Una página abajo / arriba |
 | `Home` / `End` | Primera / última foto |
@@ -164,6 +166,8 @@ Reglas de la fila:
 La navegación de la fila es la de la rejilla: `h`/`l` mueven una miniatura,
 `j`/`k` saltan un bloque de columnas visibles y `g g`/`G`, `Home`/`End`,
 `PgUp`/`PgDn` y `Ctrl+d`/`Ctrl+u` recorren la secuencia con la misma semántica.
+El grupo también delimita aquí: `0`/`$` dejan el cursor en la primera o última
+miniatura del grupo al que pertenece la foto actual.
 
 El paneo de la imagen ampliada usa las mayúsculas `H`, `J`, `K`, `L`. Sin zoom no
 desplazan nada. La miniatura actual se resalta en la fila; la foto grande no lleva
