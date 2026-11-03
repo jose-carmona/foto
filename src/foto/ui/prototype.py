@@ -81,6 +81,12 @@ FAVORITE_ROLE = Qt.UserRole + 2
 GROUP_ROLE = Qt.UserRole + 3
 HEADER_ROLE = Qt.UserRole + 4
 
+# Qt remapea los modificadores en macOS: ⌘ Command llega como ControlModifier
+# y la tecla Ctrl física como MetaModifier (documentado en Qt::KeyboardModifier).
+# La media página debe ser Ctrl+d/Ctrl+u con la tecla Ctrl física en todas las
+# plataformas (docs/diseno-ui.md), así que la máscara depende del sistema.
+_CTRL_MASK = Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
+
 THUMB_W = 400
 THUMB_H = 247
 GRID_GAP = 16
@@ -1315,10 +1321,10 @@ class PhotoGrid(QListWidget):
         if key == Qt.Key_PageUp:
             self.action_requested.emit("pageup")
             return
-        if key == Qt.Key_D and event.modifiers() & Qt.ControlModifier:
+        if key == Qt.Key_D and event.modifiers() & _CTRL_MASK:
             self.action_requested.emit("halfdown")
             return
-        if key == Qt.Key_U and event.modifiers() & Qt.ControlModifier:
+        if key == Qt.Key_U and event.modifiers() & _CTRL_MASK:
             self.action_requested.emit("halfup")
             return
         if key in (Qt.Key_Tab, Qt.Key_Backtab):
