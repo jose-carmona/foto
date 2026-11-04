@@ -11,10 +11,13 @@ Se ejecuta con:
 La app real arranca con el panel oculto, como fija docs/diseno-ui.md. En el
 prototipo arranca visible para poder evaluarlo sin pulsar nada.
 
-El visor muestra debajo de la foto grande la misma rejilla, limitada a una fila
-de alto y sin scrollbars. La navegación, la selección y las insignias son las de
-la rejilla; la foto grande no recibe foco. La app real y el prototipo comparten
-este comportamiento.
+La ventana se compone de cuatro regiones: zona de rejilla (siempre visible),
+zona de estado (barra inferior de 28 px, siempre visible), panel de metadatos
+(columna derecha de ancho fijo, mostrable) y panel de foto (el visor, la misma
+foto seleccionada, mostrable). Los paneles solo cambian la dimensión de la
+zona de rejilla; su comportamiento —navegación, grupos, scroll, selección— es
+idéntico en todos los estados, y la miniatura seleccionada queda siempre a la
+vista. Esto lo fija prompts/refabricacion-visual-visor.md.
 """
 
 from __future__ import annotations
@@ -1102,8 +1105,10 @@ class PhotoGrid(QListWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAccessibleName("rejilla de fotos")
-        # En el visor, la rejilla se limita a una fila horizontal.
-        self.row_mode = False
+        # Con el panel de foto abierto, la rejilla aparta las teclas del visor
+        # (H/J/K/L paneo, +/−/z zoom), porque el foco sigue en la rejilla. La
+        # composición de la rejilla no cambia: es la misma vista, solo recortada.
+        self.viewer_keys = False
         self._visible_rows: list[int] = []
         self._visible_positions: dict[int, int] = {}
         self._header_width = 0
@@ -1187,9 +1192,8 @@ class PhotoGrid(QListWidget):
         position = self._visible_positions.get(self.currentRow(), 0)
         if action in ("0", "$"):
             return self._move_group(action)
-        # h/l y Home/End se mueven por índice. En modo fila (visor) el paso
-        # vertical por índice conserva el comportamiento de siempre.
-        if action in ("h", "l", "home", "end") or self.row_mode:
+        # h/l y Home/End se mueven por índice.
+        if action in ("h", "l", "home", "end"):
             return self._move_indexed(action, position)
         return self._move_vertical(action, position)
 
@@ -1294,12 +1298,6 @@ class PhotoGrid(QListWidget):
         return target != position
 
     def wheelEvent(self, event) -> None:
-        if self.row_mode:
-            bar = self.horizontalScrollBar()
-            delta = event.angleDelta().y() or event.angleDelta().x()
-            bar.setValue(bar.value() - delta)
-            event.accept()
-            return
         super().wheelEvent(event)
 
     def keyPressEvent(self, event):
@@ -1308,7 +1306,7 @@ class PhotoGrid(QListWidget):
         shift = bool(modifiers & Qt.ShiftModifier)
         control = bool(modifiers & (Qt.ControlModifier | Qt.MetaModifier))
 
-        if self.row_mode:
+        if self.viewer_keys:
             if not control and shift and key in (
                 Qt.Key_H,
                 Qt.Key_J,
@@ -2462,7 +2460,8 @@ class PrototypeWindow(QMainWindow):
     ) -> None:
         super().__init__()
         # True usa la rejilla como fila inferior del visor; False conserva el
-        # filmstrip histórico. La app real y el prototipo pasan True.
+        # filmstrip histórico, que solo usa la configuración del prototipo sin
+        # rejilla (grid_row=False). La app real y el prototipo pasan True.
         self.grid_row = grid_row
         self.photos = {photo.key: photo for photo in photos}
         self._sort_key = DEFAULT_SORT
@@ -2691,7 +2690,7 @@ class PrototypeWindow(QMainWindow):
         self._schedule_visible_thumbnails()
 
     def _update_group_headers(self) -> None:
-        """Oculta las cabeceras de grupos sin fotos visibles y en modo fila."""
+        """Oculta las cabeceras de grupos sin fotos visibles."""
         visible_groups: set[str] = set()
         for row in range(self.grid.count()):
             item = self.grid.item(row)
@@ -2703,7 +2702,7 @@ class PrototypeWindow(QMainWindow):
             if item is None or not item.data(HEADER_ROLE):
                 continue
             group_key = str(item.data(GROUP_ROLE) or "")
-            item.setHidden(self.grid.row_mode or group_key not in visible_groups)
+            item.setHidden(group_key not in visible_groups)
 
     def _update_row_header(self) -> None:
         """En el visor muestra sobre la fila el grupo de la foto actual.
@@ -2771,9 +2770,21 @@ class PrototypeWindow(QMainWindow):
         self._focus_current_view()
 
     def _layout_content(self) -> None:
+        """Compone las cuatro regiones de la ventana.
+
+        Regiones: zona de rejilla, zona de estado (barra inferior, fuera de
+        este área de contenido), panel de metadatos (columna derecha, siempre
+        por encima de la zona de estado) y panel de foto. La rejilla y la
+        barra de estado están siempre visibles; mostrar u ocultar los paneles
+        solo cambia la dimensión de la zona de rejilla, nunca su
+        comportamiento.
+        """
         width = self.content.width()
         height = self.content.height()
         if self.panel_visible:
+            # Panel de metadatos: ancho fijo, ocupa el lateral derecho por
+            # encima de la zona de estado (esta barra vive fuera del área de
+            # contenido). En ventanas estrechas se muestra como capa temporal.
             panel_w = min(PANEL_W, max(280, width - 48))
             self.panel_overlay = width < 900
             content_w = width if self.panel_overlay else width - panel_w
@@ -2786,9 +2797,9 @@ class PrototypeWindow(QMainWindow):
 
         if self._viewer_visible:
             if self.grid_row:
-                # La fila es la misma rejilla: una celda de alto y sin
-                # scrollbar. Encima, la cabecera del grupo de la foto
-                # mostrada, con las métricas de la rejilla completa.
+                # Panel de foto, encima la zona de rejilla recortada a un
+                # título de grupo y una única fila de celdas. Es la misma
+                # rejilla de siempre: solo cambia su dimensión.
                 header_h = min(GROUP_HEADER_H, max(0, height))
                 row_h = min(ITEM_H, max(0, height - header_h))
                 viewer_h = max(0, height - header_h - row_h)
@@ -2825,6 +2836,12 @@ class PrototypeWindow(QMainWindow):
             self.content_blocker.setGeometry(0, 0, width, height)
             self.content_blocker.raise_()
         self._schedule_visible_thumbnails()
+        # Invariante: la miniatura seleccionada queda siempre a la vista tras
+        # cualquier cambio de geometría (mostrar/ocultar paneles, redimensionar
+        # la ventana), con el desplazamiento mínimo (EnsureVisible).
+        current = self.grid.currentItem()
+        if current is not None:
+            self.grid.scrollToItem(current, QAbstractItemView.EnsureVisible)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2952,24 +2969,6 @@ class PrototypeWindow(QMainWindow):
         # ``indexAt`` devuelve un elemento concreto de la fila visual; retrocede
         # hasta la primera celda de esa fila para no perder las de su izquierda.
         start = first.row()
-        if self.grid.row_mode:
-            # En el visor la rejilla es una sola fila horizontal: avanza hasta
-            # salir por la derecha en lugar de buscar el borde inferior.
-            keys: list[str] = []
-            row = start
-            while row < self.grid.count():
-                item = self.grid.item(row)
-                if item is None:
-                    break
-                rect = self.grid.visualItemRect(item)
-                if rect.left() > viewport.right():
-                    break
-                if not item.isHidden() and rect.right() >= viewport.left():
-                    key = item.data(PHOTO_ROLE)
-                    if key:
-                        keys.append(str(key))
-                row += 1
-            return keys
 
         first_top = self.grid.visualItemRect(self.grid.item(start)).top()
         while start > 0:
@@ -3122,21 +3121,17 @@ class PrototypeWindow(QMainWindow):
     def _clear_g_pending(self) -> None:
         self._g_pending = False
 
-    def _set_grid_row_mode(self, enabled: bool) -> None:
-        """Limita la rejilla a una fila horizontal o la devuelve a la rejilla."""
-        self.grid.row_mode = enabled
-        self.grid.setWrapping(not enabled)
-        self.grid.setFlow(QListWidget.LeftToRight)
-        if enabled:
-            self.grid.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.grid.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.grid.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
-        else:
-            self.grid.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.grid.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.grid.setFocusPolicy(Qt.StrongFocus)
-        self._update_group_headers()
-        self.grid.doItemsLayout()
+    def _set_viewer_keys(self, enabled: bool) -> None:
+        """Aparta las teclas del panel de foto mientras la rejilla tiene foco.
+
+        La composición de la rejilla no cambia en ningún estado: sigue siendo
+        la misma vista con wrapping y scroll vertical, y lo único que varía es
+        su geometría (ver ``_layout_content``). Aquí solo se indica a la
+        rejilla que, con el panel de foto abierto, las teclas ``H J K L``, ``+
+        -`` y ``z`` corresponden al paneo y al zoom de la foto grande en lugar
+        de a sus navegadores.
+        """
+        self.grid.viewer_keys = enabled
 
     def _open_viewer(self) -> None:
         if self._viewer_visible:
@@ -3147,13 +3142,9 @@ class PrototypeWindow(QMainWindow):
             return
         self._viewer_visible = True
         if self.grid_row:
-            self._set_grid_row_mode(True)
+            self._set_viewer_keys(True)
         self._layout_content()
-        if self.grid_row:
-            item = self.grid.currentItem()
-            if item is not None:
-                self.grid.scrollToItem(item, QAbstractItemView.EnsureVisible)
-        else:
+        if not self.grid_row:
             self.viewer.select_key(photo.key)
         self._show_viewer_photo(photo)
         self._focus_current_view()
@@ -3166,12 +3157,8 @@ class PrototypeWindow(QMainWindow):
         self.viewer.canvas.reset_zoom()
         self.viewer.hide()
         if self.grid_row:
-            self._set_grid_row_mode(False)
+            self._set_viewer_keys(False)
         self._layout_content()
-        if self.grid.currentItem() is not None:
-            self.grid.scrollToItem(
-                self.grid.currentItem(), QAbstractItemView.EnsureVisible
-            )
         if not self.status.prompt_active:
             self._focus_grid()
             self.status.show_message("rejilla", 1200)

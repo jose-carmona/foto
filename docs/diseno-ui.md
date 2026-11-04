@@ -23,9 +23,12 @@ cambia la regla aquí o no se implementa.
 2. **Atajos de vim.** Navegación con `h j k l`, `g g`/`G`, `Ctrl+d`/`Ctrl+u`,
    búsqueda con `/` y comandos con `:`. Sin `INSERT`: el texto solo se escribe
    en los modos explícitos de búsqueda y comando.
-3. **Una ventana, tres regiones.** Contenido, panel de metadatos y barra de
-   estado. Nada de pestañas, barras de herramientas ni ventanas secundarias
-   (salvo el selector nativo de carpetas).
+3. **Una ventana, cuatro regiones.** Zona de rejilla, zona de estado, panel de
+   metadatos y panel de foto. La zona de rejilla y la zona de estado están
+   siempre visibles; el panel de metadatos y el panel de foto pueden
+   mostrarse u ocultarse, y al hacerlo solo cambia la dimensión de la zona de
+   rejilla, nunca su comportamiento. Nada de pestañas, barras de herramientas
+   ni ventanas secundarias (salvo el selector nativo de carpetas).
 4. **La foto es la interfaz.** El chrome no compite con la imagen: sin bordes
    decorativos, sombras ni degradados.
 5. **Una sola acción por tecla.** Ninguna tecla cambia de significado según el
@@ -71,9 +74,10 @@ cambia la regla aquí o no se implementa.
 | Comando | `:texto` | `:` | `Enter` ejecuta, `Esc` cancela |
 | Ayuda | `AYUDA` | `?` o `F1` | `Esc` o `q` |
 
-La rejilla y el visor no son modos de entrada: comparten el modo Normal y la
-barra sigue mostrando `NORMAL`. El visor es la vista individual con la rejilla
-limitada a una fila; se abre con `Enter`/`o` y se cierra con `q` o `Esc`.
+La rejilla y el panel de foto no son modos de entrada: comparten el modo Normal
+y la barra sigue mostrando `NORMAL`. El panel de foto es la vista individual;
+la rejilla queda como una única fila debajo y se abre con `Enter`/`o` y se
+cierra con `q` o `Esc`.
 
 Reglas:
 
@@ -132,22 +136,28 @@ estado lo indica de forma discreta.
 
 ### Visor
 
-La fila inferior del visor es la misma rejilla de la vista principal, limitada a
-una fila de alto. No es un widget aparte: comparte selección, navegación,
-insignias y foco con la rejilla.
+Con el panel de foto abierto, la zona de rejilla queda reducida a la altura de
+un título de grupo (52 px) más una única fila de celdas (263 px). Es la misma
+rejilla de la vista principal, solo recortada: mismo widget, misma navegación,
+mismos grupos, mismas métricas y mismo scroll; lo único que cambia es su
+dimensión. No es un filmstrip ni una vista aparte.
 
 Reglas de la fila:
 
-- Es la misma `PhotoGrid` que la vista principal, limitada a una fila de alto;
-  no es un filmstrip ni una vista aparte.
-- Encima de la fila se muestra la cabecera del grupo de la foto que está en el
-  visor, con la tipografía de las cabeceras de la rejilla. Al navegar por la
-  fila el rótulo cambia al grupo de la miniatura con el cursor, igual que al
-  recorrer la rejilla a pantalla completa.
-- Todas las fotos visibles bajo el filtro activo forman una única fila
-  horizontal, de borde a borde del contenido y sin scrollbars visibles.
+- Es la misma `PhotoGrid` que la vista principal, recortada a una fila de
+  alto; no es un filmstrip ni una vista aparte.
+- Encima de la fila se muestra el título del grupo de la foto con el cursor,
+  con la tipografía de las cabeceras de la rejilla. La fila puede cruzar de un
+  grupo a otro mientras avanza; el título cambia siempre al grupo de la
+  miniatura con el cursor, igual que al recorrer la rejilla a pantalla
+  completa.
+- Se ve una fila a la vez porque la zona de rejilla queda a la altura exacta
+  de una fila; su desplazamiento vertical sigue existiendo y la fila visible
+  es la que contiene el cursor (`EnsureVisible`, desplazamiento mínimo).
 - El foco y la selección están en la fila. La miniatura actual se resalta; la
-  foto grande no lleva anillo de foco ni se resalta.</think><tool_call>edit<arg_key>newString</arg_key><arg_value>- La navegación es la de la rejilla y usa `EnsureVisible`: la fila se desplaza
+  foto grande no lleva anillo de foco ni se resalta.
+- Al cerrar el panel de foto, la rejilla queda en la foto que se estaba
+  viendo.</think><tool_call>edit<arg_key>newString</arg_key><arg_value>- La navegación es la de la rejilla y usa `EnsureVisible`: la fila se desplaza
   lo mínimo para dejar la miniatura a la vista, sin autocentrarla.
 - Al cerrar el visor, la rejilla principal queda en la foto que se estaba
   viendo.
@@ -182,11 +192,10 @@ anillo de foco ni se resalta.
 Al llegar al final de la secuencia, la navegación se detiene; no hay salto
 circular.
 
-La fila ocupa el ancho del contenido (excluyendo el panel de metadatos) y queda
-pegada al borde inferior. Muestra todas las fotos visibles bajo el filtro activo
-con las mismas métricas que la rejilla: miniaturas de 400 × 247 px, separación de
-16 px y celdas de 416 × 263 px. No tiene scrollbars visibles; la rueda la recorre
-en horizontal. Un clic en una miniatura selecciona esa foto.
+La fila queda pegada al borde inferior del espacio disponible y muestra la
+secuencia con las mismas métricas que la rejilla: miniaturas de 400 × 247 px,
+separación de 16 px y celdas de 416 × 263 px. El scroll y la rueda se comportan
+igual que en la rejilla completa. Un clic en una miniatura selecciona esa foto.
 
 ### Búsqueda
 
@@ -244,10 +253,10 @@ lleguen sus funciones:
 
 ### Ratón
 
-- Clic: mover el cursor. Doble clic: abrir en el visor.
-- En el visor, un clic en una miniatura de la fila cambia la foto actual. La
-  rueda sobre la fila la recorre en horizontal.
-- Rueda: desplazar la rejilla; sobre la fila del visor, recorrerla en horizontal.
+- Clic: mover el cursor. Doble clic: abrir en el panel de foto.
+- Con el panel de foto abierto, un clic en una miniatura de la fila cambia la
+  foto actual.
+- Rueda: desplazar la rejilla, igual con el panel de foto abierto.
   `Ctrl`/`⌘` + rueda sobre la foto grande hace zoom.
 - Clic derecho: menú contextual con las acciones de la foto bajo el cursor. Es
   un atajo, no la única vía: todo lo que ofrece está en el teclado.
@@ -258,48 +267,96 @@ lleguen sus funciones:
 
 ### Anatomía de la ventana
 
-```
-┌ foto — Fotos ───────────────────────────────────────────────┐
-│                                                             │
-│   ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐                   │
-│   │       │ │       │ │       │ │       │                   │
-│   └───────┘ └───────┘ └───────┘ └───────┘                   │
-│   ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐                   │
-│   │       │ │       │ │       │ │       │                   │
-│   └───────┘ └───────┘ └───────┘ └───────┘                   │
-│                                                             │
-├─────────────────────────────────────────────────────────────┤
-│ NORMAL        248 fotos · 12 favoritas                      │
-└─────────────────────────────────────────────────────────────┘
-```
+La ventana tiene cuatro regiones:
+
+1. **Zona de rejilla.** La rejilla de miniaturas con sus cabeceras de grupo.
+   Siempre visible, y con idéntico comportamiento en todos los estados:
+   mostrar u ocultar paneles solo cambia su dimensión.
+2. **Zona de estado.** Barra inferior, 28 px de alto, siempre visible, siempre
+   a ancho completo. Ninguna región la solapa ni la modifica.
+3. **Panel de metadatos.** Columna derecha de ancho fijo (426 px), por encima
+   de la zona de estado. Se muestra u oculta con `i`; arranca oculto.
+4. **Panel de foto.** La foto seleccionada a tamaño completo (el visor). Se
+   abre con `Enter`/`o` y se cierra con `q`/`Esc`.
+
+Los cuatro estados resultantes:
+
+**Estado de arranque: solo rejilla + estado.** La ventana siempre arranca así;
+no se recuerda entre sesiones qué paneles estaban abiertos.
 
 ```
-┌ foto — Fotos ───────────────────────────────────────────────┐
-│                                          │                  │
-│                                          │  Fecha           │
-│              [ fotografía ]              │  24 oct 2026     │
-│                                          │                  │
-│                                          │  Cámara          │
-├──────────────────────────────────────────┤  Fujifilm X100V  │
-│ [  mini  ][  mini  ][  mini  ][  mini  ] │                  │
-├──────────────────────────────────────────┴──────────────────┤
-│ NORMAL        14 de 248 · DSCF1234.RAF                      │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│  zona de rejilla  (ancho completo)          │
+├─────────────────────────────────────────────┤
+│  zona de estado    (28 px)                  │
+└─────────────────────────────────────────────┘
 ```
 
-El diagrama del visor muestra el panel abierto; por defecto arranca oculto y se
-alterna con `i`. La fila inferior es la misma rejilla del visor y ocupa el mismo
-ancho que la foto, excluyendo el panel de metadatos.
+**Estado 2: solo panel de metadatos.** Ocupa el lateral derecho por encima de
+la zona de estado; la rejilla se acoge al ancho restante.
 
-- **Contenido:** rejilla o visor. Ocupa todo el espacio libre. En el visor, la
-  foto y la fila de la rejilla comparten ese ancho; la fila queda pegada al
-  borde inferior.
-- **Panel de metadatos:** columna a la derecha, 280–360 px, bajo demanda en la
-  rejilla y en el visor. Arranca oculto. Si la ventana mide menos de 900 px,
-  aparece como capa temporal sobre el contenido y se cierra con `Esc`.
-- **Barra de estado:** 28 px, borde superior de 1 px, texto de 11–12 px. Muestra
-  el modo, el recuento y los mensajes efímeros. No duplica los metadatos del
-  panel.
+```
+┌───────────────────────────────┬─────────────┐
+│  zona de rejilla              │ panel de    │
+│  (ancho − 426 px)             │ metadatos   │
+│                               │ (426 px)    │
+├───────────────────────────────┴─────────────┤
+│  zona de estado (28 px, ancho completo)     │
+└─────────────────────────────────────────────┘
+```
+
+**Estado 3: solo panel de foto.** A ancho completo, de arriba a abajo: panel
+de foto, título del grupo de la foto con el cursor (52 px) y la zona de
+rejilla recortada a una única fila de celdas (263 px).
+
+```
+┌─────────────────────────────────────────────┐
+│  panel de foto                              │
+├─────────────────────────────────────────────┤
+│  título del grupo de la foto con el cursor  │  ← 52 px
+├─────────────────────────────────────────────┤
+│  zona de rejilla: una única fila de celdas  │  ← 263 px
+├─────────────────────────────────────────────┤
+│  zona de estado (28 px)                     │
+└─────────────────────────────────────────────┘
+```
+
+**Estado 4: panel de foto + panel de metadatos.** Igual que el estado 3, pero
+el panel de metadatos abarca el lateral derecho completo (por encima de la
+zona de estado) y el panel de foto, el título de grupo y la fila se acogen al
+ancho restante (`ancho − 426 px`).
+
+```
+┌───────────────────────────────┬─────────────┐
+│  panel de foto                │ panel de    │
+│                               │ metadatos   │
+├───────────────────────────────┤ (426 px)    │
+│  título del grupo             │             │
+├───────────────────────────────┤             │
+│  fila de miniaturas           │             │
+├───────────────────────────────┴─────────────┤
+│  zona de estado (28 px, ancho completo)     │
+└─────────────────────────────────────────────┘
+```
+
+Reglas de la anatomía:
+
+- La rejilla funciona exactamente igual en los cuatro estados: misma
+  navegación, mismos grupos y cabeceras, mismo scroll, misma selección. Los
+  paneles solo cambian su dimensión.
+- La miniatura seleccionada queda siempre a la vista: tras mostrar u ocultar
+  un panel o redimensionar la ventana, la rejilla se ajusta con
+  `EnsureVisible` en desplazamiento mínimo.
+- Mostrar lo oculto y ocultar lo visible de los paneles no mueve el cursor ni
+  la selección.
+- En el panel de foto, el título de grupo mostrado es el del grupo de la foto
+  con el cursor y cambia al navegar, con la tipografía de las cabeceras de la
+  rejilla.
+- Ventana menor de 900 px de ancho con el panel de metadatos abierto: el
+  panel aparece como capa temporal sobre el contenido y se cierra con `Esc`.
+- **Zona de estado:** 28 px, borde superior de 1 px, texto de 11–12 px.
+  Muestra el modo, el recuento y los mensajes efímeros. No duplica los
+  metadatos del panel.
 
 ### Rejilla
 
@@ -327,18 +384,19 @@ ancho que la foto, excluyendo el panel de metadatos.
 - La imagen se ajusta entera al espacio disponible con 8 px de margen, centrada
   y sin recortar. Si la proporción no llena el ancho, quedan franjas del lienzo;
   nunca se recorta la foto para llenarlo.
-- La fila inferior es la misma rejilla limitada a una fila de alto: celdas de
-  416 × 263 px (miniatura de 400 × 247 px y 16 px de separación), de borde a
-  borde del contenido. No muestra scrollbars; la rueda la desplaza en horizontal.
-  No muestra las cabeceras de grupo de la rejilla principal. Usa el mismo recorte
-  centrado, las mismas insignias, el mismo sombreado de selección y el mismo foco
-  que la rejilla.
-- La fila muestra solo las fotos visibles bajo el filtro activo. La miniatura
-  actual queda seleccionada y resaltada; la foto grande no. La fila no se
+- La zona de rejilla recortada (título de grupo + una fila) es la misma rejilla
+  con las mismas métricas: celdas de 416 × 263 px (miniatura de 400 × 247 px y
+  16 px de separación), disposición a ancho disponible, scrollbars con el mismo
+  criterio que la rejilla completa y mismas cabeceras de grupo en su flujo.
+  Usa el mismo recorte centrado, las mismas insignias, el mismo sombreado de
+  selección y el mismo foco que la rejilla.
+- La fila muestra las fotos visibles bajo el filtro activo, con la misma
+  ordenación y grupos de la rejilla. La miniatura
+  actual queda seleccionada y resaltada; la foto grande no. La rejilla no se
   autocentra: usa `EnsureVisible` para mantener la miniatura a la vista con el
   desplazamiento mínimo.
-- Si el filtro deja la fila vacía, el visor se cierra y la rejilla muestra el
-  estado vacío. Si se estaba escribiendo una búsqueda, el foco permanece en la
+- Si el filtro deja la fila vacía, el panel de foto se cierra y la rejilla
+  muestra el estado vacío. Si se estaba escribiendo una búsqueda, el foco permanece en la
   barra de estado.
 - El lienzo es un gris neutro sin tinte, distinto del fondo de la ventana, para
   separar la foto del chrome. Ni negro puro ni blanco puro.
@@ -413,9 +471,10 @@ Requisitos:
 - **Indexado:** el progreso se muestra en la barra de estado con recuento. La UI
   sigue navegable con lo ya indexado.
 - **Confirmaciones:** solo para acciones destructivas. En el MVP no hay ninguna.
-- **Preferencias de UI:** el estado del panel de metadatos y el tamaño de la
-  rejilla se recuerdan entre sesiones. La configuración se carga y se guarda
-  fuera de la UI, según `docs/adr/0001-configuracion.md`.
+- **Preferencias de UI:** la ventana siempre arranca en el mismo estado: solo
+  zona de rejilla y zona de estado, con ambos paneles ocultos. El estado de
+  los paneles no se recuerda entre sesiones. La configuración se carga y se
+  guarda fuera de la UI, según `docs/adr/0001-configuracion.md`.
 
 ## Rendimiento percibido
 
