@@ -31,6 +31,9 @@ Teclado primero · `Esc` o `q` para cerrar
 
 ## Visor
 
+La fila inferior es la misma rejilla limitada a una línea; encima se muestra el
+grupo (mes o cámara) de la foto que está viendo.
+
 | Tecla | Acción |
 | --- | --- |
 | `H` `J` `K` `L` | Desplazar la imagen con zoom |

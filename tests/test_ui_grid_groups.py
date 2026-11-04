@@ -180,3 +180,60 @@ def test_group_edges_in_the_viewer_row(qapp):
 
     viewer_window._on_action("$")
     assert viewer_window._current_photo().key == "duna.jpg"
+
+
+# ----------------------------------------------------------------------
+# La fila comprimida muestra la cabecera del grupo de la foto mostrada
+# ----------------------------------------------------------------------
+def test_viewer_row_shows_the_group_header(qapp):
+    viewer_window = PrototypeWindow(
+        PHOTOS,
+        thumbnails={},
+        placeholder_icon=None,
+        thumbnail_loader=None,
+        title="test",
+        initial_panel_visible=False,
+        grid_row=True,
+    )
+    _select(viewer_window, "duna.jpg")
+    viewer_window._open_viewer()
+
+    # Encima de la fila va la cabecera del grupo de la foto mostrada.
+    assert viewer_window.row_header.text() == "junio de 2024"
+    assert viewer_window.row_header.isVisibleTo(viewer_window.content)
+
+    # Al navegar más allá del límite del grupo cambia al grupo nuevo.
+    viewer_window._on_action("l")  # duna (junio) -> claros (mayo)
+    assert viewer_window._current_photo().key == "claros.jpg"
+    assert viewer_window.row_header.text() == "mayo de 2024"
+
+    # Dentro del mismo grupo el rótulo no cambia.
+    viewer_window._on_action("l")  # claros -> bruma
+    assert viewer_window.row_header.text() == "mayo de 2024"
+
+    viewer_window._on_action("h")  # bruma -> claros
+    viewer_window._on_action("h")  # de mayo a junio de nuevo
+    assert viewer_window._current_photo().key == "duna.jpg"
+    assert viewer_window.row_header.text() == "junio de 2024"
+
+    # Al cerrar el visor la cabecera desaparece con la fila.
+    viewer_window._close_viewer()
+    assert viewer_window._viewer_visible is False
+    assert viewer_window.row_header.isHidden()
+
+
+def test_viewer_row_header_hides_without_current_photo(qapp):
+    viewer_window = PrototypeWindow(
+        [],
+        thumbnails={},
+        placeholder_icon=None,
+        thumbnail_loader=None,
+        title="test",
+        initial_panel_visible=False,
+        grid_row=True,
+    )
+    viewer_window._open_viewer()
+    assert viewer_window._viewer_visible is False
+
+    # Sin fotos no hay visor ni cabecera que mostrar.
+    assert viewer_window.row_header.isHidden()

@@ -140,11 +140,14 @@ Reglas de la fila:
 
 - Es la misma `PhotoGrid` que la vista principal, limitada a una fila de alto;
   no es un filmstrip ni una vista aparte.
+- Encima de la fila se muestra la cabecera del grupo de la foto que está en el
+  visor, con la tipografía de las cabeceras de la rejilla. Al navegar por la
+  fila el rótulo cambia al grupo de la miniatura con el cursor, igual que al
+  recorrer la rejilla a pantalla completa.
 - Todas las fotos visibles bajo el filtro activo forman una única fila
   horizontal, de borde a borde del contenido y sin scrollbars visibles.
 - El foco y la selección están en la fila. La miniatura actual se resalta; la
-  foto grande no lleva anillo de foco ni se resalta.
-- La navegación es la de la rejilla y usa `EnsureVisible`: la fila se desplaza
+  foto grande no lleva anillo de foco ni se resalta.</think><tool_call>edit<arg_key>newString</arg_key><arg_value>- La navegación es la de la rejilla y usa `EnsureVisible`: la fila se desplaza
   lo mínimo para dejar la miniatura a la vista, sin autocentrarla.
 - Al cerrar el visor, la rejilla principal queda en la foto que se estaba
   viendo.

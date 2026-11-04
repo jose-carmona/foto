@@ -2553,6 +2553,16 @@ class PrototypeWindow(QMainWindow):
         self.empty_label.setWordWrap(True)
         self.empty_label.hide()
 
+        # Cabecera del grupo sobre la fila del visor: la misma rejilla
+        # comprimida conserva el rótulo de grupo, igual que a pantalla
+        # completa.
+        self.row_header = QLabel("", self.content)
+        self.row_header.setAccessibleName("grupo de la foto mostrada")
+        self.row_header.setFont(ui_font(14, QFont.DemiBold))
+        self.row_header.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.row_header.setIndent(8)
+        self.row_header.hide()
+
         self.status = StatusBar(self)
 
         outer = QWidget()
@@ -2695,6 +2705,22 @@ class PrototypeWindow(QMainWindow):
             group_key = str(item.data(GROUP_ROLE) or "")
             item.setHidden(self.grid.row_mode or group_key not in visible_groups)
 
+    def _update_row_header(self) -> None:
+        """En el visor muestra sobre la fila el grupo de la foto actual.
+
+        La fila es la rejilla comprimida: mientras navega por ella (``h``,
+        ``l``, ``0``/``$``…), el rótulo cambia al grupo de la miniatura que
+        tiene el cursor, exactamente como lo hace la cabecera al recorrer la
+        rejilla a pantalla completa. Si no hay grupo que mostrar, se oculta.
+        """
+        if not (self.grid_row and self._viewer_visible):
+            self.row_header.hide()
+            return
+        photo = self._current_photo()
+        label = photo_group(photo, self._sort_key)[1] if photo is not None else ""
+        self.row_header.setText(label)
+        self.row_header.setVisible(bool(label))
+
     def set_photos(
         self,
         photos: list[Photo],
@@ -2760,15 +2786,22 @@ class PrototypeWindow(QMainWindow):
 
         if self._viewer_visible:
             if self.grid_row:
-                # La fila es la misma rejilla: una celda de alto y sin scrollbar.
-                row_h = min(ITEM_H, max(0, height))
-                viewer_h = max(0, height - row_h)
+                # La fila es la misma rejilla: una celda de alto y sin
+                # scrollbar. Encima, la cabecera del grupo de la foto
+                # mostrada, con las métricas de la rejilla completa.
+                header_h = min(GROUP_HEADER_H, max(0, height))
+                row_h = min(ITEM_H, max(0, height - header_h))
+                viewer_h = max(0, height - header_h - row_h)
                 self.viewer.setGeometry(0, 0, max(0, content_w), viewer_h)
                 self.viewer.show()
                 self.viewer.raise_()
                 self.grid.show()
-                self.grid.setGeometry(0, viewer_h, max(0, content_w), row_h)
+                self.grid.setGeometry(
+                    0, viewer_h + header_h, max(0, content_w), row_h
+                )
                 self.grid.raise_()
+                self.row_header.setGeometry(0, viewer_h, max(0, content_w), header_h)
+                self.row_header.raise_()
             else:
                 self.grid.hide()
                 self.viewer.setGeometry(0, 0, max(0, content_w), height)
@@ -2787,6 +2820,7 @@ class PrototypeWindow(QMainWindow):
         self._position_empty_label()
         if self.panel_visible:
             self.panel.raise_()
+        self._update_row_header()
         if self.content_blocker.isVisible():
             self.content_blocker.setGeometry(0, 0, width, height)
             self.content_blocker.raise_()
@@ -3156,6 +3190,7 @@ class PrototypeWindow(QMainWindow):
         if current is not None and current.data(HEADER_ROLE):
             return
         photo = self._current_photo()
+        self._update_row_header()
         self.panel.set_photo(photo)
         filename = photo.name if photo else ""
         self.status.set_counts(self._visible_count(), len(self.photos), filename)
