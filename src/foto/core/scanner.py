@@ -7,7 +7,7 @@ import os
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Union
+from typing import Literal
 
 from foto.core.library import IMAGE_EXTENSIONS
 
@@ -42,7 +42,7 @@ class ScanIssue:
     kind: Literal["file", "directory"]
 
 
-ScanEvent = Union[ScannedFile, ScanIssue]
+ScanEvent = ScannedFile | ScanIssue
 
 
 def _reason(exc: OSError) -> str:

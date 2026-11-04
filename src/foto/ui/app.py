@@ -157,7 +157,7 @@ class MainWindow(PrototypeWindow):
             photos = load_photos(library_path)
             # C04: el modelo validado del descriptor se conserva explícitamente.
             self._library_config = _validated_library(library_path)
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)
 
@@ -202,7 +202,7 @@ class MainWindow(PrototypeWindow):
         try:
             library_config = _validated_library(self.library_path)
             photos = load_photos(self.library_path)
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             self.status.show_error(str(exc))
             return False
         self._library_config = library_config
@@ -300,7 +300,7 @@ def main() -> None:
         window = MainWindow(library_path, config)
     except SystemExit:
         raise
-    except Exception as exc:
+    except (OSError, RuntimeError) as exc:
         QMessageBox.critical(None, "foto", str(exc))
         sys.exit(1)
     if sys.platform == "darwin":
@@ -321,9 +321,10 @@ def main() -> None:
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                check=False,
             )
-        except Exception:
-            pass
+        except OSError:
+            logger.debug("no se pudo activar la ventana")
         def _focus():
             try:
                 window.raise_()
@@ -337,9 +338,10 @@ def main() -> None:
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    check=False,
                 )
-            except Exception:
-                pass
+            except OSError:
+                logger.debug("no se pudo activar la ventana")
         QTimer.singleShot(50, _focus)
     else:
         window.show()
