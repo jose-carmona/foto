@@ -15,9 +15,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
-from foto.ui.prototype import (
+from foto.ui.window import (
     Photo,
-    PrototypeWindow,
+    PhotoWindow,
     is_group_end,
     is_group_start,
 )
@@ -62,7 +62,7 @@ def qapp():
 
 @pytest.fixture()
 def window(qapp):
-    return PrototypeWindow(
+    return PhotoWindow(
         PHOTOS,
         thumbnails={},
         placeholder_icon=None,
@@ -162,7 +162,7 @@ def test_group_movement_respects_the_active_filter(window):
 # La fila del visor comparte la rejilla: mismos límites de grupo
 # ----------------------------------------------------------------------
 def test_group_edges_in_the_viewer_row(qapp):
-    viewer_window = PrototypeWindow(
+    viewer_window = PhotoWindow(
         PHOTOS,
         thumbnails={},
         placeholder_icon=None,
@@ -186,7 +186,7 @@ def test_group_edges_in_the_viewer_row(qapp):
 # La fila comprimida muestra la cabecera del grupo de la foto mostrada
 # ----------------------------------------------------------------------
 def test_viewer_row_shows_the_group_header(qapp):
-    viewer_window = PrototypeWindow(
+    viewer_window = PhotoWindow(
         PHOTOS,
         thumbnails={},
         placeholder_icon=None,
@@ -223,7 +223,7 @@ def test_viewer_row_shows_the_group_header(qapp):
 
 
 def test_viewer_row_header_hides_without_current_photo(qapp):
-    viewer_window = PrototypeWindow(
+    viewer_window = PhotoWindow(
         [],
         thumbnails={},
         placeholder_icon=None,

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from foto.ui.prototype import ITEM_H, vertical_row_target
+from foto.ui.window import ITEM_H, vertical_row_target
 
 # Rejilla agrupada renderizada: cuatro fotos, cabecera (no aparece como línea
 # con fotos), tres fotos y dos fotos. Cada línea es (top, centros_x).

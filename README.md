@@ -63,10 +63,10 @@ forma de publicación o compartición.
   - [ ] Endurecer el rendimiento para bibliotecas grandes
     - [x] Ventana de miniaturas en memoria y navegación con índices O(1)
     - [ ] Evaluar un modelo/vista si el número de elementos empieza a pesar
-  - Rejilla, visor con la rejilla en una fila y panel de metadatos (prototipo).
-    El visor consume el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md)):
-    si no existe `catalog.sqlite`, avisa y se cierra. Las búsquedas y ordenaciones
-    se hacen contra el índice.
+  - Rejilla, panel de foto y panel de metadatos en `src/foto/ui/window.py`.
+    El visor consume el catálogo: si no existe `catalog.sqlite`, avisa y se
+    cierra, y las búsquedas y ordenaciones se hacen contra el índice. La demo
+    `prototype.py` usa fotos falsas y no toca disco.
   - [x] Integración del visor con el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md))
   - [ ] Favoritos persistidos en XMP
 - [ ] **Fase 2 — Organización**
@@ -135,7 +135,7 @@ foto/
 │   ├── core/       # hashing, recorrido, metadatos e indexado
 │   ├── indexer/    # CLI foto-index y python -m foto.indexer
 │   ├── storage/    # SQLite, exiftool, lock y configuración TOML
-│   └── ui/         # app real, miniaturas en segundo plano y prototipo
+│   └── ui/         # ventana (window.py), demo (prototype.py) y miniaturas
 ├── tests/          # suite pytest sin Qt
 └── README.md
 ```
@@ -167,8 +167,8 @@ uv sync
 uv run foto
 ```
 
-`PYTHONPATH=src .venv/bin/python -m foto.ui.prototype` abre el prototipo con
-fotos falsas para revisar la interfaz sin tocar discos.
+`PYTHONPATH=src .venv/bin/python -m foto.ui.prototype` abre la demo con fotos
+falsas para revisar la interfaz sin tocar discos.
 
 ## Indexador
 

@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from foto.ui.prototype import Photo, PrototypeWindow, photo_search_text
+from foto.ui.window import Photo, PhotoWindow, photo_search_text
 
 
 def _photo(
@@ -71,7 +71,7 @@ def window(qapp):
             other_locations=("2025/copia.jpg", "sigmar/replica.jpg"),
         ),
         _photo("ciudad.jpg", "2025/centro", fmt="TIFF", iso="800"),    ]
-    return PrototypeWindow(
+    return PhotoWindow(
         photos,
         thumbnails={},
         placeholder_icon=None,

@@ -11,9 +11,9 @@ import os
 
 import pytest
 
-from foto.ui.prototype import (
+from foto.ui.window import (
     Photo,
-    PrototypeWindow,
+    PhotoWindow,
     _help_markdown,
     render_help,
 )
@@ -90,7 +90,7 @@ def test_overlay_toggles_from_the_window(qapp):
         location="",
         photo_hash="sha256:a",
     )
-    window = PrototypeWindow(
+    window = PhotoWindow(
         [photo],
         thumbnails={},
         placeholder_icon=None,

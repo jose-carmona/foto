@@ -12,8 +12,9 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 
 ## Estado actual
 
-- Prototipo funcional de UI en `src/foto/`: rejilla, visor con la rejilla en una
-  fila, panel de metadatos y temas claro/oscuro.
+- UI funcional de `foto` en `src/foto/ui/`: ventana (`window.py`) con rejilla,
+  panel de foto, panel de metadatos y temas claro/oscuro; demo con datos falsos
+  en `prototype.py`.
 - Indexador `foto-index` completo en `src/foto/indexer/` + `core/` + `storage/`:
   catálogo SQLite incremental, hashes SHA-256 de contenido, rutas relativas,
   reconciliación de ausencias, `exiftool` opcional y lock de escritor único.
@@ -83,7 +84,7 @@ foto/
 │   ├── core/         # hashing, scanner, metadatos, indexado
 │   ├── indexer/      # CLI foto-index y __main__
 │   ├── storage/      # catálogo SQLite, exiftool, lock y config TOML
-│   └── ui/           # app real, miniaturas en segundo plano y prototipo
+│   └── ui/           # ventana (window.py), demo (prototype.py) y miniaturas
 ├── tests/            # suite pytest sin Qt
 └── README.md
 ```

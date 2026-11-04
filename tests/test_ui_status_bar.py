@@ -22,7 +22,7 @@ def qapp():
 
 
 def _status_bar(qapp):
-    from foto.ui.prototype import StatusBar
+    from foto.ui.window import StatusBar
 
     return StatusBar()
 
@@ -50,7 +50,7 @@ def test_counts_without_filename_show_only_counts(qapp):
 def test_status_bar_accepts_no_location_parameter(qapp):
     import inspect
 
-    from foto.ui.prototype import StatusBar
+    from foto.ui.window import StatusBar
 
     parameters = inspect.signature(StatusBar.set_counts).parameters
     assert "canonical_rel_path" not in parameters
@@ -74,7 +74,7 @@ def test_no_callers_pass_the_canonical_location_to_the_status_bar():
 
     sources = (
         Path("src/foto/ui/app.py"),
-        Path("src/foto/ui/prototype.py"),
+        Path("src/foto/ui/window.py"),
     )
     for source in sources:
         text = source.read_text(encoding="utf-8")

@@ -14,7 +14,7 @@ import sys
 
 from PySide6.QtCore import Qt
 
-from foto.ui.prototype import _CTRL_MASK
+from foto.ui.window import _CTRL_MASK
 
 
 def test_ctrl_mask_points_to_the_physical_control_key():

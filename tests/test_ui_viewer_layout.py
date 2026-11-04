@@ -17,14 +17,14 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from foto.ui.prototype import (
+from foto.ui.window import (
     BAR_H,
     GRID_MARGIN,
     GROUP_HEADER_H,
     ITEM_H,
     PANEL_W,
     Photo,
-    PrototypeWindow,
+    PhotoWindow,
 )
 
 
@@ -65,9 +65,9 @@ def qapp():
     yield app
 
 
-def _make_window(qapp) -> PrototypeWindow:
+def _make_window(qapp) -> PhotoWindow:
     """Ventana como la app real: rejilla propia del visor y paneles ocultos."""
-    window = PrototypeWindow(
+    window = PhotoWindow(
         PHOTOS,
         thumbnails={},
         placeholder_icon=None,
@@ -82,28 +82,28 @@ def _make_window(qapp) -> PrototypeWindow:
     return window
 
 
-def _select(window: PrototypeWindow, name: str) -> None:
+def _select(window: PhotoWindow, name: str) -> None:
     item = window._grid_items[name]
     window.grid.setCurrentItem(item)
 
 
-def _current_index(window: PrototypeWindow) -> int:
+def _current_index(window: PhotoWindow) -> int:
     current = window.grid.currentItem().data(Qt.AccessibleTextRole)
     return int(current.removeprefix("foto-").removesuffix(".jpg"))
 
 
-def _select_far(window: PrototypeWindow) -> None:
+def _select_far(window: PhotoWindow) -> None:
     """Selecciona la foto más antigua, fuera de la vista tras el scroll arriba."""
     _select(window, FIRST_PHOTO)
 
 
-def _current_visible(window: PrototypeWindow) -> bool:
+def _current_visible(window: PhotoWindow) -> bool:
     return window.grid.visualItemRect(window.grid.currentItem()).intersects(
         window.grid.viewport().rect()
     )
 
 
-def _scroll_top(window: PrototypeWindow) -> None:
+def _scroll_top(window: PhotoWindow) -> None:
     window.grid.verticalScrollBar().setValue(0)
     qapp = QApplication.instance()
     if qapp is not None:

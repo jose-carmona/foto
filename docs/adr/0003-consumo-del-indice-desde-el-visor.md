@@ -38,7 +38,7 @@ La UI leerá desde `storage/catalog`:
 
 **Duplicados por contenido:** si el mismo hash aparece en varias ubicaciones `present`, la foto se mostrará **una sola vez** en la rejilla. Se elegirá una **ubicación canónica** de forma determinista (primera en orden lexicográfico POSIX de `rel_path`). Las demás ubicaciones se considerarán réplicas y se mostrarán en el panel de metadatos, junto con la canónica. La barra de estado muestra solo el nombre del fichero de la selección *(enmendado el 2026-11-03: la barra de estado no muestra la ubicación canónica)*.
 
-Para construir `foto.ui.prototype.Photo` se usarán, preferentemente:
+Para construir `foto.ui.window.Photo` se usarán, preferentemente:
 
 | Campo UI | Origen |
 | --- | --- |

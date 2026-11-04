@@ -11,13 +11,13 @@ import inspect
 from pathlib import Path
 
 from foto.storage.library import ensure_library
-from foto.ui.prototype import COMMANDS, PrototypeWindow
+from foto.ui.window import COMMANDS, PhotoWindow
 from tests.conftest import write_image
 from tests.test_ui_load_photos import _seed_catalog, load_photos
 
 _UI_SOURCES = (
     Path("src/foto/ui/app.py"),
-    Path("src/foto/ui/prototype.py"),
+    Path("src/foto/ui/window.py"),
 )
 
 
@@ -28,8 +28,8 @@ def test_rescan_is_not_in_the_command_vocabulary():
     assert not any("indexa" in name or "rescan" in name for name in names)
 
 
-def test_prototype_window_does_not_accept_on_rescan():
-    parameters = inspect.signature(PrototypeWindow.__init__).parameters
+def test_window_does_not_accept_on_rescan():
+    parameters = inspect.signature(PhotoWindow.__init__).parameters
 
     assert "on_rescan" not in parameters
 
