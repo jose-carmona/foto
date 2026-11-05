@@ -11,8 +11,8 @@ import os
 
 import pytest
 
+from foto.ui.models import Photo
 from foto.ui.window import (
-    Photo,
     PhotoWindow,
     _help_markdown,
     render_help,

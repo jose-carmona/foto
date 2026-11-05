@@ -12,15 +12,10 @@ import os
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
-from foto.ui.window import (
-    Photo,
-    PhotoWindow,
-    is_group_end,
-    is_group_start,
-)
+from foto.ui.models import Photo
+from foto.ui.window import PhotoWindow
 
 
 def _photo(name: str, taken: str, camera: str = "Nikon Z 6") -> Photo:
@@ -80,35 +75,6 @@ def _select(window, name: str) -> None:
 
 def _current(window) -> str:
     return window.grid.currentItem().data(Qt.AccessibleTextRole)
-
-
-# ----------------------------------------------------------------------
-# Detección de teclas sin pantalla: 0 no cae en los dígitos reservados
-# ----------------------------------------------------------------------
-def test_key_0_is_the_group_start_and_not_a_reserved_digit():
-    assert is_group_start(Qt.Key_0, False)
-    assert not is_group_start(Qt.Key_5, False)
-    assert not is_group_start(Qt.Key_0, True)
-
-
-def test_dollar_is_detected_on_every_layout_variant():
-    as_shift_4 = QKeyEvent(
-        QKeyEvent.KeyPress,
-        Qt.Key_4,
-        Qt.KeyboardModifier.ShiftModifier,
-    )
-    as_shift_5 = QKeyEvent(
-        QKeyEvent.KeyPress,
-        Qt.Key_5,
-        Qt.KeyboardModifier.ShiftModifier,
-    )
-
-    # En algunas distribuciones el ``$`` es su propia tecla sin mayúsculas; en
-    # otras vive en Shift+4 (español) o Shift+5 (inglés).
-    assert is_group_end(Qt.Key_Dollar, False)
-    assert is_group_end(as_shift_4.key(), bool(as_shift_4.modifiers() & Qt.ShiftModifier))
-    assert is_group_end(as_shift_5.key(), bool(as_shift_5.modifiers() & Qt.ShiftModifier))
-    assert not is_group_end(Qt.Key_4, False)
 
 
 # ----------------------------------------------------------------------

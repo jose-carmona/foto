@@ -14,7 +14,10 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 
 - UI funcional de `foto` en `src/foto/ui/`: ventana (`window.py`) con rejilla,
   panel de foto, panel de metadatos y temas claro/oscuro; demo con datos falsos
-  en `prototype.py`.
+  en `prototype.py`. El modelo de UI (`Photo`) vive en `ui/models.py` y las
+  reglas de presentación pura (orden, grupos, búsqueda, navegación vertical,
+  teclas de grupo y la aritmética del color atenuado) en `ui/presentation.py`;
+  ambos son módulos sin Qt que la ventana consume.
 - Indexador `foto-index` completo en `src/foto/indexer/` + `core/` + `storage/`:
   catálogo SQLite incremental, hashes SHA-256 de contenido, rutas relativas,
   reconciliación de ausencias, `exiftool` opcional y lock de escritor único.
@@ -86,7 +89,7 @@ foto/
 │   ├── core/         # hashing, scanner, metadatos, indexado
 │   ├── indexer/      # CLI foto-index y __main__
 │   ├── storage/      # catálogo SQLite, exiftool, lock y config TOML
-│   └── ui/           # ventana (window.py), demo (prototype.py) y miniaturas
+│   └── ui/           # ventana, modelo y presentación, demo y miniaturas
 ├── tests/            # suite pytest sin pantalla
 └── README.md
 ```
@@ -164,7 +167,8 @@ Decisión completa en `docs/adr/0002-indexado.md`. Resumen operativo:
   reales grandes.
 - La suite cubre hash e identidad, indexado incremental, borrados y `--prune`,
   recorrido parcial, metadatos, catálogo, bootstrap, lock y CLI; la geometría y
-  los nombres de la caché de miniaturas se prueban sin Qt.
+  los nombres de la caché de miniaturas, así como la lógica de presentación de
+  la UI (`tests/test_presentation.py`), se prueban sin Qt.
 - Todo bug corregido lleva su test de regresión.
 
 ## Flujo de trabajo

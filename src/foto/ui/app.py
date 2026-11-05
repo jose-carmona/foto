@@ -18,11 +18,11 @@ from foto.storage.catalog import Catalog
 from foto.storage.config import AppConfig, ConfigError, load_config, save_config
 from foto.storage.library import LibraryConfig, library_file, load_library, thumbs_dir
 from foto.storage.resolver import resolve_library_path
+from foto.ui.models import Photo
 from foto.ui.thumbnails import ThumbnailService
 from foto.ui.window import (
     THUMB_H,
     THUMB_W,
-    Photo,
     PhotoWindow,
     apply_theme,
     ui_font,

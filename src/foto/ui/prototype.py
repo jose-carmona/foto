@@ -16,12 +16,12 @@ import sys
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from foto.ui.models import Photo
+from foto.ui.presentation import sorted_photos
 from foto.ui.window import (
-    Photo,
     PhotoWindow,
     apply_theme,
     default_thumbnail,
-    sorted_photos,
 )
 
 CAMERAS = (

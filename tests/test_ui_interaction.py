@@ -18,7 +18,8 @@ from PySide6.QtGui import QImage, QKeyEvent
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
-from foto.ui.window import ImageLoadTask, Photo, PhotoWindow
+from foto.ui.models import Photo
+from foto.ui.window import ImageLoadTask, PhotoWindow
 
 
 def _photo(

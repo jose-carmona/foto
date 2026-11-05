@@ -11,7 +11,8 @@ import os
 
 import pytest
 
-from foto.ui.window import Photo, PhotoWindow, photo_search_text
+from foto.ui.models import Photo
+from foto.ui.window import PhotoWindow
 
 
 def _photo(
@@ -80,31 +81,6 @@ def window(qapp):
         initial_panel_visible=False,
         grid_row=True,
     )
-
-
-# ----------------------------------------------------------------------
-# Documento de búsqueda: entradas únicas que consolidan el índice (solo prueba de contrato)
-# ----------------------------------------------------------------------
-def test_search_includes_canonical_and_replicas():
-    photo = _photo(
-        "playa.jpg",
-        "2024/costa",
-        canonical_rel_path="2024/costa/playa.jpg",
-        other_locations=("2025/copia.jpg",),
-    )
-    document = photo_search_text(photo)
-
-    assert "2024/costa/playa.jpg" in document
-    assert "2025/copia.jpg" in document
-
-
-def test_search_document_is_lowercase_normalized():
-    photo = _photo("Añoño.JPG", "2024", camera="Cámara Óptica")
-
-    document = photo_search_text(photo)
-
-    assert document == document.casefold()
-    assert "cámara óptica" in document
 
 
 # ----------------------------------------------------------------------

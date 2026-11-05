@@ -33,12 +33,12 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent, QPixmap
 from PySide6.QtWidgets import QApplication
 
+from foto.ui.models import Photo
 from foto.ui.window import (
     _CTRL_MASK,
     COMMANDS,
     FAVORITE_ROLE,
     PHOTO_ROLE,
-    Photo,
     PhotoWindow,
     _help_markdown,
 )

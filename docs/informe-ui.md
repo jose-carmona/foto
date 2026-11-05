@@ -19,6 +19,15 @@ de §4. Aplica los cambios de documentación (§3.2.I, §3.2.L) y añade los tes
 de contrato e interacción; los hallazgos resueltos quedan marcados en §3.2.I,
 §3.2.L, §5 y §6. Favoritos en XMP y menú contextual siguen pendientes/aplazados.
 
+**Aplicación del P1.4 (2026-11-05):** la lógica de presentación pura salió de
+`window.py` hacia dos módulos sin Qt: `ui/models.py` (el modelo `Photo`) y
+`ui/presentation.py` (orden, grupos, documento de búsqueda, navegación
+vertical, teclas de grupo y la aritmética del token `fg.muted`). Sin
+re-exports: `app.py`, `prototype.py` y los tests importan por la ruta canónica.
+La suite pura es `tests/test_presentation.py` (33 tests, con un guardián que
+impide volver a importar Qt) y la equivalencia del color atenuado queda fijada
+en `tests/test_ui_muted_color.py`; en total 301 tests (151 de UI).
+
 ---
 
 ## 0. Decisiones de producto aplicadas
@@ -215,17 +224,20 @@ Matices:
 
 ### 2.1 Tamaño y concentración
 
-Archivos de UI (aproximado, tras las retiradas de §0):
+Archivos de UI (aproximado, tras las retiradas de §0 y la extracción del P1.4):
 
 | Archivo | Líneas | Rol principal |
 |---|---|---|
-| `window.py` | 3.453 | Ventana completa: tema, modelos, navegación, visor, ayuda, paneles |
+| `window.py` | 3.293 | Ventana completa: tema, navegación, visor, ayuda, paneles |
 | `app.py` | 292 | Punto de entrada, carga de catálogo, integración con `ThumbnailService` |
 | `thumbnails.py` | 291 | Servicio y caché de miniaturas |
+| `presentation.py` | 211 | Reglas de presentación puras: orden, grupos, búsqueda, navegación, teclas, `fg.muted` (sin Qt) |
 | `prototype.py` | 85 | Demo con datos falsos |
+| `models.py` | 41 | Modelo de UI de una foto (`Photo`, sin Qt) |
 | `core/thumbnails.py` | 112 | Geometría y nombres de caché (puro, sin Qt) |
 
-`window.py` concentra **≈84 % de `src/foto/ui/`** (3.453 de 4.121 líneas). Es un
+`window.py` concentra **≈78 % de `src/foto/ui/`** (3.293 de 4.216 líneas, ya
+después de ceder el modelo y la presentación pura al P1.4). Es un
 “objeto dios” (`God Object`/`God File`): contiene funciones puras de utilidad,
 dataclasses, traducción de teclas, widgets Qt, lógica de navegación, renderizado
 HTML de ayuda y la lógica de estado de la ventana.
@@ -354,6 +366,14 @@ pueda probarse sin PySide6, o mover también el modelo `Photo` si se quiere ir a
 `window.py`: `vertical_row_target`, `is_group_start`, `is_group_end` y la lógica
 de color atenuado.
 
+Resuelto en el P1.4 (2026-11-05): se optó por el módulo puro `foto.ui.presentation`
+(sin Qt) y el modelo `Photo` se quedó en la capa de UI, en `foto.ui.models`, tal
+como razonaba este hallazgo. Se movieron también `vertical_row_target`,
+`is_group_start`/`is_group_end` (con constantes de tecla enteras propias) y la
+aritmética del color atenuado (`muted_rgb`). Se prueba sin PySide6 en
+`tests/test_presentation.py`, con test guardián que impide que los módulos puros
+vuelvan a importar Qt o la ventana.
+
 #### D. Estilos incrustados dispersos (riesgo medio)
 
 CSS embebido en cadenas en múltiples widgets. `diseno-ui.md:427-429` dice que
@@ -374,6 +394,11 @@ contengan literales hexadecimales no es la violación. Las violaciones reales so
 `_muted_from_palette` (`window.py:129`) y `_help_muted` (`window.py:1946`)
 calculan el mismo color atenuado con lógica idéntica; una devuelve `QColor` y la
 otra una cadena hexadecimal. Es un caso claro de extracción trivial.
+
+Resuelto en el P1.4 (2026-11-05): la aritmética vive en `muted_rgb`
+(`ui/presentation.py`) y ambas funciones son ahora adaptadores Qt que delegan en
+ella; `tests/test_ui_muted_color.py` fija, con las paletas clara y oscura, que el
+color renderizado no cambia ni un canal.
 
 #### F. Favoritos solo en memoria (riesgo bajo por MVP, pero contradice la documentación)
 
@@ -488,6 +513,9 @@ tarea de carga, no repartido por la ventana.
    atenuado. Mantener el modelo `Photo` en la UI o moverlo también, pero no
    dejar funciones que devuelven textos en español dentro de `core` sin una
    decisión explícita. El objetivo es poder probarlas sin importar PySide6.
+   **Aplicada el 2026-11-05:** el modelo vive en `ui/models.py` y las reglas en
+   `ui/presentation.py`, ambos sin Qt; los importadores usan la ruta canónica y
+   `tests/test_presentation.py` las prueba sin PySide6.
 5. **Unificar el mapeo de teclas con contexto explícito.** Un módulo/tabla que
    traduzca `(modo/widget, tecla, modificadores)` → acción, y que
    `PhotoGrid`, `PanelScroll`, `PhotoCanvas` y `PhotoWindow` consulten. No
@@ -539,7 +567,7 @@ tarea de carga, no repartido por la ventana.
 | Rutas críticas de `PhotoWindow` offscreen | `tests/test_ui_interaction.py`: carga y fallo de `ImageLoadTask` (`loaded`/`failed`, precarga, sin reintentos), prompts de búsqueda/comando (filtrar, completar, historial, `Esc`) y foco entre rejilla, visor, panel y prompts. |
 | Documentación “sin Qt” corregida | `README.md`/`AGENT.md` describen la suite sin pantalla y distinguen los tests sin Qt de `core/`/`storage/`; los desajustes tienen test de regresión. |
 | Acceso directo a disco documentado como excepción | `docs/diseno-ui.md` §Lista de verificación y §Rendimiento percibido: la regla “sin lógica de negocio” se mantiene y el acceso se limita a decodificar originales y a la caché de miniaturas, confinado en `ImageLoadTask` y `ui/thumbnails.py`. |
-| “El proyecto cumple sus reglas no negociables hoy” | Parcial: se cumple la dirección de dependencias, pero fallan la regla 5 (lógica de presentación en la UI), la persistencia XMP de favoritos y el aislamiento de plataforma. El acceso directo a disco queda documentado como excepción acotada (P0). |
+| “El proyecto cumple sus reglas no negociables hoy” | Parcial: se cumple la dirección de dependencias y la regla 5 dejó de estirarse con el P1.4 (la lógica de presentación pura vive en `ui/presentation.py` y el modelo en `ui/models.py`, sin Qt); siguen pendientes la persistencia XMP de favoritos y el aislamiento de plataforma. El acceso directo a disco queda documentado como excepción acotada (P0). |
 | Menú contextual | Aplazado, no implementado: `diseno-ui.md:260-262` lo describe como objetivo y `README.md:72` lo registra al final de la Fase 1; no hay `QMenu` ni `contextMenuEvent` todavía. |
 | Documentación “excelente” | Matizable: el desajuste sobre tests y acceso a disco quedó resuelto en el P0; sigue pendiente la decisión sobre favoritos en XMP (pospuesta al final de la Fase 1). |
 | `MetadataPanel.set_photo` ~80 líneas | Son ~62 líneas (`window.py:1383-1444`). |
