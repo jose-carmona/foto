@@ -31,8 +31,10 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   La caché es un derivado reconstruible; todavía no tiene poda ni límite de
   tamaño. En memoria solo se mantiene una ventana acotada de miniaturas y la
   navegación usa índices de las filas visibles. XMP no está implementado.
-- `tests/` contiene una suite pytest sin Qt ni pantalla. `pytest` y `ruff` están
-  en el grupo `dev` de `pyproject.toml`.
+- `tests/` contiene una suite pytest que se ejecuta sin pantalla. Los tests de
+  `core/` y `storage/` no necesitan Qt; los de UI importan PySide6 y usan
+  `QT_QPA_PLATFORM=offscreen`. `pytest` y `ruff` están en el grupo `dev` de
+  `pyproject.toml`.
 - El MVP es **visualización y metadatos**, nada más. No adelantes edición,
   álbumes ni IA sin que se pida explícitamente.
 - No inventes comandos de instalación, CI ni badges que no existan.
@@ -85,7 +87,7 @@ foto/
 │   ├── indexer/      # CLI foto-index y __main__
 │   ├── storage/      # catálogo SQLite, exiftool, lock y config TOML
 │   └── ui/           # ventana (window.py), demo (prototype.py) y miniaturas
-├── tests/            # suite pytest sin Qt
+├── tests/            # suite pytest sin pantalla
 └── README.md
 ```
 

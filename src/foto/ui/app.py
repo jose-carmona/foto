@@ -172,7 +172,6 @@ class MainWindow(PhotoWindow):
             thumbnail_loader=service.load_visible,
             title=self._window_title(),
             initial_panel_visible=False,
-            on_open=self._open_library,
             grid_row=True,
         )
         self._thumbnail_service = service
@@ -194,67 +193,6 @@ class MainWindow(PhotoWindow):
 
     def _on_thumbnail_failed(self, key: str, message: str) -> None:
         logger.debug("Miniatura fallida para %s: %s", key, message)
-
-    def _reload_library(self) -> bool:
-        if not self.library_path.is_dir():
-            self.status.show_error("la fototeca no está disponible")
-            return False
-        try:
-            library_config = _validated_library(self.library_path)
-            photos = load_photos(self.library_path)
-        except (OSError, RuntimeError) as exc:
-            self.status.show_error(str(exc))
-            return False
-        self._library_config = library_config
-        self._thumbnail_service.cancel_all()
-        self._thumbnail_service.set_cache_dir(thumbs_dir(self.library_path))
-        self.setWindowTitle(self._window_title())
-        self.set_photos(photos, thumbnails={})
-        return True
-
-    def _open_library(self, argument: str) -> None:
-        if argument:
-            target = Path(argument).expanduser()
-            if not target.is_absolute():
-                target = Path.cwd() / target
-            target = target.resolve()
-            if not target.is_dir():
-                self.status.show_error(f"no es una carpeta: {argument}")
-                return
-        else:
-            directory = QFileDialog.getExistingDirectory(
-                self,
-                "Seleccionar fototeca",
-                str(self.library_path),
-            )
-            if not directory:
-                self.status.show_message("selección cancelada", 2000)
-                return
-            target = Path(directory).resolve()
-
-        # C04: la biblioteca destino debe validar su descriptor antes de
-        # convertirse en la biblioteca elegida y guardarse en config.toml.
-        try:
-            _validated_library(target)
-        except RuntimeError as exc:
-            self.status.show_error(str(exc))
-            return
-
-        new_config = AppConfig(
-            config_path=self.config.config_path,
-            library_path=target,
-            version=self.config.version,
-        )
-        try:
-            save_config(new_config)
-        except (OSError, ConfigError) as exc:
-            self.status.show_error(f"no se pudo guardar la configuración: {exc}")
-            return
-
-        self.config = new_config
-        self.library_path = target
-        if self._reload_library():
-            self.status.show_message(f"biblioteca abierta: {target.name}", 3000)
 
 
 def main() -> None:

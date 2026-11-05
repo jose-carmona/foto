@@ -12,7 +12,6 @@ Teclado primero · `Esc` o `q` para cerrar
 | `/` | Búsqueda |
 | `i` | Panel de metadatos |
 | `Tab` / `Shift+Tab` | Foco del panel siguiente / anterior |
-| `F11` | Pantalla completa |
 | `Ctrl+q` / `⌘Q` | Salir de la aplicación |
 | `Esc` | Cancelar, cerrar o retroceder |
 

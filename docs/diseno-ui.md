@@ -111,7 +111,6 @@ mayúsculas solo donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias como
 | `/` | Abrir la búsqueda |
 | `i` | Mostrar u ocultar el panel de metadatos |
 | `Tab` / `Shift+Tab` | Pasar el foco al panel siguiente / anterior |
-| `F11` | Pantalla completa |
 | `Esc` | Cancelar, cerrar o retroceder |
 | `Ctrl+q` / `⌘Q` | Salir de la aplicación |
 
@@ -140,12 +139,12 @@ Con el panel de foto abierto, la zona de rejilla queda reducida a la altura de
 un título de grupo (52 px) más una única fila de celdas (263 px). Es la misma
 rejilla de la vista principal, solo recortada: mismo widget, misma navegación,
 mismos grupos, mismas métricas y mismo scroll; lo único que cambia es su
-dimensión. No es un filmstrip ni una vista aparte.
+dimensión. No es una vista aparte.
 
 Reglas de la fila:
 
 - Es la misma `PhotoGrid` que la vista principal, recortada a una fila de
-  alto; no es un filmstrip ni una vista aparte.
+  alto; no es una vista aparte.
 - Encima de la fila se muestra el título del grupo de la foto con el cursor,
   con la tipografía de las cabeceras de la rejilla. La fila puede cruzar de un
   grupo a otro mientras avanza; el título cambia siempre al grupo de la
@@ -157,7 +156,8 @@ Reglas de la fila:
 - El foco y la selección están en la fila. La miniatura actual se resalta; la
   foto grande no lleva anillo de foco ni se resalta.
 - Al cerrar el panel de foto, la rejilla queda en la foto que se estaba
-  viendo.</think><tool_call>edit<arg_key>newString</arg_key><arg_value>- La navegación es la de la rejilla y usa `EnsureVisible`: la fila se desplaza
+  viendo.
+- La navegación es la de la rejilla y usa `EnsureVisible`: la fila se desplaza
   lo mínimo para dejar la miniatura a la vista, sin autocentrarla.
 - Al cerrar el visor, la rejilla principal queda en la foto que se estaba
   viendo.
@@ -223,7 +223,6 @@ Vocabulario mínimo:
 | Comando | Acción |
 | --- | --- |
 | `:q`, `:quit` | Salir de la aplicación |
-| `:open [ruta]` | Abrir una carpeta o biblioteca; sin ruta, selector nativo |
 | `:sort date`, `:sort camera` | Cambiar el orden de la rejilla (por defecto, fecha) |
 | `:help` | Abrir la ayuda |
 
@@ -259,7 +258,9 @@ lleguen sus funciones:
 - Rueda: desplazar la rejilla, igual con el panel de foto abierto.
   `Ctrl`/`⌘` + rueda sobre la foto grande hace zoom.
 - Clic derecho: menú contextual con las acciones de la foto bajo el cursor. Es
-  un atajo, no la única vía: todo lo que ofrece está en el teclado.
+  un atajo, no la única vía: todo lo que ofrece está en el teclado. Pendiente
+  para más adelante: queda al final de la Fase 1 del roadmap y todavía no está
+  implementado.
 - Ninguna acción puede depender de `hover`, arrastre o gesto. Los controles
   ocultos hasta pasar el ratón están prohibidos.
 
@@ -420,7 +421,7 @@ Reglas de la anatomía:
   animarse 120–160 ms con `ease-out`; se respeta la preferencia de movimiento
   reducido.
 - Los estados vacíos explican qué hacer y ofrecen el atajo correspondiente
-  (por ejemplo, `:open` para abrir una biblioteca).
+  (por ejemplo, `?` para ver los atajos disponibles).
 - Las miniaturas pendientes usan un bloque neutro, no un spinner.
 
 ### Color y tipografía
@@ -493,6 +494,10 @@ Requisitos:
   las escrituras son atómicas y un fallo de caché no impide mostrarla.
 - Un cambio de foto en caché se percibe inmediato; si aún no está, se mantiene
   la miniatura, nunca un hueco blanco.
+- La UI solo toca disco en dos puntos acotados: la decodificación de
+  originales, que vive en la tarea de carga del visor (`ImageLoadTask`), y la
+  caché de miniaturas, que vive en `ui/thumbnails.py`. Ese acceso a disco no se
+  reparte por la ventana ni por el resto de widgets.
 - La caché de miniaturas es un derivado reconstruible: borrar
   `<fototeca>/.foto/thumbs/` solo obliga a regenerarla. Todavía no se poda ni
   tiene un límite de tamaño, así que las fotos borradas o cambiadas pueden dejar
@@ -539,7 +544,8 @@ Una pantalla o funcionalidad de UI no se considera terminada hasta que:
 - [ ] No hay diálogos modales para acciones rutinarias.
 - [ ] No se bloquea el hilo de UI ni se muestra un spinner bloqueante.
 - [ ] Los errores se muestran y el estado queda consistente.
-- [ ] La UI no contiene lógica de negocio ni acceso directo a disco.
+- [ ] La UI no contiene lógica de negocio. El acceso directo a disco se limita a
+      la decodificación de originales del visor y a la caché de miniaturas.
 
 ## Fuera de alcance
 

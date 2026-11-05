@@ -68,7 +68,8 @@ forma de publicación o compartición.
     cierra, y las búsquedas y ordenaciones se hacen contra el índice. La demo
     `prototype.py` usa fotos falsas y no toca disco.
   - [x] Integración del visor con el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md))
-  - [ ] Favoritos persistidos en XMP
+  - [ ] Favoritos persistidos en XMP (decisión de alcance pospuesta al final de la Fase 1)
+  - [ ] Menú contextual de ratón con las acciones de la foto (pendiente para más adelante)
 - [ ] **Fase 2 — Organización**
   - Álbumes manuales e inteligentes
   - Búsqueda y filtros por fecha, cámara, etiquetas y ubicación
@@ -136,7 +137,7 @@ foto/
 │   ├── indexer/    # CLI foto-index y python -m foto.indexer
 │   ├── storage/    # SQLite, exiftool, lock y configuración TOML
 │   └── ui/         # ventana (window.py), demo (prototype.py) y miniaturas
-├── tests/          # suite pytest sin Qt
+├── tests/          # suite pytest que se ejecuta sin pantalla
 └── README.md
 ```
 

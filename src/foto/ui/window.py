@@ -94,11 +94,6 @@ ITEM_H = THUMB_H + GRID_GAP
 GROUP_HEADER_H = 52
 PANEL_W = 426
 BAR_H = 28
-STRIP_THUMB_H = 96
-STRIP_THUMB_W = round(STRIP_THUMB_H * THUMB_W / THUMB_H)
-STRIP_GAP = 8
-STRIP_VPAD = 8
-STRIP_H = STRIP_THUMB_H + 2 * STRIP_VPAD + 8
 CANVAS_MARGIN = 8
 PAN_STEP = 48
 IMAGE_CACHE_SIZE = 3
@@ -313,16 +308,6 @@ def photo_search_text(photo: Photo) -> str:
         photo.photo_hash or "",
     )
     return " ".join(part.casefold() for part in parts if part)
-
-
-@dataclass(frozen=True)
-class StripItem:
-    """Una miniatura de la tira inferior del visor."""
-
-    key: str
-    icon: QIcon
-    favorite: bool
-    accessible_name: str
 
 
 @dataclass(frozen=True)
@@ -857,201 +842,31 @@ class ThumbnailDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class Filmstrip(QListWidget):
-    """Tira horizontal histórica del visor.
+class PhotoViewer(QWidget):
+    """Vista individual: solo la foto grande.
 
-    La app real y la demo usan la misma rejilla limitada a una fila. Esta
-    tira se conserva como variante anterior para comparar comportamientos.
+    La fila de miniaturas la aporta la rejilla de la ventana cuando se abre
+    con ``grid_row=True``; el visor no contiene una tira propia.
     """
 
     action_requested = Signal(str)
-    photo_selected = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setAccessibleName("tira de miniaturas")
-        self.setViewMode(QListWidget.IconMode)
-        self.setFlow(QListWidget.LeftToRight)
-        self.setWrapping(False)
-        self.setResizeMode(QListWidget.Adjust)
-        self.setMovement(QListWidget.Static)
-        self.setSelectionMode(QListWidget.SingleSelection)
-        self.setSpacing(0)
-        self.setFrameShape(QListWidget.NoFrame)
-        self.setIconSize(QSize(STRIP_THUMB_W, STRIP_THUMB_H))
-        self.setUniformItemSizes(True)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
-        self.setItemDelegate(ThumbnailDelegate(self))
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setFixedHeight(STRIP_H)
-        self.setStyleSheet(
-            """
-            QListWidget { background: palette(window); border: none; }
-            QListWidget::item:selected { background: transparent; }
-            QScrollBar:horizontal { height: 8px; background: transparent; }
-            QScrollBar::handle:horizontal {
-                background: palette(mid); min-width: 24px; border-radius: 4px;
-            }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
-            """
-        )
-        palette = self.palette()
-        palette.setColor(QPalette.Base, palette.color(QPalette.Window))
-        self.setPalette(palette)
-        self._syncing = False
-        self.currentItemChanged.connect(self._on_current_changed)
-
-    def retheme(self) -> None:
-        palette = _app_palette()
-        palette.setColor(QPalette.Base, palette.color(QPalette.Window))
-        self.setPalette(palette)
-        self.setStyleSheet(self.styleSheet())
-        self.viewport().update()
-        self.update()
-
-    def set_items(self, items: list[StripItem], current_key: str | None) -> None:
-        self._syncing = True
-        try:
-            self.clear()
-            for item in items:
-                row = QListWidgetItem()
-                row.setIcon(item.icon)
-                row.setData(PHOTO_ROLE, item.key)
-                row.setData(FAVORITE_ROLE, item.favorite)
-                row.setData(Qt.AccessibleTextRole, item.accessible_name)
-                row.setSizeHint(
-                    QSize(
-                        STRIP_THUMB_W + STRIP_GAP,
-                        STRIP_THUMB_H + 2 * STRIP_VPAD,
-                    )
-                )
-                row.setText("")
-                self.addItem(row)
-        finally:
-            self._syncing = False
-        if current_key is not None:
-            self.select_key(current_key)
-
-    def _item_for_key(self, key: str) -> QListWidgetItem | None:
-        for row in range(self.count()):
-            item = self.item(row)
-            if item.data(PHOTO_ROLE) == key:
-                return item
-        return None
-
-    def select_key(self, key: str, *, center: bool = True) -> None:
-        item = self._item_for_key(key)
-        if item is None:
-            return
-        self._syncing = True
-        try:
-            self.setCurrentItem(item)
-        finally:
-            self._syncing = False
-        if center:
-            self.scrollToItem(item, QAbstractItemView.PositionAtCenter)
-
-    def update_item(
-        self, key: str, favorite: bool, accessible_name: str
-    ) -> None:
-        item = self._item_for_key(key)
-        if item is None:
-            return
-        item.setData(FAVORITE_ROLE, favorite)
-        item.setData(Qt.AccessibleTextRole, accessible_name)
-        self.viewport().update()
-
-    def update_icon(self, key: str, icon: QIcon) -> None:
-        item = self._item_for_key(key)
-        if item is None:
-            return
-        item.setIcon(icon)
-        self.viewport().update()
-
-    def _on_current_changed(self, current, previous) -> None:
-        if self._syncing or current is None:
-            return
-        key = current.data(PHOTO_ROLE)
-        if key:
-            self.photo_selected.emit(str(key))
-
-    def wheelEvent(self, event) -> None:
-        bar = self.horizontalScrollBar()
-        delta = event.angleDelta().y() or event.angleDelta().x()
-        bar.setValue(bar.value() - delta)
-        event.accept()
-
-    def event(self, event) -> bool:
-        # Qt consume Tab para la cadena de foco antes de keyPressEvent.
-        if event.type() == QEvent.KeyPress and event.key() in (
-            Qt.Key_Tab,
-            Qt.Key_Backtab,
-        ):
-            self.action_requested.emit("focus_panel")
-            return True
-        return super().event(event)
-
-    def keyPressEvent(self, event) -> None:
-        action = viewer_key_action(event)
-        if action is not None:
-            self.action_requested.emit(action)
-            return
-        super().keyPressEvent(event)
-
-
-class PhotoViewer(QWidget):
-    """Vista individual: foto grande arriba y fila de miniaturas abajo.
-
-    Con `with_strip=False`, la fila inferior la aporta la rejilla de la ventana:
-    es el modo que usan la app real y la demo.
-    """
-
-    action_requested = Signal(str)
-    photo_selected = Signal(str)
-
-    def __init__(
-        self, parent: QWidget | None = None, *, with_strip: bool = True
-    ) -> None:
-        super().__init__(parent)
         self.setAccessibleName("visor de fotos")
         self.canvas = PhotoCanvas(self)
-        self.strip = Filmstrip(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.canvas, 1)
-        if with_strip:
-            layout.addWidget(self.strip, 0)
-        else:
-            self.strip.hide()
-
         self.canvas.action_requested.connect(self.action_requested)
-        self.strip.action_requested.connect(self.action_requested)
-        self.strip.photo_selected.connect(self.photo_selected)
-
-    def set_items(self, items: list[StripItem], current_key: str | None) -> None:
-        self.strip.set_items(items, current_key)
-
-    def select_key(self, key: str) -> None:
-        self.strip.select_key(key)
-
-    def update_item(
-        self, key: str, favorite: bool, accessible_name: str
-    ) -> None:
-        self.strip.update_item(key, favorite, accessible_name)
-
-    def update_icon(self, key: str, icon: QIcon) -> None:
-        self.strip.update_icon(key, icon)
 
     def focus_canvas(self) -> None:
         self.canvas.setFocus()
 
     def retheme(self) -> None:
         self.canvas.update()
-        self.strip.retheme()
 
 
 class PhotoGrid(QListWidget):
@@ -2413,18 +2228,16 @@ class PhotoWindow(QMainWindow):
         ] | None = None,
         title: str | None = None,
         initial_panel_visible: bool = True,
-        on_open: Callable[[str], None] | None = None,
         grid_row: bool = False,
     ) -> None:
         super().__init__()
-        # True usa la rejilla como fila inferior del visor; False conserva el
-        # filmstrip histórico, que solo usa la configuración de la demo sin
-        # rejilla (grid_row=False). La app real y la demo pasan True.
+        # True usa la rejilla como fila inferior del visor; False muestra el
+        # visor a pantalla completa con la rejilla oculta. La app real y la
+        # demo usan True.
         self.grid_row = grid_row
         self.photos = {photo.key: photo for photo in photos}
         self._sort_key = DEFAULT_SORT
         self.thumbnails = dict(thumbnails or {})
-        self._on_open = on_open
         self.search_text = ""
         self._search_origin: str | None = None
         self.panel_visible = initial_panel_visible
@@ -2493,7 +2306,7 @@ class PhotoWindow(QMainWindow):
         palette.setColor(QPalette.Base, palette.color(QPalette.Window))
         self.grid.setPalette(palette)
 
-        self.viewer = PhotoViewer(self.content, with_strip=not grid_row)
+        self.viewer = PhotoViewer(self.content)
         if grid_row:
             # La rejilla es la dueña del foco y de la navegación también en el visor.
             self.viewer.canvas.setFocusPolicy(Qt.NoFocus)
@@ -2544,7 +2357,6 @@ class PhotoWindow(QMainWindow):
             self._schedule_visible_thumbnails
         )
         self.viewer.action_requested.connect(self._on_viewer_action)
-        self.viewer.photo_selected.connect(self._on_strip_photo_selected)
         self.panel.scroll.focus_back.connect(self._focus_current_view)
         self.panel.scroll.escape_pressed.connect(self._handle_escape)
         self.panel.scroll.action_requested.connect(self._on_action)
@@ -2644,7 +2456,6 @@ class PhotoWindow(QMainWindow):
         self.grid.update_header_widths()
         self._update_group_headers()
         self._refresh_visible_cache()
-        self._rebuild_strip()
         self._schedule_visible_thumbnails()
 
     def _update_group_headers(self) -> None:
@@ -2976,8 +2787,6 @@ class PhotoWindow(QMainWindow):
         if item is not None and key in self.thumbnails:
             item.setIcon(icon)
             self.grid.viewport().update()
-        if not self.grid_row:
-            self.viewer.update_icon(key, icon)
         if (
             self._viewer_visible
             and self._displayed_key == key
@@ -2987,26 +2796,6 @@ class PhotoWindow(QMainWindow):
                 icon.pixmap(QSize(THUMB_W, THUMB_H)),
                 preview=True,
             )
-
-    def _rebuild_strip(self) -> None:
-        if self.grid_row:
-            return
-        items: list[StripItem] = []
-        for key in self._visible_keys_cache:
-            item = self._grid_items.get(key)
-            photo = self.photos.get(key)
-            if item is None or photo is None:
-                continue
-            items.append(
-                StripItem(
-                    key=photo.key,
-                    icon=item.icon(),
-                    favorite=photo.favorite,
-                    accessible_name=photo_accessible_name(photo),
-                )
-            )
-        current = self._current_photo()
-        self.viewer.set_items(items, current.key if current else None)
 
     def _visible_keys(self) -> list[str]:
         return self._visible_keys_cache
@@ -3102,8 +2891,6 @@ class PhotoWindow(QMainWindow):
         if self.grid_row:
             self._set_viewer_keys(True)
         self._layout_content()
-        if not self.grid_row:
-            self.viewer.select_key(photo.key)
         self._show_viewer_photo(photo)
         self._focus_current_view()
         self.status.show_message("visor · h/j/k/l mover · q volver", 2500)
@@ -3120,10 +2907,6 @@ class PhotoWindow(QMainWindow):
         if not self.status.prompt_active:
             self._focus_grid()
             self.status.show_message("rejilla", 1200)
-
-    def _on_strip_photo_selected(self, key: str) -> None:
-        if self._viewer_visible:
-            self._select_key(key)
 
     def _on_grid_double_clicked(self, item: QListWidgetItem) -> None:
         if self._viewer_visible or item is None or item.data(HEADER_ROLE):
@@ -3149,8 +2932,6 @@ class PhotoWindow(QMainWindow):
                         self.grid.scrollToItem(
                             item, QAbstractItemView.EnsureVisible
                         )
-                else:
-                    self.viewer.select_key(photo.key)
                 self._show_viewer_photo(photo)
         self._trim_thumbnails()
 
@@ -3274,7 +3055,7 @@ class PhotoWindow(QMainWindow):
                 self.empty_label.setText("Sin coincidencias\nEsc limpia la búsqueda")
             else:
                 self.empty_label.setText(
-                    "No hay fotos en el índice\nEjecuta 'foto-index' o :open para abrir otra carpeta"
+                    "No hay fotos en el índice\nEjecuta 'foto-index' para crear el catálogo"
                 )
             self.empty_label.show()
             self._position_empty_label()
@@ -3312,7 +3093,6 @@ class PhotoWindow(QMainWindow):
                 self.grid.setCurrentRow(-1)
                 self.panel.show_empty("Sin coincidencias")
 
-        self._rebuild_strip()
         if self._viewer_visible and self._visible_count() == 0:
             self._close_viewer()
 
@@ -3610,12 +3390,6 @@ class PhotoWindow(QMainWindow):
         item.setData(FAVORITE_ROLE, updated.favorite)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
         self.grid.viewport().update()
-        if not self.grid_row:
-            self.viewer.update_item(
-                updated.key,
-                updated.favorite,
-                photo_accessible_name(updated),
-            )
         self.status.show_message(
             "favorito" if updated.favorite else "sin favorito", 2000
         )
