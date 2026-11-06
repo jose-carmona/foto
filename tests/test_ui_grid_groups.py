@@ -82,7 +82,7 @@ def _current(window) -> str:
 # ----------------------------------------------------------------------
 def test_0_jumps_to_the_first_photo_of_the_group(window):
     _select(window, "bruma.jpg")
-    window._on_action("0")
+    window._dispatch("0")
 
     # El orden es el de la rejilla: en el mes de mayo la miniatura primera es
     # ``claros`` (la de fecha más reciente).
@@ -91,17 +91,17 @@ def test_0_jumps_to_the_first_photo_of_the_group(window):
 
 def test_dollar_jumps_to_the_last_photo_of_the_group(window):
     _select(window, "bruma.jpg")
-    window._on_action("$")
+    window._dispatch("$")
 
     assert _current(window) == "amanece.jpg"
 
 
 def test_0_and_dollar_never_cross_the_group_boundary(window):
     _select(window, "duna.jpg")
-    window._on_action("$")
+    window._dispatch("$")
     assert _current(window) == "duna.jpg"
 
-    window._on_action("0")
+    window._dispatch("0")
     assert _current(window) == "estuario.jpg"
 
 
@@ -118,7 +118,7 @@ def test_group_movement_respects_the_active_filter(window):
     _select(window, "estuario.jpg")
     window._apply_filter("estuario")
 
-    window._on_action("$")
+    window._dispatch("$")
 
     # El filtro deja al grupo de junio con una única foto visible.
     assert _current(window) == "estuario.jpg"
@@ -141,10 +141,10 @@ def test_group_edges_in_the_viewer_row(qapp):
     viewer_window._open_viewer()
     assert viewer_window._viewer_visible
 
-    viewer_window._on_action("0")
+    viewer_window._dispatch("0")
     assert viewer_window._current_photo().key == "estuario.jpg"
 
-    viewer_window._on_action("$")
+    viewer_window._dispatch("$")
     assert viewer_window._current_photo().key == "duna.jpg"
 
 
@@ -169,16 +169,16 @@ def test_viewer_row_shows_the_group_header(qapp):
     assert viewer_window.row_header.isVisibleTo(viewer_window.content)
 
     # Al navegar más allá del límite del grupo cambia al grupo nuevo.
-    viewer_window._on_action("l")  # duna (junio) -> claros (mayo)
+    viewer_window._dispatch("l")  # duna (junio) -> claros (mayo)
     assert viewer_window._current_photo().key == "claros.jpg"
     assert viewer_window.row_header.text() == "mayo de 2024"
 
     # Dentro del mismo grupo el rótulo no cambia.
-    viewer_window._on_action("l")  # claros -> bruma
+    viewer_window._dispatch("l")  # claros -> bruma
     assert viewer_window.row_header.text() == "mayo de 2024"
 
-    viewer_window._on_action("h")  # bruma -> claros
-    viewer_window._on_action("h")  # de mayo a junio de nuevo
+    viewer_window._dispatch("h")  # bruma -> claros
+    viewer_window._dispatch("h")  # de mayo a junio de nuevo
     assert viewer_window._current_photo().key == "duna.jpg"
     assert viewer_window.row_header.text() == "junio de 2024"
 

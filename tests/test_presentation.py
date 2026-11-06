@@ -3,8 +3,11 @@
 Estas pruebas ejercitan ``foto.ui.presentation`` y ``foto.ui.models`` sin
 importar PySide6 ni crear ``QApplication``: la lógica de presentación —orden,
 grupos, documento de búsqueda, navegación vertical, teclas de grupo y la
-aritmética del token ``fg.muted``— no depende de Qt. Incluye un test guardián
-que impide que los módulos puros vuelvan a importar Qt o la ventana.
+aritmética del token ``fg.muted``— no depende de Qt. La tabla de teclas de la
+UI, ``foto.ui.keybindings``, queda cubierta en detalle por
+``tests/test_keybindings.py`` y también se protege aquí como módulo puro. El
+suite incluye un test guardián que impide que los módulos puros vuelvan a
+importar Qt o la ventana.
 """
 
 from __future__ import annotations
@@ -372,7 +375,11 @@ def test_muted_rgb_treats_a_background_of_128_and_a_half_as_light():
 # ----------------------------------------------------------------------
 # Guardián de pureza: nada de Qt ni de ventana en los módulos puros
 # ----------------------------------------------------------------------
-_PURE_SOURCES = (Path("src/foto/ui/models.py"), Path("src/foto/ui/presentation.py"))
+_PURE_SOURCES = (
+    Path("src/foto/ui/models.py"),
+    Path("src/foto/ui/presentation.py"),
+    Path("src/foto/ui/keybindings.py"),
+)
 _FORBIDDEN_TOKENS = (
     "pyside",
     "qtcore",

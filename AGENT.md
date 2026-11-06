@@ -14,10 +14,13 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 
 - UI funcional de `foto` en `src/foto/ui/`: ventana (`window.py`) con rejilla,
   panel de foto, panel de metadatos y temas claro/oscuro; demo con datos falsos
-  en `prototype.py`. El modelo de UI (`Photo`) vive en `ui/models.py` y las
+  en `prototype.py`. El modelo de UI (`Photo`) vive en `ui/models.py`, las
   reglas de presentación pura (orden, grupos, búsqueda, navegación vertical,
-  teclas de grupo y la aritmética del color atenuado) en `ui/presentation.py`;
-  ambos son módulos sin Qt que la ventana consume.
+  teclas de grupo y la aritmética del color atenuado) en `ui/presentation.py`
+  y la tabla unificada de teclas con contexto explícito (`(contexto, tecla,
+  modificadores) → acción`, sin Qt) en `ui/keybindings.py`; la ventana ejecuta
+  las acciones con un único dispatcher (`_dispatch`) con registro acción →
+  handler. Todos son módulos sin Qt que la ventana consume.
 - Indexador `foto-index` completo en `src/foto/indexer/` + `core/` + `storage/`:
   catálogo SQLite incremental, hashes SHA-256 de contenido, rutas relativas,
   reconciliación de ausencias, `exiftool` opcional y lock de escritor único.

@@ -66,8 +66,9 @@ forma de publicación o compartición.
   - Rejilla, panel de foto y panel de metadatos en `src/foto/ui/window.py`.
     El visor consume el catálogo: si no existe `catalog.sqlite`, avisa y se
     cierra, y las búsquedas y ordenaciones se hacen contra el índice. La
-    lógica de presentación pura (orden, grupos, búsqueda, navegación) vive en
-    módulos sin Qt dentro de `src/foto/ui/`. La demo `prototype.py` usa fotos
+    lógica de presentación pura (orden, grupos, búsqueda, navegación) y la
+    tabla de teclas (`ui/keybindings.py`) viven en módulos sin Qt dentro de
+    `src/foto/ui/`. La demo `prototype.py` usa fotos
     falsas y no toca disco.
   - [x] Integración del visor con el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md))
   - [ ] Favoritos persistidos en XMP (decisión de alcance pospuesta al final de la Fase 1)

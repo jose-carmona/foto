@@ -20,7 +20,6 @@ consumidor y conserva solo los adaptadores que tocan `QPalette`.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -78,12 +77,20 @@ from PySide6.QtWidgets import (
 )
 
 from foto.core.thumbnails import eviction_candidates
+from foto.ui import keybindings
+from foto.ui.keybindings import (
+    CTRL_MASK,
+    GRID,
+    GRID_VIEWER,
+    PANEL,
+    VIEWER,
+    WINDOW,
+    key_action,
+)
 from foto.ui.models import Photo
 from foto.ui.presentation import (
     DEFAULT_SORT,
     SORT_KEYS,
-    is_group_end,
-    is_group_start,
     muted_rgb,
     photo_accessible_name,
     photo_group,
@@ -96,12 +103,6 @@ PHOTO_ROLE = Qt.UserRole + 1
 FAVORITE_ROLE = Qt.UserRole + 2
 GROUP_ROLE = Qt.UserRole + 3
 HEADER_ROLE = Qt.UserRole + 4
-
-# Qt remapea los modificadores en macOS: ⌘ Command llega como ControlModifier
-# y la tecla Ctrl física como MetaModifier (documentado en Qt::KeyboardModifier).
-# La media página debe ser Ctrl+d/Ctrl+u con la tecla Ctrl física en todas las
-# plataformas (docs/diseno-ui.md), así que la máscara depende del sistema.
-_CTRL_MASK = Qt.MetaModifier if sys.platform == "darwin" else Qt.ControlModifier
 
 THUMB_W = 400
 THUMB_H = 247
@@ -314,59 +315,15 @@ def default_thumbnail(index: int) -> QIcon:
     return QIcon(pixmap)
 
 
-def viewer_key_action(event) -> str | None:
-    """Traduce una tecla del visor a una acción, o None si no aplica."""
-    key = event.key()
-    modifiers = event.modifiers()
-    shift = bool(modifiers & Qt.ShiftModifier)
-    if modifiers & (Qt.ControlModifier | Qt.MetaModifier):
-        return None
-
-    if is_group_start(key, shift):
-        return "group_first"
-    if is_group_end(key, shift):
-        return "group_last"
-    if key == Qt.Key_J:
-        return "pan_down" if shift else "next"
-    if key == Qt.Key_K:
-        return "pan_up" if shift else "previous"
-    if key == Qt.Key_H and not shift:
-        return "pan_left"
-    if key == Qt.Key_L and not shift:
-        return "pan_right"
-    if key in (Qt.Key_Up, Qt.Key_Left):
-        return "previous"
-    if key in (Qt.Key_Down, Qt.Key_Right):
-        return "next"
-    if key in (Qt.Key_Plus, Qt.Key_Equal):
-        return "zoom_in"
-    if key == Qt.Key_Minus:
-        return "zoom_out"
-    if key == Qt.Key_Z and not shift:
-        return "toggle_zoom"
-    if key == Qt.Key_G:
-        return "last" if shift else "g"
-    if key == Qt.Key_Home:
-        return "first"
-    if key == Qt.Key_End:
-        return "last"
-    if key == Qt.Key_Q:
-        return "close"
-    if key == Qt.Key_Escape:
-        return "escape"
-    if key == Qt.Key_I:
-        return "panel"
-    if key == Qt.Key_F:
-        return "favorite"
-    if key in (Qt.Key_Question, Qt.Key_F1):
-        return "help"
-    if key == Qt.Key_Colon:
-        return "command"
-    if key == Qt.Key_Slash:
-        return "search"
-    if key in (Qt.Key_Tab, Qt.Key_Backtab):
-        return "focus_panel"
-    return None
+def _event_modifiers(event) -> tuple[bool, bool, bool]:
+    """(shift, ctrl, cmd): ctrl es la Ctrl física; cmd es ⌘/Ctrl no física."""
+    # La tabla guarda los códigos como enteros, se evalúan sobre el valor
+    # numérico de los flags (Qt no mezcla KeyboardModifier con int).
+    flag = event.modifiers().value
+    shift = bool(flag & keybindings.SHIFT_MODIFIER)
+    ctrl = bool(flag & CTRL_MASK)
+    any_ctrl = bool(flag & (keybindings.CONTROL_MODIFIER | keybindings.META_MODIFIER))
+    return shift, ctrl, any_ctrl and not ctrl
 
 
 class ImageLoaderSignals(QObject):
@@ -579,7 +536,8 @@ class PhotoCanvas(QWidget):
         return super().event(event)
 
     def keyPressEvent(self, event) -> None:
-        action = viewer_key_action(event)
+        shift, ctrl, cmd = _event_modifiers(event)
+        action = key_action(VIEWER, event.key(), shift=shift, ctrl=ctrl, cmd=cmd)
         if action is not None:
             self.action_requested.emit(action)
             return
@@ -713,7 +671,6 @@ class PhotoGrid(QListWidget):
     """Rejilla que traduce las teclas de vim a acciones de la ventana."""
 
     action_requested = Signal(str)
-    focus_panel = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -914,125 +871,16 @@ class PhotoGrid(QListWidget):
         super().wheelEvent(event)
 
     def keyPressEvent(self, event):
-        key = event.key()
-        modifiers = event.modifiers()
-        shift = bool(modifiers & Qt.ShiftModifier)
-        control = bool(modifiers & (Qt.ControlModifier | Qt.MetaModifier))
-
-        if self.viewer_keys:
-            if not control and shift and key in (
-                Qt.Key_H,
-                Qt.Key_J,
-                Qt.Key_K,
-                Qt.Key_L,
-            ):
-                self.action_requested.emit(
-                    {
-                        Qt.Key_H: "pan_left",
-                        Qt.Key_J: "pan_down",
-                        Qt.Key_K: "pan_up",
-                        Qt.Key_L: "pan_right",
-                    }[key]
-                )
-                return
-            if not control:
-                if key in (Qt.Key_Plus, Qt.Key_Equal):
-                    self.action_requested.emit("zoom_in")
-                    return
-                if key == Qt.Key_Minus:
-                    self.action_requested.emit("zoom_out")
-                    return
-                if key == Qt.Key_Z and not shift:
-                    self.action_requested.emit("toggle_zoom")
-                    return
-
-        if key in (Qt.Key_J, Qt.Key_K, Qt.Key_H, Qt.Key_L):
-            self.action_requested.emit(
-                {
-                    Qt.Key_J: "j",
-                    Qt.Key_K: "k",
-                    Qt.Key_H: "h",
-                    Qt.Key_L: "l",
-                }[key]
-            )
+        shift, ctrl, cmd = _event_modifiers(event)
+        context = GRID_VIEWER if self.viewer_keys else GRID
+        action = key_action(context, event.key(), shift=shift, ctrl=ctrl, cmd=cmd)
+        if action is None:
+            super().keyPressEvent(event)
             return
-        if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
-            self.action_requested.emit(
-                {
-                    Qt.Key_Up: "k",
-                    Qt.Key_Down: "j",
-                    Qt.Key_Left: "h",
-                    Qt.Key_Right: "l",
-                }[key]
-            )
-            return
-        if key == Qt.Key_Home:
-            self.action_requested.emit("home")
-            return
-        if key == Qt.Key_End:
-            self.action_requested.emit("end")
-            return
-        if is_group_start(key, shift):
-            self.action_requested.emit("0")
-            return
-        if is_group_end(key, shift):
-            self.action_requested.emit("$")
-            return
-        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_O):
-            self.action_requested.emit("open_viewer")
-            return
-        if key == Qt.Key_G:
-            if event.modifiers() & Qt.ShiftModifier:
-                self.action_requested.emit("end")
-            else:
-                self.action_requested.emit("g")
-            return
-        if key == Qt.Key_PageDown:
-            self.action_requested.emit("pagedown")
-            return
-        if key == Qt.Key_PageUp:
-            self.action_requested.emit("pageup")
-            return
-        if key == Qt.Key_D and event.modifiers() & _CTRL_MASK:
-            self.action_requested.emit("halfdown")
-            return
-        if key == Qt.Key_U and event.modifiers() & _CTRL_MASK:
-            self.action_requested.emit("halfup")
-            return
-        if key in (Qt.Key_Tab, Qt.Key_Backtab):
-            self.focus_panel.emit()
-            return
-        if key == Qt.Key_Colon:
-            self.action_requested.emit(":")
-            return
-        if key == Qt.Key_Slash:
-            self.action_requested.emit("/")
-            return
-        if key in (Qt.Key_Question, Qt.Key_F1):
-            self.action_requested.emit("?")
-            return
-        if key == Qt.Key_I:
-            self.action_requested.emit("i")
-            return
-        if key == Qt.Key_F:
-            self.action_requested.emit("f")
-            return
-        if key == Qt.Key_Q:
-            self.action_requested.emit("q")
-            return
-        if key == Qt.Key_Escape:
-            self.action_requested.emit("esc")
-            return
-        if not shift and Qt.Key_0 <= key <= Qt.Key_5:
-            self.action_requested.emit(str(key - Qt.Key_0))
-            return
-
-        super().keyPressEvent(event)
+        self.action_requested.emit(action)
 
 
 class PanelScroll(QScrollArea):
-    focus_back = Signal()
-    escape_pressed = Signal()
     action_requested = Signal(str)
     focus_changed = Signal(bool)
 
@@ -1045,83 +893,14 @@ class PanelScroll(QScrollArea):
         self.focus_changed.emit(False)
 
     def keyPressEvent(self, event):
-        key = event.key()
-        if key in (Qt.Key_Tab, Qt.Key_Backtab):
-            self.focus_back.emit()
+        # Solo traduce y emite: el dispatcher de la ventana decide qué hacer,
+        # incluido el scroll local del propio panel (_panel_scroll).
+        shift, ctrl, cmd = _event_modifiers(event)
+        action = key_action(PANEL, event.key(), shift=shift, ctrl=ctrl, cmd=cmd)
+        if action is None:
+            super().keyPressEvent(event)
             return
-        if key == Qt.Key_Escape:
-            self.escape_pressed.emit()
-            return
-        bar = self.verticalScrollBar()
-        if key in (Qt.Key_Up, Qt.Key_Down):
-            delta = 32
-            bar.setValue(bar.value() + (-delta if key == Qt.Key_Up else delta))
-            return
-        if key in (Qt.Key_PageUp, Qt.Key_PageDown):
-            delta = bar.pageStep()
-            bar.setValue(bar.value() + (-delta if key == Qt.Key_PageUp else delta))
-            return
-        if key == Qt.Key_Home:
-            bar.setValue(bar.minimum())
-            return
-        if key == Qt.Key_End:
-            bar.setValue(bar.maximum())
-            return
-        if key in (Qt.Key_Left, Qt.Key_Right):
-            return
-        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_O):
-            self.action_requested.emit("open_viewer")
-            return
-        if key in (Qt.Key_Plus, Qt.Key_Equal, Qt.Key_Minus, Qt.Key_Z):
-            self.action_requested.emit(
-                {
-                    Qt.Key_Plus: "zoom_in",
-                    Qt.Key_Equal: "zoom_in",
-                    Qt.Key_Minus: "zoom_out",
-                    Qt.Key_Z: "toggle_zoom",
-                }[key]
-            )
-            return
-        if key == Qt.Key_G:
-            self.action_requested.emit(
-                "last" if event.modifiers() & Qt.ShiftModifier else "g"
-            )
-            return
-        if key in (Qt.Key_J, Qt.Key_K, Qt.Key_H, Qt.Key_L):
-            self.action_requested.emit(
-                {
-                    Qt.Key_J: "j",
-                    Qt.Key_K: "k",
-                    Qt.Key_H: "h",
-                    Qt.Key_L: "l",
-                }[key]
-            )
-            return
-        if key in (
-            Qt.Key_Colon,
-            Qt.Key_Slash,
-            Qt.Key_Question,
-            Qt.Key_F1,
-            Qt.Key_I,
-            Qt.Key_F,
-            Qt.Key_Q,
-        ):
-            self.action_requested.emit(
-                {
-                    Qt.Key_Colon: ":",
-                    Qt.Key_Slash: "/",
-                    Qt.Key_Question: "?",
-                    Qt.Key_F1: "?",
-                    Qt.Key_I: "i",
-                    Qt.Key_F: "f",
-                    Qt.Key_Q: "q",
-                }[key]
-            )
-            return
-        if Qt.Key_0 <= key <= Qt.Key_5:
-            self.action_requested.emit(str(key - Qt.Key_0))
-            return
-        super().keyPressEvent(event)
+        self.action_requested.emit(action)
 
 
 class MetadataPanel(QFrame):
@@ -2190,16 +1969,13 @@ class PhotoWindow(QMainWindow):
         self._update_empty_state()
         self.grid.currentItemChanged.connect(self._on_current_changed)
         self.grid.itemDoubleClicked.connect(self._on_grid_double_clicked)
-        self.grid.action_requested.connect(self._on_action)
-        self.grid.focus_panel.connect(self._focus_panel)
+        self.grid.action_requested.connect(self._dispatch)
         self.grid.verticalScrollBar().valueChanged.connect(self._schedule_visible_thumbnails)
         self.grid.horizontalScrollBar().valueChanged.connect(
             self._schedule_visible_thumbnails
         )
-        self.viewer.action_requested.connect(self._on_viewer_action)
-        self.panel.scroll.focus_back.connect(self._focus_current_view)
-        self.panel.scroll.escape_pressed.connect(self._handle_escape)
-        self.panel.scroll.action_requested.connect(self._on_action)
+        self.viewer.action_requested.connect(self._dispatch)
+        self.panel.scroll.action_requested.connect(self._dispatch)
         self.status.command_submitted.connect(self._run_command)
         self.status.search_changed.connect(self._apply_filter)
         self.status.search_committed.connect(self._commit_search)
@@ -2207,6 +1983,10 @@ class PhotoWindow(QMainWindow):
         self.status.prompt_opened.connect(self._show_content_blocker)
         self.status.prompt_closed.connect(self._hide_content_blocker)
         self.status.prompt_closed.connect(self._focus_current_view)
+
+        # Registro de acciones: toda acción producible por la tabla debe
+        # tener consumidor; _dispatch falla de forma ruidosa si no.
+        self._actions = self._build_action_registry()
 
         quit_action = QAction(self)
         quit_action.setShortcut(QKeySequence.Quit)
@@ -3010,19 +2790,18 @@ class PhotoWindow(QMainWindow):
         self._on_current_changed(self.grid.currentItem(), None)
         self.status.show_message(f"ordenado por {key}", 3000)
 
-    def _on_action(self, action: str) -> None:
-        if action != "g" and self._g_pending:
-            self._g_pending = False
-            self._g_timer.stop()
-        if self.help_overlay.isVisible():
-            if action in ("esc", "?", "q"):
-                self._toggle_help()
-            return
-        if self.status.prompt_active:
-            if action == "esc":
-                self._handle_escape()
-            return
-        if action in (
+    # ------------------------------------------------------------------
+    # Registro de acciones y dispatcher único (P1.5, fase 2)
+    # ------------------------------------------------------------------
+    def _build_action_registry(self) -> dict[str, Callable[..., None]]:
+        """Una entrada por cada acción producible por la tabla de teclas.
+
+        ``ignore`` (flechas laterales del panel) tiene handler explícito para
+        que ninguna acción emitida quede sin consumidor. ``help`` también es
+        alcanzable por ``:help`` desde la línea de comandos.
+        """
+        registry: dict[str, Callable[..., None]] = {}
+        for action in (
             "j",
             "k",
             "h",
@@ -3036,110 +2815,105 @@ class PhotoWindow(QMainWindow):
             "halfdown",
             "halfup",
         ):
-            if self._viewer_visible and not self.grid_row:
-                if action == "j":
-                    self._viewer_navigate(1)
-                elif action == "k":
-                    self._viewer_navigate(-1)
-                elif action == "h":
-                    self._on_viewer_action("pan_left")
-                elif action == "l":
-                    self._on_viewer_action("pan_right")
-                elif action in ("0", "$"):
-                    self._viewer_group_edge(action == "0")
-                elif action == "home":
-                    self._viewer_first()
-                elif action == "end":
-                    self._viewer_last()
-                return
-            self._move_cursor(action)
-            return
-        if action == "open_viewer":
-            self._open_viewer()
-            return
-        if action == "g":
-            self._handle_g()
-            return
-        if action in ("zoom_in", "zoom_out", "toggle_zoom"):
-            if self._viewer_visible:
-                self._on_viewer_action(action)
-            return
-        if action.startswith("pan_") and self._viewer_visible:
-            self._on_viewer_action(action)
-            return
-        if action == ":":
-            self.status.open_command()
-            return
-        if action == "/":
-            self._open_search()
-            return
-        if action == "?":
-            self._toggle_help()
-            return
-        if action == "i":
-            self.toggle_panel()
-            return
-        if action == "esc":
-            self._handle_escape()
-            return
-        if action == "q":
-            if self._viewer_visible:
-                self._close_viewer()
-            else:
-                self.status.show_message("usa Ctrl+q para salir", 3000)
-            return
-        if action == "f":
-            self._toggle_favorite()
-            return
+            registry[action] = (lambda a=action: self._move_grid(a))
+        registry["g"] = self._handle_g
+        registry["open_viewer"] = self._open_viewer
+        for action in ("zoom_in", "zoom_out", "toggle_zoom"):
+            registry[action] = (lambda a=action: self._on_zoom(a))
+        for action in ("pan_left", "pan_right", "pan_up", "pan_down"):
+            registry[action] = (lambda a=action: self._on_pan(a))
+        registry["close"] = self._on_close
+        registry["escape"] = self._handle_escape
+        registry["help"] = self._toggle_help
+        registry["command"] = self.status.open_command
+        registry["search"] = self._open_search
+        registry["panel"] = self.toggle_panel
+        registry["favorite"] = self._toggle_favorite
+        registry["focus_panel"] = self._focus_panel
+        registry["focus_back"] = self._focus_current_view
+        for action in (
+            "scroll_up",
+            "scroll_down",
+            "scroll_page_up",
+            "scroll_page_down",
+            "scroll_top",
+            "scroll_end",
+        ):
+            registry[action] = (lambda a=action: self._panel_scroll(a))
+        registry["next"] = lambda: self._viewer_navigate(1)
+        registry["previous"] = lambda: self._viewer_navigate(-1)
+        registry["first"] = self._viewer_first
+        registry["last"] = self._viewer_last
+        registry["group_first"] = lambda: self._viewer_group_edge(True)
+        registry["group_last"] = lambda: self._viewer_group_edge(False)
+        registry["ignore"] = self._no_op
+        return registry
 
-    def _on_viewer_action(self, action: str) -> None:
+    def _dispatch(self, action: str) -> None:
+        """Único repartidor de acciones de teclado de la ventana.
+
+        1. cualquier acción distinta de ``g`` cancela un ``g g`` pendiente;
+        2. con la ayuda visible, solo las teclas de cierre la ocultan;
+        3. con el prompt activo, solo Esc lo cancela;
+        4. en cualquier otro caso, el handler registrado ejecuta la acción
+           (error ruidoso si la acción no está registrada: nunca debe ocurrir).
+        """
         if action != "g" and self._g_pending:
             self._g_pending = False
             self._g_timer.stop()
-        if action == "next":
-            self._viewer_navigate(1)
+        if self.help_overlay.isVisible():
+            if action in ("escape", "help", "close"):
+                self._toggle_help()
             return
-        if action == "previous":
-            self._viewer_navigate(-1)
+        if self.status.prompt_active:
+            if action == "escape":
+                self._handle_escape()
             return
-        if action == "first":
-            self._viewer_first()
-            return
-        if action == "last":
-            self._viewer_last()
-            return
-        if action == "group_first":
-            self._viewer_group_edge(first=True)
-            return
-        if action == "group_last":
-            self._viewer_group_edge(first=False)
-            return
-        if action == "g":
-            self._handle_g()
-            return
-        if action == "close":
-            self._close_viewer()
-            return
-        if action == "escape":
-            self._handle_escape()
-            return
-        if action == "panel":
-            self.toggle_panel()
-            return
-        if action == "favorite":
-            self._toggle_favorite()
-            return
-        if action == "help":
-            self._toggle_help()
-            return
-        if action == "command":
-            self.status.open_command()
-            return
-        if action == "search":
-            self._open_search()
-            return
-        if action == "focus_panel":
-            self._focus_panel()
+        handler = self._actions.get(action)
+        if handler is None:
+            raise RuntimeError(f"acción de teclado no registrada: {action}")
+        handler()
+
+    def _move_grid(self, action: str) -> None:
+        """Navegación del cursor: con el visor a pantalla completa reproduce
+        la rama del visor; con la fila del visor o sin él, mueve el cursor."""
+        if self._viewer_visible and not self.grid_row:
+            if action == "j":
+                self._viewer_navigate(1)
+                return
+            if action == "k":
+                self._viewer_navigate(-1)
+                return
+            if action in ("h", "l"):
+                self._pan_canvas("pan_left" if action == "h" else "pan_right")
+                return
+            if action in ("0", "$"):
+                self._viewer_group_edge(action == "0")
+                return
+            if action == "home":
+                self._viewer_first()
+                return
+            if action == "end":
+                self._viewer_last()
+                return
+        self._move_cursor(action)
+
+    def _pan_canvas(self, action: str) -> None:
+        dx, dy = {
+            "pan_left": (-PAN_STEP, 0),
+            "pan_right": (PAN_STEP, 0),
+            "pan_up": (0, -PAN_STEP),
+            "pan_down": (0, PAN_STEP),
+        }[action]
+        if not self.viewer.canvas.pan_by(dx, dy):
+            self.status.show_message("sin zoom · + para acercar", 1200)
+
+    def _on_pan(self, action: str) -> None:
+        if self._viewer_visible:
+            self._pan_canvas(action)
+
+    def _on_zoom(self, action: str) -> None:
+        if not self._viewer_visible:
             return
         if action == "zoom_in":
             self.viewer.canvas.zoom_in()
@@ -3147,20 +2921,33 @@ class PhotoWindow(QMainWindow):
         if action == "zoom_out":
             self.viewer.canvas.zoom_out()
             return
-        if action == "toggle_zoom":
-            was_fit = not self.viewer.canvas.is_zoomed()
-            self.viewer.canvas.toggle_zoom()
-            self.status.show_message("100 %" if was_fit else "ajustado", 1200)
-            return
-        if action.startswith("pan_"):
-            dx, dy = {
-                "pan_left": (-PAN_STEP, 0),
-                "pan_right": (PAN_STEP, 0),
-                "pan_up": (0, -PAN_STEP),
-                "pan_down": (0, PAN_STEP),
-            }[action]
-            if not self.viewer.canvas.pan_by(dx, dy):
-                self.status.show_message("sin zoom · + para acercar", 1200)
+        was_fit = not self.viewer.canvas.is_zoomed()
+        self.viewer.canvas.toggle_zoom()
+        self.status.show_message("100 %" if was_fit else "ajustado", 1200)
+
+    def _on_close(self) -> None:
+        if self._viewer_visible:
+            self._close_viewer()
+        else:
+            self.status.show_message("usa Ctrl+q para salir", 3000)
+
+    def _panel_scroll(self, action: str) -> None:
+        bar = self.panel.scroll.verticalScrollBar()
+        if action == "scroll_up" or action == "scroll_down":
+            delta = 32
+            bar.setValue(bar.value() + (-delta if action == "scroll_up" else delta))
+        elif action == "scroll_page_up" or action == "scroll_page_down":
+            delta = bar.pageStep()
+            bar.setValue(
+                bar.value() + (-delta if action == "scroll_page_up" else delta)
+            )
+        elif action == "scroll_top":
+            bar.setValue(bar.minimum())
+        else:
+            bar.setValue(bar.maximum())
+
+    def _no_op(self) -> None:
+        """Handler de ``ignore`` (flechas laterales del panel): no-op claro."""
 
     def _move_cursor(self, action: str) -> None:
         if not self.grid.move_selection(action):
@@ -3235,59 +3022,10 @@ class PhotoWindow(QMainWindow):
         )
 
     def keyPressEvent(self, event):
-        if self.status.prompt_active:
-            if event.key() == Qt.Key_Escape:
-                self._handle_escape()
-            else:
-                super().keyPressEvent(event)
+        # Sin guardas de modo: las de _dispatch son las mismas y únicas.
+        shift, ctrl, cmd = _event_modifiers(event)
+        action = key_action(WINDOW, event.key(), shift=shift, ctrl=ctrl, cmd=cmd)
+        if action is None:
+            super().keyPressEvent(event)
             return
-        if self.help_overlay.isVisible():
-            if event.key() in (Qt.Key_Escape, Qt.Key_F1, Qt.Key_Question, Qt.Key_Q):
-                self._toggle_help()
-            return
-
-        key = event.key()
-        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_O):
-            self._open_viewer()
-            return
-        if key == Qt.Key_G:
-            if event.modifiers() & Qt.ShiftModifier:
-                if self._viewer_visible:
-                    self._viewer_last()
-                else:
-                    self._move_cursor("end")
-            else:
-                self._handle_g()
-            return
-        if key == Qt.Key_Colon:
-            self.status.open_command()
-            return
-        if key == Qt.Key_Slash:
-            self._open_search()
-            return
-        if key in (Qt.Key_Question, Qt.Key_F1):
-            self._toggle_help()
-            return
-        if key == Qt.Key_I:
-            self.toggle_panel()
-            return
-        if key == Qt.Key_Escape:
-            self._handle_escape()
-            return
-        if key == Qt.Key_F:
-            self._toggle_favorite()
-            return
-        if key == Qt.Key_Q:
-            self.status.show_message("usa Ctrl+q para salir", 3000)
-            return
-        if key in (Qt.Key_J, Qt.Key_K, Qt.Key_H, Qt.Key_L):
-            self._move_cursor(
-                {
-                    Qt.Key_J: "j",
-                    Qt.Key_K: "k",
-                    Qt.Key_H: "h",
-                    Qt.Key_L: "l",
-                }[key]
-            )
-            return
-        super().keyPressEvent(event)
+        self._dispatch(action)

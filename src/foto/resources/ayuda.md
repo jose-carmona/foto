@@ -11,7 +11,7 @@ Teclado primero · `Esc` o `q` para cerrar
 | `:` | Línea de comandos |
 | `/` | Búsqueda |
 | `i` | Panel de metadatos |
-| `Tab` / `Shift+Tab` | Foco del panel siguiente / anterior |
+| `Tab` / `Shift+Tab` | Conmutar el foco entre la rejilla y el panel de metadatos |
 | `Ctrl+q` / `⌘Q` | Salir de la aplicación |
 | `Esc` | Cancelar, cerrar o retroceder |
 
@@ -27,6 +27,34 @@ Teclado primero · `Esc` o `q` para cerrar
 | `Ctrl+d` / `Ctrl+u` | Media página abajo / arriba |
 | `Enter` / `o` | Abrir la foto en el visor |
 | `f` | Alternar favorito |
+
+Los dígitos `1`–`5` no tienen función y no hacen nada: quedan fuera de servicio.
+
+Los mismos atajos de navegación (`h` `j` `k` `l`, flechas, `0` `$`, `g g`/`G`,
+`Home`/`End`, `PgDn`/`PgUp`, `Ctrl+d`/`Ctrl+u`, `Enter`/`o`) también actúan si el
+foco recae en la ventana sin estar en la rejilla: la rejilla manda y el efecto
+es idéntico.
+
+## Panel de metadatos
+
+Con el foco en el panel, las flechas hacen scroll local y las teclas de la
+rejilla siguen operando la rejilla:
+
+| Tecla | Acción |
+| --- | --- |
+| `↑` `↓` | Desplazar el panel |
+| `PgUp` / `PgDn` | Una página del panel arriba / abajo |
+| `Home` / `End` | Principio / final del panel |
+| `h` `j` `k` `l` | Mover el cursor de la rejilla |
+| `0` / `$` | Primera / última foto del grupo |
+| `Enter` / `o` | Abrir la foto en el visor |
+| `+` / `-` | Acercar / alejar la foto del visor |
+| `z` | Ajustar a la ventana / 100 % |
+| `f` | Alternar favorito |
+| `i` | Mostrar u ocultar el panel |
+| `:` / `/` / `?` | Línea de comandos / búsqueda / ayuda |
+| `q` / `Esc` | Cerrar el visor, cancelar o retroceder |
+| `Tab` / `Shift+Tab` | Devolver el foco a la rejilla |
 
 ## Visor
 

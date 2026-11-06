@@ -110,7 +110,7 @@ mayúsculas solo donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias como
 | `:` | Abrir la línea de comandos |
 | `/` | Abrir la búsqueda |
 | `i` | Mostrar u ocultar el panel de metadatos |
-| `Tab` / `Shift+Tab` | Pasar el foco al panel siguiente / anterior |
+| `Tab` / `Shift+Tab` | Conmutar el foco entre la rejilla y el panel de metadatos |
 | `Esc` | Cancelar, cerrar o retroceder |
 | `Ctrl+q` / `⌘Q` | Salir de la aplicación |
 
@@ -128,6 +128,32 @@ mayúsculas solo donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias como
 | `Enter` u `o` | Abrir la foto en el visor |
 | `f` | Alternar favorito |
 | `q` | Sin efecto; sugiere `Ctrl+q` en la barra de estado |
+
+Los dígitos ``1``–``5`` no tienen función asignada y quedan fuera de servicio:
+no hacen nada. Las únicas combinaciones con modificador que actúan son
+``Ctrl+d``/``Ctrl+u`` (media página) y ``Ctrl+q``/``⌘Q`` (salir): cualquier otra
+tecla que llegue con ``Ctrl`` o ``⌘`` pulsados se anula, igual que en la fila
+del visor y el visor a pantalla completa.
+
+Si el foco recae en la ventana sin widget intermedio (fallback), la rejilla
+manda: los mismos atajos de navegación de esta tabla se aplican desde ahí.
+
+La fila del visor es la misma tabla en otra geometría; cuando su fila está
+abierta añade el paneo y el zoom, que se describen en «Visor». El panel de
+metadatos, con el foco, combina scroll propio con las teclas de la rejilla
+(ver «Panel de metadatos» más abajo).
+
+### Panel de metadatos
+
+El panel no es un modo de entrada: comparte el modo Normal. Con el foco,
+las flechas y `PgUp`/`PgDn`/`Home`/`End` hacen scroll local del contenido y
+`Esc`/`Tab` devuelven el foco a la vista (conmutador rejilla ⇄ panel). El resto
+de teclas operan la rejilla y el visor igual que en modo normal: `h` `j` `k` `l`
+mueven el cursor (sin tocar el scroll del panel), `0`/`$` van a los bordes del
+grupo, `Enter`/`o` abren el visor, `+`/`-`/`z` manejan el zoom solo con el
+visor abierto, `f` alterna favorito, `:` `/` `?` abren comandos, búsqueda y
+ayuda, y `q` cierra el visor o sugiere `Ctrl+q`. Las flechas laterales (`←`,
+`→`) no hacen nada. Los dígitos `1`–`5` tampoco.
 
 El cursor se mueve al instante, sin esperar a que cargue la miniatura. En los
 extremos de la rejilla no hay salto circular: el cursor se detiene y la barra de

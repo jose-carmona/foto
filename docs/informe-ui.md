@@ -28,6 +28,26 @@ La suite pura es `tests/test_presentation.py` (33 tests, con un guardián que
 impide volver a importar Qt) y la equivalencia del color atenuado queda fijada
 en `tests/test_ui_muted_color.py`; en total 301 tests (151 de UI).
 
+**Aplicación del P1.5 (2026-11-06):** el mapeo de teclas vive en una única
+tabla pura con contexto explícito, `ui/keybindings.py`
+(`(contexto, tecla, modificadores) → acción`, sin Qt, constante ancladas a Qt
+por test), y la ventana ejecuta las acciones con un único repartidor
+(`PhotoWindow._dispatch`) alimentado por un registro declarativo
+acción → handler (`_build_action_registry`). Desaparecen `viewer_key_action`,
+`_on_action`, `_on_viewer_action` y las señales únicas `focus_panel`,
+`focus_back` y `escape_pressed`; los widgets keyPressEvent solo extraen
+modificadores, consultan la tabla y emiten. La política de modificadores es
+una regla única del módulo (R11) y `CTRL_MASK` se muda a `keybindings.py`
+(R8). Las rarezas del teclado quedan resueltas según la decisión del P1.5:
+dígitos `1`–`5` fuera de servicio (R1), `$` del panel en paridad con la
+rejilla (R2), `Shift+G` del panel emite `end` (R3), `z` exige no-shift (R4),
+`j/k/h/l` del panel y el conmutador `Tab`/`Shift+Tab` documentados (R5/R7), la
+ventana-fallback reutiliza las filas de la rejilla (R6) y `Ctrl+d/u` con
+`Ctrl+q` siguen siendo las únicas combinaciones con modificador. Suite pura
+nueva `tests/test_keybindings.py`, inventario actualizado
+(`tests/test_ui_key_inventory.py`) y contrato del registro
+(`tests/test_ui_action_registry.py`).
+
 ---
 
 ## 0. Decisiones de producto aplicadas
@@ -350,6 +370,15 @@ significa cosas distintas según el contexto:
 
 La solución no es una tabla global sin contexto, sino un modelo de acciones por
 modo/widget y una tabla de traducción compartida donde el contexto sea explícito.
+
+Resuelto en el P1.5 (2026-11-06): la tabla con contexto explícito vive en el
+módulo puro `ui/keybindings.py` —(contexto `grid`/`grid_viewer`/`panel`/
+`viewer`/`window`, tecla y modificadores) → acción—; `window.py` solo contiene
+los adaptadores que extraen `(shift, ctrl, cmd)` del evento, la interceptación
+de `Tab` en `event()` del lienzo (R9) y el repartidor único `_dispatch` con su
+registro de acciones. Se conservan las semánticas distintas por familia
+(`0`/`$` frente a `group_first`/`group_last`, `j`/`k` frente a
+`next`/`previous`), tal como razonaba el matiz de este hallazgo.
 
 #### C. Lógica de presentación mezclada con UI (riesgo medio)
 

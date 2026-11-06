@@ -33,9 +33,9 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent, QPixmap
 from PySide6.QtWidgets import QApplication
 
+from foto.ui.keybindings import CTRL_MASK
 from foto.ui.models import Photo
 from foto.ui.window import (
-    _CTRL_MASK,
     COMMANDS,
     FAVORITE_ROLE,
     PHOTO_ROLE,
@@ -744,14 +744,14 @@ GRID_SHORTCUTS = (
         "Ctrl+d",
         "grid",
         Qt.Key_D,
-        Qt.KeyboardModifier(_CTRL_MASK),
+        Qt.KeyboardModifier(CTRL_MASK),
         verify=_v_grid_moved_forward,
     ),
     Shortcut(
         "Ctrl+u",
         "grid",
         Qt.Key_U,
-        Qt.KeyboardModifier(_CTRL_MASK),
+        Qt.KeyboardModifier(CTRL_MASK),
         setup=_setup_grid_last,
         verify=_v_grid_moved_backward,
     ),
