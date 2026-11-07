@@ -48,6 +48,22 @@ nueva `tests/test_keybindings.py`, inventario actualizado
 (`tests/test_ui_key_inventory.py`) y contrato del registro
 (`tests/test_ui_action_registry.py`).
 
+**Aplicación del P1.6 (2026-11-07):** `window.py` se partió por
+responsabilidades en módulos enfocados: `ui/theme.py` (paletas y tokens),
+`ui/grid.py` (rejilla y su contrato de datos), `ui/canvas.py` (visor y
+decodificación), `ui/panels.py` (metadatos, estado y prompts) y `ui/help.py`
+(renderizador y overlay). `PhotoWindow` queda como orquestador (~1.311 líneas,
+frente a 3.031) y conserva estado, `_dispatch`, caché LRU y el layout de las
+cuatro regiones. Dos desviaciones de la recomendación, decididas por el
+propietario: el vocabulario `Command`/`COMMANDS` vive en un módulo puro nuevo
+`ui/commands.py` (rompe el futuro ciclo `window.py ⇄ panels.py`) y no se crea
+`navigation.py` (cubierta por `ui/presentation.py`); el movimiento de cursor
+con estado se queda como método de los widgets. El adaptador
+`_event_modifiers` se mudó a `ui/keybindings.py` como función pública
+`event_modifiers`, y un test guardián nuevo (`tests/test_ui_module_graph.py`,
+sin Qt) fija el grafo: ningún widget importa la ventana y cada símbolo vive
+en su módulo canónico. Sin re-exports: suite completa y `ruff` en verde.
+
 ---
 
 ## 0. Decisiones de producto aplicadas
@@ -191,15 +207,15 @@ Conviene matizar dos afirmaciones de la primera versión:
 
 | Elemento | Rol |
 |---|---|
-| `Photo` (`window.py:253`) | Modelo inmutable (`frozen dataclass`) con clave por ruta/hash. |
-| `PhotoWindow` (`window.py:2219`) | Orquestador: cuatro regiones, estado, navegación, acciones. |
-| `PhotoGrid` (`window.py:872`) | `QListWidget` que sirve de rejilla y de fila del visor (misma vista, distinta geometría). |
-| `PhotoViewer` (`window.py:845`) | Contenedor del visor; solo aloja `PhotoCanvas`, sin tira propia. |
-| `PhotoCanvas` (`window.py:566`) | Lienzo del visor con zoom/paneo; no decodifica: solo pinta. |
-| `ImageLoadTask` (`window.py:537`) | Decodificación del original en un `QThreadPool` de 2 hilos. |
+| `Photo` (`models.py`) | Modelo inmutable (`frozen dataclass`) con clave por ruta/hash. |
+| `PhotoWindow` (`window.py`) | Orquestador: cuatro regiones, estado, navegación, acciones. |
+| `PhotoGrid` (`grid.py`) | `QListWidget` que sirve de rejilla y de fila del visor (misma vista, distinta geometría). |
+| `PhotoViewer` (`canvas.py`) | Contenedor del visor; solo aloja `PhotoCanvas`, sin tira propia. |
+| `PhotoCanvas` (`canvas.py`) | Lienzo del visor con zoom/paneo; no decodifica: solo pinta. |
+| `ImageLoadTask` (`canvas.py`) | Decodificación del original en un `QThreadPool` de 2 hilos. |
 | `ThumbnailService` (`thumbnails.py:189`) | Generación de miniaturas visibles en pool acotado (3 hilos), caché en disco atómica. |
-| `MetadataPanel` (`window.py:1287`) | Ficha de metadatos, solo lectura, sin lógica de negocio. |
-| `StatusBar` (`window.py:1619`) + `PromptEdit` (`window.py:1511`) | Línea de comandos `:`, búsqueda `/`, ayuda `?`, mensajes. |
+| `MetadataPanel` (`panels.py`) | Ficha de metadatos, solo lectura, sin lógica de negocio. |
+| `StatusBar` (`panels.py`) + `PromptEdit` (`panels.py`) | Línea de comandos `:`, búsqueda `/`, ayuda `?`, mensajes. |
 
 ### 1.2 Modelo de interacción
 
@@ -244,35 +260,32 @@ Matices:
 
 ### 2.1 Tamaño y concentración
 
-Archivos de UI (aproximado, tras las retiradas de §0 y la extracción del P1.4):
+Archivos de UI (tras las retiradas de §0, el P1.4, el P1.5 y el P1.6;
+`wc -l` reales del 2026-11-07):
 
 | Archivo | Líneas | Rol principal |
 |---|---|---|
-| `window.py` | 3.293 | Ventana completa: tema, navegación, visor, ayuda, paneles |
-| `app.py` | 292 | Punto de entrada, carga de catálogo, integración con `ThumbnailService` |
-| `thumbnails.py` | 291 | Servicio y caché de miniaturas |
+| `window.py` | 1.311 | Orquestador: estado, `_dispatch`, caché LRU, miniaturas visibles, layout |
+| `panels.py` | 688 | Metadatos, barra de estado y prompts (P1.6) |
+| `grid.py` | 394 | Rejilla, delegado, roles y geometría (P1.6) |
+| `keybindings.py` | 390 | Tabla de teclas con contexto explícito (sin Qt, P1.5) + `event_modifiers` (P1.6) |
+| `help.py` | 312 | Renderizador de ayuda y overlay (P1.6) |
+| `theme.py` | 166 | Paletas, tokens y tipografía (P1.6) |
+| `canvas.py` | 264 | Visor: lienzo, contenedor y decodificación (P1.6) |
 | `presentation.py` | 211 | Reglas de presentación puras: orden, grupos, búsqueda, navegación, teclas, `fg.muted` (sin Qt) |
-| `prototype.py` | 85 | Demo con datos falsos |
+| `app.py` | 290 | Punto de entrada, carga de catálogo, integración con `ThumbnailService` |
+| `thumbnails.py` | 291 | Servicio y caché de miniaturas |
+| `commands.py` | 24 | Vocabulario de la línea de comandos `:` (sin Qt, P1.6) |
 | `models.py` | 41 | Modelo de UI de una foto (`Photo`, sin Qt) |
+| `prototype.py` | 85 | Demo con datos falsos |
 | `core/thumbnails.py` | 112 | Geometría y nombres de caché (puro, sin Qt) |
 
-`window.py` concentra **≈78 % de `src/foto/ui/`** (3.293 de 4.216 líneas, ya
-después de ceder el modelo y la presentación pura al P1.4). Es un
-“objeto dios” (`God Object`/`God File`): contiene funciones puras de utilidad,
-dataclasses, traducción de teclas, widgets Qt, lógica de navegación, renderizado
-HTML de ayuda y la lógica de estado de la ventana.
-
-Bloques aproximados dentro de `window.py`:
-
-| Bloque | Líneas aproximadas |
-|---|---|
-| `PhotoWindow` | ~1.235 |
-| `PhotoGrid` | ~320 |
-| `StatusBar` | ~300 |
-| `MetadataPanel` | ~220 |
-| `PhotoCanvas` | ~200 |
-| Renderizador de ayuda (`_help_*`, `render_help`) | ~185 |
-| `PhotoViewer` | ~27 |
+Tras el P1.6 `window.py` concentra **≈29 % de `src/foto/ui/`** (1.311 de
+4.463 líneas; tras el P1.4 era ≈78 %). Ya no es un “objeto dios” en cuanto a
+concentración de widgets: cada uno vive en su módulo canónico y un test
+guardián (`tests/test_ui_module_graph.py`) impide que vuelvan a
+`window.py`, que conserva solo la orquestación (estado, dispatcher, caché
+LRU, planificación de miniaturas y layout de las cuatro regiones).
 
 ### 2.2 Densidad señal/ruido
 
@@ -349,6 +362,15 @@ Hace demasiado: temas, modelos, navegación, visor, panel, estado, búsqueda,
 comandos, ayuda, caché de miniaturas. Cualquier cambio de navegación o de tema
 toca el mismo archivo gigante, lo que aumenta el riesgo de regresiones y dificulta
 la revisión de PRs.
+
+Resuelto en cuanto a la concentración de widgets en el P1.6 (2026-11-07): los
+widgets y helpers viven en módulos enfocados (`theme`, `grid`, `canvas`,
+`panels`, `help`, `commands`) y `PhotoWindow` queda como orquestador de
+~1.311 líneas, con el test guardián `tests/test_ui_module_graph.py` que impide
+reconstruir el monolito. El matiz que subsiste: esa orquestación de
+~1.311 líneas (estado, dispatcher, caché LRU de imágenes, planificación de
+miniaturas y layout) sigue siendo un trozo grande; extraer servicios internos
+sería otro trabajo, fuera del alcance del P1.6.
 
 #### B. Lógica de teclado duplicada (riesgo alto)
 
@@ -558,6 +580,15 @@ tarea de carga, no repartido por la ventana.
    `help.py` (renderizador), `keybindings.py` (tabla de teclas). `PhotoWindow`
    se queda como orquestador delgado. Hacerlo después de los tests de P0 para
    tener red de seguridad.
+   **Aplicada el 2026-11-07 (P1.6):** se crearon `theme.py`, `grid.py`,
+   `canvas.py`, `panels.py` y `help.py`, más `commands.py` (puro, añadido a la
+   lista para romper el potencial ciclo `window.py ⇄ panels.py`);
+   `models.py` y `keybindings.py` existían ya. `navigation.py` no se creó:
+   la navegación pura vive en `presentation.py` (`vertical_row_target`) desde
+   el P1.4 y el movimiento de cursor con estado en `PhotoGrid`/`PhotoWindow`,
+   donde ha de ser método. `PhotoWindow` queda como orquestador (~1.311
+   líneas) y un test guardián del grafo (`tests/test_ui_module_graph.py`)
+   congela el reparto. P1.7 (centralizar el `retheme`) sigue pendiente.
 7. **Centralizar estilos y tokens.** Mantener `apply_*_palette` como capa de
    tokens, pero mover `error_color` y `_accent_for` allí y evitar que cada panel
    re-aplique su propio `styleSheet` en `retheme`.

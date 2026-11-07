@@ -63,13 +63,16 @@ forma de publicación o compartición.
   - [ ] Endurecer el rendimiento para bibliotecas grandes
     - [x] Ventana de miniaturas en memoria y navegación con índices O(1)
     - [ ] Evaluar un modelo/vista si el número de elementos empieza a pesar
-  - Rejilla, panel de foto y panel de metadatos en `src/foto/ui/window.py`.
-    El visor consume el catálogo: si no existe `catalog.sqlite`, avisa y se
-    cierra, y las búsquedas y ordenaciones se hacen contra el índice. La
-    lógica de presentación pura (orden, grupos, búsqueda, navegación) y la
-    tabla de teclas (`ui/keybindings.py`) viven en módulos sin Qt dentro de
-    `src/foto/ui/`. La demo `prototype.py` usa fotos
-    falsas y no toca disco.
+  - Rejilla, panel de foto y panel de metadatos en `src/foto/ui/`: la ventana de
+  `window.py` orquesta los widgets de `grid.py`, `canvas.py` y `panels.py`
+  junto con la ayuda de `help.py`; los tokens y la tipografía viven en
+  `theme.py` y el vocabulario de comandos en `commands.py`.
+  El visor consume el catálogo: si no existe `catalog.sqlite`, avisa y se
+  cierra, y las búsquedas y ordenaciones se hacen contra el índice. La
+  lógica de presentación pura (orden, grupos, búsqueda, navegación) y la
+  tabla de teclas (`ui/keybindings.py`) viven en módulos sin Qt dentro de
+  `src/foto/ui/`. La demo `prototype.py` usa fotos
+  falsas y no toca disco.
   - [x] Integración del visor con el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md))
   - [ ] Favoritos persistidos en XMP (decisión de alcance pospuesta al final de la Fase 1)
   - [ ] Menú contextual de ratón con las acciones de la foto (pendiente para más adelante)
@@ -139,7 +142,8 @@ foto/
 │   ├── core/       # hashing, recorrido, metadatos e indexado
 │   ├── indexer/    # CLI foto-index y python -m foto.indexer
 │   ├── storage/    # SQLite, exiftool, lock y configuración TOML
-│   └── ui/         # ventana, modelo y presentación, demo y miniaturas
+│   └── ui/         # ventana orquestadora, widgets (rejilla, visor, paneles,
+│                   # ayuda), tokens y vocabulario de comandos, demo y miniaturas
 ├── tests/          # suite pytest que se ejecuta sin pantalla
 └── README.md
 ```

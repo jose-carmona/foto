@@ -12,9 +12,12 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 
 ## Estado actual
 
-- UI funcional de `foto` en `src/foto/ui/`: ventana (`window.py`) con rejilla,
-  panel de foto, panel de metadatos y temas claro/oscuro; demo con datos falsos
-  en `prototype.py`. El modelo de UI (`Photo`) vive en `ui/models.py`, las
+- UI funcional de `foto` en `src/foto/ui/`: la ventana orquestadora
+  (`window.py`) monta los widgets enfocados —rejilla (`grid.py`), visor
+  (`canvas.py`), paneles de metadatos y estado (`panels.py`) y ayuda
+  (`help.py`)— con tokens y tipografía en `theme.py` y el vocabulario de
+  comandos de `:` en `commands.py`; demo con datos falsos en `prototype.py`.
+  El modelo de UI (`Photo`) vive en `ui/models.py`, las
   reglas de presentación pura (orden, grupos, búsqueda, navegación vertical,
   teclas de grupo y la aritmética del color atenuado) en `ui/presentation.py`
   y la tabla unificada de teclas con contexto explícito (`(contexto, tecla,
@@ -92,7 +95,9 @@ foto/
 │   ├── core/         # hashing, scanner, metadatos, indexado
 │   ├── indexer/      # CLI foto-index y __main__
 │   ├── storage/      # catálogo SQLite, exiftool, lock y config TOML
-│   └── ui/           # ventana, modelo y presentación, demo y miniaturas
+│   └── ui/           # ventana orquestadora, widgets (rejilla, visor,
+│                     # paneles, ayuda), tokens, comandos, modelo y
+│                     # presentación, demo y miniaturas
 ├── tests/            # suite pytest sin pantalla
 └── README.md
 ```

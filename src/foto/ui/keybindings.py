@@ -97,6 +97,20 @@ CTRL_MASK = META_MODIFIER if sys.platform == "darwin" else CONTROL_MODIFIER
 
 
 # ---------------------------------------------------------------------------
+# Adaptador de evento → modificadores
+# ---------------------------------------------------------------------------
+def event_modifiers(event) -> tuple[bool, bool, bool]:
+    """(shift, ctrl, cmd): ctrl es la Ctrl física; cmd es ⌘/Ctrl no física."""
+    # La tabla guarda los códigos como enteros, se evalúan sobre el valor
+    # numérico de los flags (Qt no mezcla KeyboardModifier con int).
+    flag = event.modifiers().value
+    shift = bool(flag & SHIFT_MODIFIER)
+    ctrl = bool(flag & CTRL_MASK)
+    any_ctrl = bool(flag & (CONTROL_MODIFIER | META_MODIFIER))
+    return shift, ctrl, any_ctrl and not ctrl
+
+
+# ---------------------------------------------------------------------------
 # Tabla
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)

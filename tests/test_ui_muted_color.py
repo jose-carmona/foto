@@ -15,9 +15,9 @@ import pytest
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
+from foto.ui.help import _help_muted
 from foto.ui.presentation import muted_rgb
-from foto.ui.window import (
-    _help_muted,
+from foto.ui.theme import (
     _muted_from_palette,
     apply_dark_palette,
     apply_light_palette,

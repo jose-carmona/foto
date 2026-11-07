@@ -11,7 +11,8 @@ import inspect
 from pathlib import Path
 
 from foto.storage.library import ensure_library
-from foto.ui.window import COMMANDS, PhotoWindow
+from foto.ui.commands import COMMANDS
+from foto.ui.window import PhotoWindow
 from tests.conftest import write_image
 from tests.test_ui_load_photos import _seed_catalog, load_photos
 

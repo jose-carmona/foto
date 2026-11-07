@@ -17,6 +17,8 @@ import pytest
 
 from foto.ui.keybindings import (
     CONTEXTS,
+    CONTROL_MODIFIER,
+    CTRL_MASK,
     GRID,
     GRID_VIEWER,
     KEY_0,
@@ -58,11 +60,14 @@ from foto.ui.keybindings import (
     KEY_U,
     KEY_UP,
     KEY_Z,
+    META_MODIFIER,
     PANEL,
+    SHIFT_MODIFIER,
     TABLE,
     VIEWER,
     WINDOW,
     Binding,
+    event_modifiers,
     key_action,
 )
 from foto.ui.presentation import is_group_end, is_group_start
@@ -409,6 +414,62 @@ def test_no_ambiguous_rows_for_the_same_key():
                     f"filas ambiguas en {context} para la tecla {hex(key)}: "
                     f"{first} vs {second}"
                 )
+
+
+# ----------------------------------------------------------------------
+# Adaptador del keyPressEvent: (shift, ctrl, cmd) desde el evento (P1.6)
+# ----------------------------------------------------------------------
+class _FakeModifiers:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+
+class _FakeEvent:
+    """Evento de teclado falso: solo ``modifiers().value``, sin Qt."""
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def modifiers(self) -> _FakeModifiers:
+        return _FakeModifiers(self._value)
+
+
+# El control que no es la Ctrl física de la plataforma (⌘ en macOS, Ctrl
+# física en el resto), según la máscara del módulo.
+_OTHER_CONTROL = (CONTROL_MODIFIER | META_MODIFIER) ^ CTRL_MASK
+
+
+def test_event_modifiers_without_modifiers():
+    assert event_modifiers(_FakeEvent(0)) == (False, False, False)
+
+
+def test_event_modifiers_extracts_shift():
+    assert event_modifiers(_FakeEvent(SHIFT_MODIFIER)) == (True, False, False)
+    assert event_modifiers(_FakeEvent(SHIFT_MODIFIER | _OTHER_CONTROL)) == (
+        True,
+        False,
+        True,
+    )
+
+
+def test_event_modifiers_physical_ctrl_is_ctrl():
+    # La Ctrl física depende de la plataforma (CTRL_MASK: ⌘ en macOS).
+    assert event_modifiers(_FakeEvent(CTRL_MASK)) == (False, True, False)
+    assert event_modifiers(_FakeEvent(CTRL_MASK | SHIFT_MODIFIER)) == (
+        True,
+        True,
+        False,
+    )
+
+
+def test_event_modifiers_any_ctrl_and_not_ctrl_is_cmd():
+    assert event_modifiers(_FakeEvent(_OTHER_CONTROL)) == (False, False, True)
+    # Con la Ctrl física presente, el segundo control ya no cuenta como cmd.
+    assert event_modifiers(_FakeEvent(CTRL_MASK | _OTHER_CONTROL)) == (
+        False,
+        True,
+        False,
+    )
 
 
 # ----------------------------------------------------------------------

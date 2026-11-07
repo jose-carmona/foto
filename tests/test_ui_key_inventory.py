@@ -26,7 +26,8 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from foto.ui.keybindings import CTRL_MASK
 from foto.ui.models import Photo
-from foto.ui.window import PanelScroll, PhotoWindow
+from foto.ui.panels import PanelScroll
+from foto.ui.window import PhotoWindow
 
 
 def _photo(

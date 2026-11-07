@@ -33,14 +33,13 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent, QPixmap
 from PySide6.QtWidgets import QApplication
 
+from foto.ui.commands import COMMANDS
+from foto.ui.grid import FAVORITE_ROLE, PHOTO_ROLE
+from foto.ui.help import _help_markdown
 from foto.ui.keybindings import CTRL_MASK
 from foto.ui.models import Photo
 from foto.ui.window import (
-    COMMANDS,
-    FAVORITE_ROLE,
-    PHOTO_ROLE,
     PhotoWindow,
-    _help_markdown,
 )
 
 _DOC_UI = Path("docs/diseno-ui.md")

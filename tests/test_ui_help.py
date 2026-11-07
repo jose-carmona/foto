@@ -11,12 +11,9 @@ import os
 
 import pytest
 
+from foto.ui.help import _help_markdown, render_help
 from foto.ui.models import Photo
-from foto.ui.window import (
-    PhotoWindow,
-    _help_markdown,
-    render_help,
-)
+from foto.ui.window import PhotoWindow
 
 
 @pytest.fixture(scope="module")
