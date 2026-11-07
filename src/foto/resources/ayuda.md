@@ -1,78 +1,74 @@
 # Ayuda
 
-Teclado primero · `Esc` o `q` para cerrar
+Todo funciona con el teclado: no hay menús ni ratón necesario. `Esc` siempre
+retrocede un paso —cierra ayuda, visor o línea de comandos, y además
+restablece el zoom— y `Ctrl+q` sale de la aplicación.
 
 ## Globales
 
+Funcionan en cualquier vista.
+
 | Tecla | Acción |
 | --- | --- |
-| `?` / `F1` | Mostrar u ocultar la ayuda |
-| `↑` / `↓` o `j` / `k` | Desplazar el contenido de la ayuda |
+| `?` / `F1` | Mostrar u ocultar esta ayuda |
 | `:` | Línea de comandos |
-| `/` | Búsqueda |
-| `i` | Panel de metadatos |
-| `Tab` / `Shift+Tab` | Conmutar el foco entre la rejilla y el panel de metadatos |
+| `/` | Buscar fotos |
+| `i` | Mostrar u ocultar el panel de metadatos |
+| `f` | Marcar o desmarcar la foto como favorita |
+| `Tab` / `Shift+Tab` | Mover el foco entre la rejilla y el panel |
 | `Ctrl+q` / `⌘Q` | Salir de la aplicación |
-| `Esc` | Cancelar, cerrar o retroceder |
 
 ## Rejilla
 
+Es el catálogo de fotos agrupadas por mes o cámara.
+
 | Tecla | Acción |
 | --- | --- |
-| `h` `j` `k` `l` / flechas | Mover el cursor por la rejilla |
+| `Enter` / `o` | Abrir la foto en el visor |
+| `h` `j` `k` `l` / flechas | Mover el cursor |
 | `0` / `$` | Primera / última foto del grupo |
-| `g g` / `G` | Primera / última foto de la lista |
-| `Home` / `End` | Primera / última foto de la lista |
+| `g g` / `G` / `Home` / `End` | Primera / última foto |
 | `PgDn` / `PgUp` | Una página abajo / arriba |
 | `Ctrl+d` / `Ctrl+u` | Media página abajo / arriba |
-| `Enter` / `o` | Abrir la foto en el visor |
-| `f` | Alternar favorito |
-
-Los dígitos `1`–`5` no tienen función y no hacen nada: quedan fuera de servicio.
-
-Los mismos atajos de navegación (`h` `j` `k` `l`, flechas, `0` `$`, `g g`/`G`,
-`Home`/`End`, `PgDn`/`PgUp`, `Ctrl+d`/`Ctrl+u`, `Enter`/`o`) también actúan si el
-foco recae en la ventana sin estar en la rejilla: la rejilla manda y el efecto
-es idéntico.
-
-## Panel de metadatos
-
-Con el foco en el panel, las flechas hacen scroll local y las teclas de la
-rejilla siguen operando la rejilla:
-
-| Tecla | Acción |
-| --- | --- |
-| `↑` `↓` | Desplazar el panel |
-| `PgUp` / `PgDn` | Una página del panel arriba / abajo |
-| `Home` / `End` | Principio / final del panel |
-| `h` `j` `k` `l` | Mover el cursor de la rejilla |
-| `0` / `$` | Primera / última foto del grupo |
-| `Enter` / `o` | Abrir la foto en el visor |
-| `+` / `-` | Acercar / alejar la foto del visor |
-| `z` | Ajustar a la ventana / 100 % |
-| `f` | Alternar favorito |
-| `i` | Mostrar u ocultar el panel |
-| `:` / `/` / `?` | Línea de comandos / búsqueda / ayuda |
-| `q` / `Esc` | Cerrar el visor, cancelar o retroceder |
-| `Tab` / `Shift+Tab` | Devolver el foco a la rejilla |
 
 ## Visor
 
-La rejilla queda debajo como una única fila y funciona igual que siempre; solo
-cambia su tamaño. Encima se muestra el grupo (mes o cámara) de la foto que está
-viendo.
+Se abre con `Enter` sobre cualquier foto. La rejilla queda debajo como una
+única fila para saltar a otra foto con el mismo cursor.
 
 | Tecla | Acción |
 | --- | --- |
-| `H` `J` `K` `L` | Desplazar la imagen con zoom |
-| `+` / `-` | Acercar / alejar |
+| `j` / `k` o flechas | Foto siguiente / anterior |
+| `h` / `H` | Desplazar la imagen a la izquierda |
+| `l` / `L` | Desplazar la imagen a la derecha |
+| `J` / `K` | Desplazar la imagen abajo / arriba |
+| `+` / `-` | Acercar / alejar la imagen |
 | `z` | Ajustar a la ventana / 100 % |
-| `q` / `Esc` | Volver a la rejilla |
+| `0` / `$` | Primera / última foto del grupo |
+| `g g` / `G` | Primera / última foto |
+| `q` | Volver a la rejilla |
+
+El paneo solo tiene efecto con zoom.
+
+## Panel de metadatos
+
+Muestra los datos de la foto seleccionada. Con el foco en el panel, las teclas
+de la rejilla siguen operando la rejilla; solo las flechas desplazan el panel.
+
+| Tecla | Acción |
+| --- | --- |
+| `↑` / `↓` | Desplazar el panel |
+| `PgDn` / `PgUp` | Una página del panel abajo / arriba |
+| `Home` / `End` | Principio / final del panel |
+| `Tab` / `Shift+Tab` | Devolver el foco a la rejilla |
 
 ## Comandos
 
-| Tecla | Acción |
+Pulsa `:` y escribe el comando. `Tab` autocompleta, `↑` / `↓` recorren el
+historial, `Enter` ejecuta y `Esc` cancela.
+
+| Comando | Acción |
 | --- | --- |
 | `:q` / `:quit` | Salir de la aplicación |
-| `:sort` date / camera | Cambiar el orden de la rejilla |
+| `:sort` date / camera | Ordenar por fecha / cámara |
 | `:help` | Abrir esta ayuda |
