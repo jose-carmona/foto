@@ -20,7 +20,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFrame, QTextBrowser, QVBoxLayout, QWidget
 
 from foto.ui.presentation import muted_rgb
-from foto.ui.theme import app_palette, ui_font
+from foto.ui.theme import HELP_BODY_QSS, app_palette, ui_font
 
 
 def _help_markdown() -> str:
@@ -213,25 +213,6 @@ def render_help(markdown: str) -> str:
 class HelpOverlay(QFrame):
     """Ayuda de atajos, renderizada desde ``foto/resources/ayuda.md``."""
 
-    BODY_STYLESHEET = """
-        QTextBrowser {
-            background: transparent;
-            color: palette(window-text);
-        }
-        QScrollBar:vertical {
-            background: transparent;
-            width: 8px;
-        }
-        QScrollBar::handle:vertical {
-            background: palette(mid);
-            min-height: 24px;
-            border-radius: 4px;
-        }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-            height: 0;
-        }
-    """
-
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.setAccessibleName("ayuda")
@@ -257,7 +238,7 @@ class HelpOverlay(QFrame):
         document = body.document()
         document.setDefaultFont(ui_font(13))
         document.setDocumentMargin(0)
-        body.setStyleSheet(self.BODY_STYLESHEET)
+        body.setStyleSheet(HELP_BODY_QSS)
         layout.addWidget(body)
         self.body = body
         self._render()

@@ -35,7 +35,7 @@ from foto.ui.keybindings import (
     key_action,
 )
 from foto.ui.presentation import vertical_row_target
-from foto.ui.theme import app_palette, ui_font
+from foto.ui.theme import GRID_QSS, app_palette, reapply_style, ui_font
 
 PHOTO_ROLE = Qt.UserRole + 1
 FAVORITE_ROLE = Qt.UserRole + 2
@@ -196,6 +196,10 @@ class PhotoGrid(QListWidget):
         self._visible_rows: list[int] = []
         self._visible_positions: dict[int, int] = {}
         self._header_width = 0
+        self.setStyleSheet(GRID_QSS)
+        palette = self.palette()
+        palette.setColor(QPalette.Base, palette.color(QPalette.Window))
+        self.setPalette(palette)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -230,7 +234,7 @@ class PhotoGrid(QListWidget):
     def retheme(self) -> None:
         palette = app_palette()
         palette.setColor(QPalette.Base, palette.color(QPalette.Window))
-        self.setStyleSheet(self.styleSheet())
+        reapply_style(self)
         self.setPalette(palette)
         self.viewport().update()
 

@@ -25,7 +25,16 @@ from PySide6.QtWidgets import (
 from foto.ui.commands import COMMANDS
 from foto.ui.keybindings import PANEL, event_modifiers, key_action
 from foto.ui.models import Photo
-from foto.ui.theme import app_palette, error_color, set_muted, ui_font
+from foto.ui.theme import (
+    COMPLETION_QSS,
+    PANEL_SCROLL_QSS,
+    PROMPT_QSS,
+    app_palette,
+    error_color,
+    reapply_style,
+    set_muted,
+    ui_font,
+)
 
 BAR_H = 28
 
@@ -76,17 +85,7 @@ class MetadataPanel(QFrame):
         scroll_palette.setColor(QPalette.Base, scroll_palette.color(QPalette.AlternateBase))
         self.scroll.setPalette(scroll_palette)
         self.scroll.viewport().setAutoFillBackground(False)
-        self.scroll.setStyleSheet(
-            """
-            QScrollArea { background: transparent; border: none; }
-            QScrollArea > QWidget > QWidget { background: transparent; }
-            QScrollBar:vertical { width: 8px; background: transparent; }
-            QScrollBar::handle:vertical {
-                background: palette(mid); min-height: 24px; border-radius: 4px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-            """
-        )
+        self.scroll.setStyleSheet(PANEL_SCROLL_QSS)
         self.scroll.focus_changed.connect(lambda _: self.update())
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -103,8 +102,8 @@ class MetadataPanel(QFrame):
         surface = scroll_palette.color(QPalette.AlternateBase)
         scroll_palette.setColor(QPalette.Window, surface)
         scroll_palette.setColor(QPalette.Base, surface)
-        self.scroll.setStyleSheet(self.scroll.styleSheet())
         self.scroll.setPalette(scroll_palette)
+        reapply_style(self.scroll)
         self.scroll.viewport().setAutoFillBackground(False)
         self.update()
 
@@ -322,15 +321,7 @@ class CompletionPopup(QFrame):
         palette = self.palette()
         palette.setColor(QPalette.Window, palette.color(QPalette.Base))
         self.setPalette(palette)
-        self.setStyleSheet(
-            """
-            QFrame#completionPopup {
-                background: palette(base);
-                border: 1px solid palette(mid);
-                border-radius: 4px;
-            }
-            """
-        )
+        self.setStyleSheet(COMPLETION_QSS)
         self.setFixedWidth(400)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(4, 4, 4, 4)
@@ -340,7 +331,7 @@ class CompletionPopup(QFrame):
     def retheme(self) -> None:
         palette = app_palette()
         palette.setColor(QPalette.Window, palette.color(QPalette.Base))
-        self.setStyleSheet(self.styleSheet())
+        reapply_style(self)
         self.setPalette(palette)
         self.update()
 
@@ -434,15 +425,7 @@ class StatusBar(QWidget):
         self.prompt.setAccessibleName("línea de comandos o búsqueda")
         self.prompt.setFont(ui_font(12))
         self.prompt.setFrame(False)
-        self.prompt.setStyleSheet(
-            """
-            QLineEdit {
-                background: transparent;
-                border: none;
-                padding: 0;
-            }
-            """
-        )
+        self.prompt.setStyleSheet(PROMPT_QSS)
         self.prompt.hide()
         self.prompt.textChanged.connect(self._on_text_changed)
         self.prompt.tab_pressed.connect(self._complete)

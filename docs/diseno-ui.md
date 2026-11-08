@@ -456,6 +456,10 @@ Los colores salen siempre de una capa de tokens construida sobre `QPalette`.
 Ningún widget escribe un color literal; así el tema claro y el oscuro funcionan
 sin casos especiales.
 
+Los estilos estructurales del mismo modo: la capa de tokens y las plantillas
+QSS de los widgets viven en `src/foto/ui/theme.py`; los widgets aplican
+consumiendo `theme` y re-aplican vía `theme.reapply_style` al cambiar el tema.
+
 | Token | Uso |
 | --- | --- |
 | `bg.window` | Fondo de la ventana y de la rejilla |

@@ -64,6 +64,17 @@ con estado se queda como método de los widgets. El adaptador
 sin Qt) fija el grafo: ningún widget importa la ventana y cada símbolo vive
 en su módulo canónico. Sin re-exports: suite completa y `ruff` en verde.
 
+**Aplicación del P1.7 (2026-11-08):** las plantillas QSS de los widgets y el
+helper de re-aplicación (`theme.reapply_style`, el truco de re-parse de Qt,
+único y documentado) viven en `theme.py`; el bloque de scrollbar queda
+deduplicado (`_SCROLLBAR_QSS`) y `PhotoGrid` se viste a sí mismo en su
+constructor (`window.py` ya no contiene QSS ni paleta de la rejilla). El
+guardián del grafo se amplió (sin QSS estructural ni literales hex fuera de
+`theme.py`) y `tests/test_ui_styles.py` fija la fidelidad de las plantillas y
+la estabilidad del re-theme con paletas clara y oscura. Renderizado idéntico;
+los estilos dinámicos inline de `StatusBar`/`CompletionPopup` siguen en
+`panels.py` por decisión consciente del propietario.
+
 ---
 
 ## 0. Decisiones de producto aplicadas
@@ -298,8 +309,11 @@ Zonas con alta densidad de boilerplate de Qt:
   parcialmente duplicada. `PhotoCanvas` reutiliza `viewer_key_action` en
   `window.py:741`; la rejilla y el panel de metadatos tienen su propia copia
   parcial porque sus acciones difieren.
-- Los `stylesheets` están embebidos como cadenas CSS en `MetadataPanel`,
-  `StatusBar`, `CompletionPopup`, `HelpOverlay`, `PhotoGrid` y `PhotoWindow`.
+- Los estilos estructurales de los widgets ya no están embebidos: viven como
+  plantillas QSS en `theme.py` (`GRID_QSS`, `PANEL_SCROLL_QSS`,
+  `COMPLETION_QSS`, `PROMPT_QSS`, `HELP_BODY_QSS`, sobre `_SCROLLBAR_QSS`)
+  desde el P1.7 (2026-11-08); los estilos dinámicos por estado siguen inline
+  en `StatusBar`/`CompletionPopup`, decisión consciente del propietario.
 - `set_photo` en `MetadataPanel` ocupa unas 62 líneas
   (`window.py:1383-1444`) y construye la UI de metadatos manualmente con
   `QGridLayout`.
@@ -427,6 +441,12 @@ vuelvan a importar Qt o la ventana.
 
 #### D. Estilos incrustados dispersos (riesgo medio)
 
+**Resuelto el 2026-11-08 (P1.7):** las plantillas QSS estructurales y el helper
+de re-aplicación (`reapply_style`) viven en `theme.py`; la segunda mitad del
+hallazgo (cada panel re-aplicando su propio `styleSheet` en `retheme`) quedó
+aplicada. Los estilos dinámicos inline dependen del estado del widget y
+quedan en `panels.py` por decisión del propietario.
+
 CSS embebido en cadenas en múltiples widgets. `diseno-ui.md:427-429` dice que
 “ningún widget escribe un color literal” y que los colores salen de una capa de
 tokens construida sobre `QPalette`.
@@ -531,8 +551,8 @@ tarea de carga, no repartido por la ventana.
 | Mapeo de teclas vim | `viewer_key_action`, `PhotoGrid`, `PanelScroll`, `PhotoWindow` | Alto: cada nueva tecla toca 4+ sitios |
 | Dispatch de acciones | `_on_action` vs `_on_viewer_action` | Medio: vocabularios en gran parte disjuntos; no son “casi idénticos” |
 | Color atenuado `fg.muted` | `_muted_from_palette` vs `_help_muted` | Bajo |
-| Estilos de barra de scroll | `MetadataPanel`, `HelpOverlay`, `PhotoGrid`, `StatusBar` | Medio |
-| Colores de tema literales | `error_color`, `_accent_for`, estilos inline de `StatusBar` | Medio |
+| Estilos de barra de scroll | `MetadataPanel`, `HelpOverlay`, `PhotoGrid`, `StatusBar` | Resuelto el 2026-11-08 (P1.7): una sola plantilla, `_SCROLLBAR_QSS` en `theme.py`; los estilos inline dinámicos de estado quedan por decisión del propietario |
+| Colores de tema literales | `error_color`, `_accent_for`, estilos inline de `StatusBar` | Resuelto el 2026-11-08 (P1.7): `error_color` y `_accent_for` viven en `theme.py` desde el P1.6; los literales restantes son la capa de tokens o estilos dinámicos por decisión del propietario |
 | Documentación vs implementación | favoritos XMP, tests “sin Qt”, acceso a disco | Alto: el usuario y el mantenedor reciben información falsa |
 
 ---
@@ -588,10 +608,20 @@ tarea de carga, no repartido por la ventana.
    el P1.4 y el movimiento de cursor con estado en `PhotoGrid`/`PhotoWindow`,
    donde ha de ser método. `PhotoWindow` queda como orquestador (~1.311
    líneas) y un test guardián del grafo (`tests/test_ui_module_graph.py`)
-   congela el reparto. P1.7 (centralizar el `retheme`) sigue pendiente.
+   congela el reparto. P1.7 se aplicó después (2026-11-08, ver §4.7).
 7. **Centralizar estilos y tokens.** Mantener `apply_*_palette` como capa de
    tokens, pero mover `error_color` y `_accent_for` allí y evitar que cada panel
    re-aplique su propio `styleSheet` en `retheme`.
+   **Aplicada el 2026-11-08 (P1.7):** la primera mitad quedó hecha en el P1.6;
+   la segunda, ahora: las plantillas QSS estructurales de los widgets
+   (`GRID_QSS`, `PANEL_SCROLL_QSS`, `COMPLETION_QSS`, `PROMPT_QSS`,
+   `HELP_BODY_QSS`, sobre `_SCROLLBAR_QSS`) y el helper único de re-aplicación
+   (`reapply_style`) viven en `theme.py`; `PhotoGrid` se viste en su
+   constructor y los `retheme()` de rejilla, panel y popup usan el helper. Los
+   estilos dinámicos inline dependientes del estado (`StatusBar`,
+   `CompletionPopup`) quedan en `panels.py` por decisión explícita del
+   propietario de alcance; el renderizado no cambia ni un canal y lo fija
+   `tests/test_ui_styles.py`.
 8. **Añadir pruebas de interacción para las rutas críticas de `PhotoWindow`.**
    La base ya existe (offscreen); extenderla a visor, prompt, ayuda, búsqueda y
    gestión de foco. No es necesario montar `pytest-qt`.

@@ -45,7 +45,6 @@ from PySide6.QtGui import (
     QIcon,
     QImage,
     QKeySequence,
-    QPalette,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -190,20 +189,6 @@ class PhotoWindow(QMainWindow):
         self.grid.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.grid.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.grid.setItemDelegate(ThumbnailDelegate(self.grid))
-        self.grid.setStyleSheet(
-            """
-            QListWidget { background: palette(window); }
-            QListWidget::item:selected { background: transparent; }
-            QScrollBar:vertical { width: 8px; background: transparent; }
-            QScrollBar::handle:vertical {
-                background: palette(mid); min-height: 24px; border-radius: 4px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-            """
-        )
-        palette = self.grid.palette()
-        palette.setColor(QPalette.Base, palette.color(QPalette.Window))
-        self.grid.setPalette(palette)
 
         self.viewer = PhotoViewer(self.content)
         if grid_row:

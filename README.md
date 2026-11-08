@@ -65,8 +65,8 @@ forma de publicación o compartición.
     - [ ] Evaluar un modelo/vista si el número de elementos empieza a pesar
   - Rejilla, panel de foto y panel de metadatos en `src/foto/ui/`: la ventana de
   `window.py` orquesta los widgets de `grid.py`, `canvas.py` y `panels.py`
-  junto con la ayuda de `help.py`; los tokens y la tipografía viven en
-  `theme.py` y el vocabulario de comandos en `commands.py`.
+  junto con la ayuda de `help.py`; los tokens, la tipografía y el QSS de los
+  widgets viven en `theme.py` y el vocabulario de comandos en `commands.py`.
   El visor consume el catálogo: si no existe `catalog.sqlite`, avisa y se
   cierra, y las búsquedas y ordenaciones se hacen contra el índice. La
   lógica de presentación pura (orden, grupos, búsqueda, navegación) y la

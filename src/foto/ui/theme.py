@@ -1,11 +1,13 @@
-"""Capa de tokens y tipografía de la UI.
+"""Capa de tokens, paletas y estilos QSS de la UI.
 
-Sobre ``QPalette``: las paletas clara y oscura, los colores derivados
-(texto atenuado, error, acento) y la tipografía común (``ui_font``). Los
-widgets no escriben colores literales: consumen esta capa.
-
-La centralización del ``retheme`` (cada panel sigue re-aplicando su propio
-``styleSheet``) queda pendiente como P1.7 del informe de UI.
+Reúne, en un único punto de ``foto.ui``, dos cosas: los tokens sobre
+``QPalette`` —las paletas clara y oscura, los colores derivados (texto
+atenuado, error, acento) y la tipografía común (``ui_font``)— y las plantillas
+QSS de los widgets (``GRID_QSS``, ``PANEL_SCROLL_QSS``, ``COMPLETION_QSS``,
+``PROMPT_QSS`` y ``HELP_BODY_QSS``, compuestas sobre ``_SCROLLBAR_QSS``), que
+los widgets aplican en su constructor y re-aplican vía ``reapply_style`` al
+cambiar de tema. Los widgets no escriben colores literales ni reglas de
+estilo: consumen esta capa.
 """
 
 from __future__ import annotations
@@ -162,5 +164,70 @@ def error_color(widget: QWidget) -> QColor:
     if widget.palette().color(QPalette.Window).lightness() > 128:
         return QColor(180, 45, 45)
     return QColor(255, 125, 125)
+
+
+# --- Plantillas QSS de los widgets -----------------------------------------
+# Todo el QSS estructural de la UI vive aquí: los widgets consumen su
+# plantilla en el constructor y la re-aplican vía ``reapply_style`` al cambiar
+# de tema. Los ``palette(...)`` de cada regla se resuelven contra la paleta
+# del widget que la recibe.
+
+# Bloque de scrollbar compartido: la usan la rejilla (GRID_QSS), el scroll del
+# panel de metadatos (PANEL_SCROLL_QSS) y el cuerpo de la ayuda
+# (HELP_BODY_QSS).
+_SCROLLBAR_QSS = """
+QScrollBar:vertical { width: 8px; background: transparent; }
+QScrollBar::handle:vertical {
+    background: palette(mid); min-height: 24px; border-radius: 4px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+"""
+
+# Fondo y selección de la rejilla. Consumidor: ``PhotoGrid`` (grid.py).
+GRID_QSS = """
+QListWidget { background: palette(window); }
+QListWidget::item:selected { background: transparent; }
+""" + _SCROLLBAR_QSS
+
+# Superficie transparente del scroll del panel de metadatos. Consumidor:
+# ``MetadataPanel`` sobre su ``self.scroll`` (panels.py).
+PANEL_SCROLL_QSS = """
+QScrollArea { background: transparent; border: none; }
+QScrollArea > QWidget > QWidget { background: transparent; }
+""" + _SCROLLBAR_QSS
+
+# Ventana flotante de completado. Consumidor: ``CompletionPopup`` (panels.py).
+COMPLETION_QSS = """
+QFrame#completionPopup {
+    background: palette(base);
+    border: 1px solid palette(mid);
+    border-radius: 4px;
+}
+"""
+
+# Línea de comandos/búsqueda sin marco. Consumidor: ``StatusBar`` sobre su
+# ``self.prompt`` (panels.py).
+PROMPT_QSS = """
+QLineEdit {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+"""
+
+# Cuerpo de la ayuda. Consumidor: ``HelpOverlay`` sobre ``body`` (help.py).
+HELP_BODY_QSS = """
+QTextBrowser { background: transparent; color: palette(window-text); }
+""" + _SCROLLBAR_QSS
+
+
+def reapply_style(widget: QWidget) -> None:
+    """Fuerza a Qt a re-resolver el QSS actual del widget.
+
+    Qt no reinterpreta las funciones ``palette(...)`` del QSS cuando la
+    paleta cambia: re-asignar la cadena provoca el re-parse mientras el
+    estilo vive en ``theme``. Llamada desde ``retheme()``.
+    """
+    widget.setStyleSheet(widget.styleSheet())
 
 
