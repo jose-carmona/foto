@@ -97,6 +97,8 @@ def _to_ui_photo(photo: CatalogPhoto) -> Photo:
         dimensions=photo.dimensions,
         size=photo.size,
         location=photo.location,
+        gps_latitude=photo.gps_latitude,
+        gps_longitude=photo.gps_longitude,
         favorite=photo.favorite,
         path=photo.path,
         canonical_rel_path=photo.canonical_rel_path,

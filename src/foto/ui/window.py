@@ -36,10 +36,12 @@ from PySide6.QtCore import (
     Qt,
     QThreadPool,
     QTimer,
+    QUrl,
     Signal,
 )
 from PySide6.QtGui import (
     QAction,
+    QDesktopServices,
     QFont,
     QGuiApplication,
     QIcon,
@@ -81,7 +83,7 @@ from foto.ui.keybindings import (
     event_modifiers,
     key_action,
 )
-from foto.ui.models import Photo
+from foto.ui.models import Photo, map_url
 from foto.ui.panels import MetadataPanel, StatusBar
 from foto.ui.presentation import (
     DEFAULT_SORT,
@@ -743,8 +745,7 @@ class PhotoWindow(QMainWindow):
 
     def _handle_g(self) -> None:
         if self._g_pending:
-            self._g_pending = False
-            self._g_timer.stop()
+            self._cancel_g_pending()
             self._viewer_first()
         else:
             self._g_pending = True
@@ -752,6 +753,45 @@ class PhotoWindow(QMainWindow):
 
     def _clear_g_pending(self) -> None:
         self._g_pending = False
+
+    def _cancel_g_pending(self) -> None:
+        """Cierra el prefijo ``g`` de una secuencia (``g g`` o ``g m``)."""
+        self._g_pending = False
+        self._g_timer.stop()
+
+    def _handle_m(self) -> None:
+        """Segunda tecla de ``g m``: abre la ubicación en el navegador.
+
+        Sin un ``g`` pendiente, ``m`` queda reservada y no hace nada,
+        igual que ``g`` antes de su segunda tecla.
+        """
+        if not self._g_pending:
+            return
+        self._cancel_g_pending()
+        self._open_map()
+
+    def _open_map(self) -> None:
+        """Abre la ubicación GPS de la foto actual en el navegador.
+
+        ``QDesktopServices.openUrl`` delega en el sistema —``open`/
+        NSWorkspace en macOS, portal y ``xdg-open`` en Omarchy/Wayland—,
+        así que no hay código por plataforma. Es una salida a la web
+        explícita: solo ocurre cuando el usuario pulsa ``g m`` (§3 de
+        reglas no negociables: sin red por defecto).
+        """
+        photo = self._current_photo()
+        if photo is None:
+            self.status.show_message("no hay fotos", 2000)
+            return
+        if photo.gps_latitude is None or photo.gps_longitude is None:
+            self.status.show_message("la foto no tiene ubicación GPS", 3000)
+            return
+        url = QUrl(map_url(photo.gps_latitude, photo.gps_longitude))
+        if not QDesktopServices.openUrl(url):
+            self.status.show_message("no se pudo abrir el navegador", 3000)
+            return
+        where = f" · {photo.location}" if photo.location else ""
+        self.status.show_message(f"mapa{where}", 2500)
 
     def _set_viewer_keys(self, enabled: bool) -> None:
         """Aparta las teclas del panel de foto mientras la rejilla tiene foco.
@@ -1082,6 +1122,7 @@ class PhotoWindow(QMainWindow):
         ):
             registry[action] = (lambda a=action: self._move_grid(a))
         registry["g"] = self._handle_g
+        registry["m"] = self._handle_m
         registry["open_viewer"] = self._open_viewer
         for action in ("zoom_in", "zoom_out", "toggle_zoom"):
             registry[action] = (lambda a=action: self._on_zoom(a))
@@ -1117,15 +1158,16 @@ class PhotoWindow(QMainWindow):
     def _dispatch(self, action: str) -> None:
         """Único repartidor de acciones de teclado de la ventana.
 
-        1. cualquier acción distinta de ``g`` cancela un ``g g`` pendiente;
+        1. cualquier acción distinta de ``g`` y ``m`` cancela un prefijo
+           ``g`` pendiente (``g g`` o ``g m``); ``m`` solo actúa con ese
+           prefijo y ``g`` siempre lo administra;
         2. con la ayuda visible, solo las teclas de cierre la ocultan;
         3. con el prompt activo, solo Esc lo cancela;
         4. en cualquier otro caso, el handler registrado ejecuta la acción
            (error ruidoso si la acción no está registrada: nunca debe ocurrir).
         """
-        if action != "g" and self._g_pending:
-            self._g_pending = False
-            self._g_timer.stop()
+        if action not in ("g", "m") and self._g_pending:
+            self._cancel_g_pending()
         if self.help_overlay.isVisible():
             if action in ("escape", "help", "close"):
                 self._toggle_help()

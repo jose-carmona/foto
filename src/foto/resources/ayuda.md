@@ -15,6 +15,7 @@ Funcionan en cualquier vista.
 | `/` | Buscar fotos |
 | `i` | Mostrar u ocultar el panel de metadatos |
 | `f` | Marcar o desmarcar la foto como favorita |
+| `g m` | Abrir la ubicación de la foto en el navegador (Google Maps) |
 | `Tab` / `Shift+Tab` | Mover el foco entre la rejilla y el panel |
 | `Ctrl+q` / `⌘Q` | Salir de la aplicación |
 

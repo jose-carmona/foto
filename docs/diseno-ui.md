@@ -98,8 +98,8 @@ La ayuda integrada vive en un único documento markdown,
 (`?` / `F1` / `:help`) lo lee y lo renderiza con el tema activo. Los atajos del
 documento son la fuente de verdad de lo documentado, y un test comprueba que
 cada atajo básico de la rejilla está en la ayuda. Las teclas distinguen
-mayúsculas solo donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias como
-`g g` admiten hasta 500 ms entre pulsaciones.
+mayúsculas solo donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias con
+prefijo `g` (`g g`, `g m`) admiten hasta 500 ms entre pulsaciones.
 
 ### Atajos globales
 
@@ -110,9 +110,14 @@ mayúsculas solo donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias como
 | `:` | Abrir la línea de comandos |
 | `/` | Abrir la búsqueda |
 | `i` | Mostrar u ocultar el panel de metadatos |
+| `g m` | Abrir la ubicación de la foto en el navegador (Google Maps) |
 | `Tab` / `Shift+Tab` | Conmutar el foco entre la rejilla y el panel de metadatos |
 | `Esc` | Cancelar, cerrar o retroceder |
 | `Ctrl+q` / `⌘Q` | Salir de la aplicación |
+
+`g m` abre el punto GPS de la foto con el cursor; si la foto no tiene
+coordenadas, la barra de estado lo indica y no se abre nada. La `m` sola,
+sin el prefijo `g`, queda reservada y no hace nada.
 
 ### Rejilla
 
@@ -127,6 +132,7 @@ mayúsculas solo donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias como
 | `Home` / `End` | Primera / última foto |
 | `Enter` u `o` | Abrir la foto en el visor |
 | `f` | Alternar favorito |
+| `g m` | Abrir la ubicación de la foto en el navegador (Google Maps) |
 | `q` | Sin efecto; sugiere `Ctrl+q` en la barra de estado |
 
 Los dígitos ``1``–``5`` no tienen función asignada y quedan fuera de servicio:
@@ -202,6 +208,7 @@ Reglas de la fila:
 | `z` | Alternar entre ajustar a la ventana y 100 % |
 | `i` | Mostrar u ocultar metadatos |
 | `f` | Alternar favorito |
+| `g m` | Abrir la ubicación de la foto en el navegador (Google Maps) |
 | `q` | Volver a la rejilla |
 | `Esc` | Restablecer zoom; si ya está ajustado, volver a la rejilla |
 

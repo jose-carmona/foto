@@ -13,6 +13,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+MAP_URL = "https://www.google.com/maps?q={lat},{lon}"
+
+
+def map_url(latitude: float, longitude: float) -> str:
+    """URL de Google Maps para unas coordenadas decimales (grados).
+
+    El parámetro ``q`` fija el pin en el punto exacto; coma, punto y
+    negativos son válidos sin escapar en la cadena de consulta.
+    """
+    return MAP_URL.format(lat=latitude, lon=longitude)
+
 
 @dataclass(frozen=True)
 class Photo:
@@ -29,6 +40,8 @@ class Photo:
     dimensions: str
     size: str
     location: str
+    gps_latitude: float | None = None
+    gps_longitude: float | None = None
     favorite: bool = False
     path: Path | None = None
     canonical_rel_path: str | None = None

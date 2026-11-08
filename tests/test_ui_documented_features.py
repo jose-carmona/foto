@@ -465,6 +465,11 @@ def _setup_prompt_camera_text(w: PhotoWindow, q) -> None:
 # - Ayudas de verificación ----------------------------------------------
 
 
+def _v_map_without_gps(w: PhotoWindow, q) -> None:
+    """``g m`` sobre una foto sin GPS: aviso en la barra, sin navegador."""
+    assert "GPS" in w.status.message_label.text()
+
+
 def _current_name(w: PhotoWindow) -> str:
     photo = w._current_photo()
     assert photo is not None
@@ -648,6 +653,24 @@ def _v_prompt_tab_completes(w: PhotoWindow, q) -> None:
     assert w.status.prompt.text() == "sort date"
 
 
+def _setup_pending_g_window(w: PhotoWindow, q) -> None:
+    """Deja un prefijo ``g`` pendiente desde la ventana-fallback."""
+    w.keyPressEvent(
+        QKeyEvent(QEvent.Type.KeyPress, Qt.Key_G, Qt.KeyboardModifier.NoModifier)
+    )
+    q.processEvents()
+
+
+def _setup_pending_g_viewer(w: PhotoWindow, q) -> None:
+    """Abre el visor y deja un prefijo ``g`` pendiente en su lienzo."""
+    w._open_viewer()
+    q.processEvents()
+    w.viewer.canvas.keyPressEvent(
+        QKeyEvent(QEvent.Type.KeyPress, Qt.Key_G, Qt.KeyboardModifier.NoModifier)
+    )
+    q.processEvents()
+
+
 # - La tabla ------------------------------------------------------------
 
 GLOBAL_SHORTCUTS = (
@@ -657,6 +680,12 @@ GLOBAL_SHORTCUTS = (
     Shortcut("/", "window", Qt.Key_Slash, verify=_v_search_open),
     Shortcut(
         "i", "window", Qt.Key_I, verify=_v_panel_visible_only
+    ),
+    # ``g m`` documentado como global: prefijo ``g`` + ``m``. La foto del
+    # fixture no tiene GPS, así que la conducta real es el aviso de la barra.
+    Shortcut(
+        "m", "window", Qt.Key_M, setup=_setup_pending_g_window,
+        verify=_v_map_without_gps,
     ),
     Shortcut(
         "Shift+Tab",
@@ -842,6 +871,10 @@ VIEWER_SHORTCUTS = (
         Qt.Key_F,
         setup=lambda w, q: None,
         verify=_v_favorite_on,
+    ),
+    Shortcut(
+        "m", "viewer", Qt.Key_M, setup=_setup_pending_g_viewer,
+        verify=_v_map_without_gps,
     ),
     Shortcut("?", "viewer", Qt.Key_Question, verify=_v_help_open),
     Shortcut(":", "viewer", Qt.Key_Colon, verify=_v_command_open),

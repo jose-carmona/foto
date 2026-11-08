@@ -46,6 +46,7 @@ from foto.ui.keybindings import (
     KEY_K,
     KEY_L,
     KEY_LEFT,
+    KEY_M,
     KEY_MINUS,
     KEY_O,
     KEY_PAGEDOWN,
@@ -118,6 +119,7 @@ GRID_EXPECTATIONS = (
     (GRID, KEY_F1, "", "help"),
     (GRID, KEY_I, "", "panel"),
     (GRID, KEY_F, "", "favorite"),
+    (GRID, KEY_M, "", "m"),  # segunda tecla del prefijo g m
     (GRID, KEY_Q, "", "close"),
     (GRID, KEY_Q, "cmd", None),
     (GRID, KEY_ESCAPE, "", "escape"),
@@ -158,6 +160,7 @@ GRID_VIEWER_EXPECTATIONS = (
     (GRID_VIEWER, KEY_DOLLAR, "", "$"),
     (GRID_VIEWER, KEY_TAB, "", "focus_panel"),
     (GRID_VIEWER, KEY_ESCAPE, "", "escape"),
+    (GRID_VIEWER, KEY_M, "", "m"),
 )
 
 PANEL_EXPECTATIONS = (
@@ -196,6 +199,7 @@ PANEL_EXPECTATIONS = (
     (PANEL, KEY_F1, "", "help"),
     (PANEL, KEY_I, "", "panel"),
     (PANEL, KEY_F, "", "favorite"),
+    (PANEL, KEY_M, "", "m"),
     (PANEL, KEY_Q, "", "close"),
     (PANEL, KEY_Q, "ctrl", None),
     # R1: los dígitos del panel quedan fuera de servicio (salvo el ``0``
@@ -236,6 +240,7 @@ VIEWER_EXPECTATIONS = (
     (VIEWER, KEY_ESCAPE, "", "escape"),
     (VIEWER, KEY_I, "", "panel"),
     (VIEWER, KEY_F, "", "favorite"),
+    (VIEWER, KEY_M, "", "m"),
     (VIEWER, KEY_QUESTION, "", "help"),
     (VIEWER, KEY_F1, "", "help"),
     (VIEWER, KEY_COLON, "", "command"),
@@ -260,6 +265,7 @@ WINDOW_EXPECTATIONS = (
     (WINDOW, KEY_I, "cmd", None),
     (WINDOW, KEY_ESCAPE, "", "escape"),
     (WINDOW, KEY_F, "", "favorite"),
+    (WINDOW, KEY_M, "", "m"),
     (WINDOW, KEY_Q, "", "close"),
     (WINDOW, KEY_J, "", "j"),
     (WINDOW, KEY_J, "ctrl", None),

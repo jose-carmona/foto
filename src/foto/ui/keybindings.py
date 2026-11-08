@@ -195,6 +195,10 @@ def _build_table() -> tuple[Binding, ...]:
             bind(context, key, "open_viewer")
         bind(context, KEY_G, "g", shift=False)
         bind(context, KEY_G, "end", shift=True)
+        # "m" es la segunda tecla del prefijo "g m": con un "g" pendiente,
+        # la ventana abre la ubicación en el navegador (ver window._open_map).
+        # Sin prefijo queda reservada, como "g" antes de su segunda tecla.
+        bind(context, KEY_M, "m")
         for key, action in ((KEY_PAGEDOWN, "pagedown"), (KEY_PAGEUP, "pageup")):
             bind(context, key, action)
         # Solo la Ctrl física dispara la media página; ⌘d/⌘u no cuentan.
@@ -211,6 +215,7 @@ def _build_table() -> tuple[Binding, ...]:
             (KEY_F1, "help"),
             (KEY_I, "panel"),
             (KEY_F, "favorite"),
+            (KEY_M, "m"),
             (KEY_Q, "close"),
             (KEY_ESCAPE, "escape"),
         ):
@@ -271,6 +276,7 @@ def _build_table() -> tuple[Binding, ...]:
         (KEY_F1, "help"),
         (KEY_I, "panel"),
         (KEY_F, "favorite"),
+        (KEY_M, "m"),
         (KEY_Q, "close"),
     ):
         bind(PANEL, key, action)
@@ -308,6 +314,7 @@ def _build_table() -> tuple[Binding, ...]:
     bind_viewer(KEY_ESCAPE, "escape")
     bind_viewer(KEY_I, "panel")
     bind_viewer(KEY_F, "favorite")
+    bind_viewer(KEY_M, "m")
     bind_viewer(KEY_QUESTION, "help")
     bind_viewer(KEY_F1, "help")
     bind_viewer(KEY_COLON, "command")
