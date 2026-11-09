@@ -204,8 +204,9 @@ llamar a la red.
   `municipality`** con clave compuesta y etiqueta `Municipio, País`, y grupo
   propio «Sin ubicación» al final. (Revisión: el orden país → región →
   ciudad inicial dejaba los grupos no contiguos cuando la región faltaba;
-  el orden sigue a los grupos.) `g m` sigue funcionando desde las
-  coordenadas EXIF y no cambia.
+  el orden sigue a los grupos.) Con cámara o lugar, dentro de cada grupo
+  las fotos van de más nueva a más antigua, con las sin fecha al final.
+  `g m` sigue funcionando desde las coordenadas EXIF y no cambia.
 - El panel de metadatos muestra el lugar en formato `Municipio, País` cuando
   existe; si falta alguna parte, lo disponible; y añade el detalle del
   `address` completo: calle, comarca, código postal y la cadena

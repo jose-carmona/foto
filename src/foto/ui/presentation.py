@@ -169,8 +169,15 @@ def photo_sort_value(photo: Photo, key: str) -> tuple[bool, object]:
 
 
 def sorted_photos(photos: list[Photo], key: str) -> list[Photo]:
-    """Ordena por fecha (más nueva primero), cámara o lugar; desempata por nombre."""
+    """Ordena por fecha (más nueva primero), cámara o lugar; desempata por nombre.
+
+    Con cámara o lugar, dentro de cada grupo las fotos van de más nueva a
+    más antigua —la primera foto del grupo es la última que se tomó— y las
+    sin fecha, al final del grupo: el orden base es la fecha descendente y
+    el orden por grupo es estable sobre él.
+    """
     ordered = sorted(photos, key=lambda photo: photo.name.casefold())
+    ordered.sort(key=lambda photo: photo_sort_value(photo, "date"), reverse=True)
     ordered.sort(
         key=lambda photo: photo_sort_value(photo, key),
         reverse=(key == "date"),

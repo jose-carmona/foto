@@ -409,9 +409,10 @@ Reglas de la anatomía:
   en orden alfabético. `:sort location` agrupa por municipio (`country` +
   `municipality` del servicio) con la etiqueta `Municipio, País`, en orden
   país → municipio alfabético ascendente; las fotos sin lugar resuelto quedan
-  al final en `Sin ubicación`. Cada grupo muestra una cabecera y, debajo, sus
-  miniaturas. Las fotos sin fecha o sin cámara quedan al final en `Sin fecha`
-  o `Sin cámara`.
+  al final en `Sin ubicación`. Con cámara o lugar, dentro de cada grupo las
+  fotos van de más nueva a más antigua y las sin fecha cierran el grupo. Cada
+  grupo muestra una cabecera y, debajo, sus miniaturas. Las fotos sin fecha o
+  sin cámara quedan al final en `Sin fecha` o `Sin cámara`.
   Un filtro oculta las cabeceras cuyos grupos se quedan sin coincidencias.
 - Tamaño de miniatura: 400 × 247 px (proporción áurea). Recorte centrado para
   llenar el recuadro sin deformar la imagen. Sin marco ni borde alrededor de la

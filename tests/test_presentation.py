@@ -295,6 +295,43 @@ def test_sorted_photos_breaks_ties_by_name_with_casefold():
     ]
 
 
+def test_sorted_photos_by_camera_orders_each_group_newest_first():
+    # Canon agrupa primero (alfabético); dentro del grupo, de más nueva a
+    # más antigua, con la sin fecha al final del grupo.
+    photos = [
+        _photo("a.jpg", taken="2024-06-01 08:00", camera="Canon EOS R5"),
+        _photo("b.jpg", taken="2024-05-01 08:00", camera="Nikon Z 6"),
+        _photo("c.jpg", taken="2024-06-10 08:00", camera="Canon EOS R5"),
+        _photo("d.jpg", taken="", camera="Canon EOS R5"),
+    ]
+
+    assert [photo.name for photo in sorted_photos(photos, "camera")] == [
+        "c.jpg",
+        "a.jpg",
+        "d.jpg",
+        "b.jpg",
+    ]
+
+
+def test_sorted_photos_by_location_orders_each_group_newest_first():
+    # Mismo municipio, tres fechas: la primera foto del grupo es la última
+    # tomada; la sin fecha cierra el grupo.
+    photos = [
+        _photo("uno.jpg", taken="2024-06-01 08:00", **_ARCACHON),
+        _photo("dos.jpg", taken="2024-06-10 08:00", **_ARCACHON),
+        _photo("tres.jpg", taken="", **_ARCACHON),
+        _photo("madrid.jpg", taken="2024-01-01 08:00", place_country="España",
+               place_city="Madrid"),
+    ]
+
+    assert [photo.name for photo in sorted_photos(photos, "location")] == [
+        "madrid.jpg",
+        "dos.jpg",
+        "uno.jpg",
+        "tres.jpg",
+    ]
+
+
 def test_photo_sort_value_flags_the_date_to_keep_empties_last():
     with_date = _photo("a.jpg", taken="2024-05-01 12:34")
     without_date = _photo("b.jpg", taken="")
