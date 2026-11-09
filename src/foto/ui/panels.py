@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from foto.ui.commands import COMMANDS
 from foto.ui.keybindings import PANEL, event_modifiers, key_action
 from foto.ui.models import Photo
-from foto.ui.presentation import photo_location_display
+from foto.ui.presentation import photo_location_display, photo_place_details
 from foto.ui.theme import (
     COMPLETION_QSS,
     PANEL_SCROLL_QSS,
@@ -194,6 +194,7 @@ class MetadataPanel(QFrame):
             location_rows: list[tuple[str, str]] = []
             if place_display:
                 location_rows.append(("Lugar", place_display))
+            location_rows.extend(photo_place_details(photo))
             if photo.location:
                 location_rows.append(("Coordenadas", photo.location))
             sections.append(("Ubicación", tuple(location_rows)))

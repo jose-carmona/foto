@@ -30,18 +30,20 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   reconciliación de ausencias, `exiftool` opcional y lock de escritor único. Es
   un **pipeline de fases** (`scan` y `geocode`, [ADR 0005](docs/adr/0005-fases-y-geocodificacion.md)):
   la fase `geocode` geocodifica en inverso con Nominatim las fotos con GPS y
-  sin lugar (`place_status`), con caché por celda de 3 decimales, throttle de
-  1 petición/segundo y parada por rechazo con reanudación. Para hacerla correr
-  los tests, el servicio es inyectable (`core/geocoding.py`) y sin red.
+  sin lugar (`place_status`), con caché por celda de 3 decimales invalidada
+  por zoom, throttle de 1 petición/segundo y parada por rechazo con
+  reanudación; de la respuesta guarda la jerarquía normalizada y el detalle
+  completo (`municipality`, `display_name` y `address` íntegro). Para hacerla
+  correr los tests, el servicio es inyectable (`core/geocoding.py`) y sin red.
 - El catálogo vive en `<fototeca>/.foto/catalog.sqlite` y es reconstruible. El
   indexador no importa Qt.
 - El visor **consume el catálogo** (`ADR 0003`): lee solo desde
   `<fototeca>/.foto/catalog.sqlite` (ubicaciones `present`). Si no existe el
   catálogo, la app avisa y se cierra. Las búsquedas y ordenaciones se hacen
   contra el índice, incluida la búsqueda por lugar y el orden
-  `:sort date`/`camera`/`location` con grupos por `Ciudad, País`; el lugar
-  llega de las columnas de `place_*` que la fase `geocode` llenó. `foto-index`
-  es independiente (CLI/cron/systemd).
+  `:sort date`/`camera`/`location` con grupos por `Municipio, País`
+  (`country` + `municipality`); el lugar llega de las columnas de `place_*`
+  que la fase `geocode` llenó. `foto-index` es independiente (CLI/cron/systemd).
 - La imagen grande del visor se decodifica en segundo plano. Las miniaturas
   visibles de la rejilla se generan en un pool de trabajo, pidiendo al lector
   una decodificación ya escalada, y se guardan en una caché persistente en

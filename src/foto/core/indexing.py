@@ -23,7 +23,7 @@ from foto.core.errors import (
     IndexingError,
     LibraryError,
 )
-from foto.core.geocoding import Geocoder, cell_for
+from foto.core.geocoding import REVERSE_ZOOM, Geocoder, cell_for
 from foto.core.hashing import Hasher, Sha256Hasher
 from foto.core.metadata import ExtractionOutcome, MetadataExtractor
 from foto.core.scanner import FileSignature, LibraryScanner, ScanIssue
@@ -596,7 +596,8 @@ class Indexer:
         geocode.unique_cells = len(cells)
         requested = sum(
             1 for latitude, longitude in cells
-            if self.catalog.get_place_cell(latitude, longitude) is None
+            if self.catalog.get_place_cell(latitude, longitude, min_zoom=REVERSE_ZOOM)
+            is None
         )
         geocode.http_requests = requested
         geocode.cache_hits = geocode.candidates - requested
@@ -628,12 +629,14 @@ class Indexer:
 
             for target in targets:
                 cell = cell_for(target.latitude, target.longitude)
-                place = self.catalog.get_place_cell(cell.latitude, cell.longitude)
-                if place is not None:
+                record = self.catalog.get_place_cell(
+                    cell.latitude, cell.longitude, min_zoom=REVERSE_ZOOM
+                )
+                if record is not None:
                     geocode.cache_hits += 1
                 else:
                     try:
-                        place = geocoder.reverse(cell.latitude, cell.longitude)
+                        record = geocoder.reverse(cell.latitude, cell.longitude)
                     except GeocodingResponseError as exc:
                         # Respuesta no interpretable: error de esta foto, la
                         # fase continúa con el resto.
@@ -649,9 +652,13 @@ class Indexer:
                         break
                     geocode.http_requests += 1
                     self.catalog.put_place_cell(
-                        cell.latitude, cell.longitude, place, _iso(self._now())
+                        cell.latitude,
+                        cell.longitude,
+                        record,
+                        zoom=REVERSE_ZOOM,
+                        now=_iso(self._now()),
                     )
-                self.catalog.update_place(target.hash, place, _iso(self._now()))
+                self.catalog.update_place(target.hash, record, _iso(self._now()))
                 geocode.geocoded_ok += 1
 
             self.catalog.commit()

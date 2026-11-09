@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from foto.core.geocoding import Place, cell_for
+from foto.core.geocoding import Place, PlaceRecord, cell_for
 from foto.core.hashing import hash_bytes
 from foto.core.indexing import Indexer, IndexingOptions, IndexingSummary
 from foto.core.metadata import ExtractionOutcome, PhotoMetadata
@@ -109,19 +109,22 @@ class FakeGeocoder:
 
     ``reverse`` registra cada celda pedida y responde con:
 
-    - ``results``: ``Place`` explícito por clave de celda (tupla lat/lon ya
-      redondeada); incluye ``Place()`` parcialmente vacío.
+    - ``results``: ``Place`` o ``PlaceRecord`` explícito por clave de celda
+      (tupla lat/lon ya redondeada); incluye ``Place()`` parcialmente vacío.
     - ``default_place``: ``Place`` para las celdas que no están en ``results``.
     - ``errors``: cola de excepciones que se lanzan en orden antes de
       responder; permite simular rechazos (``GeocodingRejectedError``) y
       respuestas no interpretables (``GeocodingResponseError``).
+
+    Un ``Place`` se envuelve en un ``PlaceRecord`` sin detalle; para
+    simular el detalle completo, pasa directamente un ``PlaceRecord``.
     """
 
     def __init__(
         self,
         *,
         default_place: Place | None = None,
-        results: Mapping[tuple[float, float], Place] | None = None,
+        results: Mapping[tuple[float, float], Place | PlaceRecord] | None = None,
         errors: Sequence[Exception] | None = None,
     ) -> None:
         self.default_place = default_place or Place(
@@ -138,19 +141,25 @@ class FakeGeocoder:
         self.calls.clear()
         self.errors.clear()
 
-    def reverse(self, latitude: float, longitude: float) -> Place:
+    @staticmethod
+    def _as_record(value: Place | PlaceRecord) -> PlaceRecord:
+        if isinstance(value, PlaceRecord):
+            return value
+        return PlaceRecord(place=value)
+
+    def reverse(self, latitude: float, longitude: float) -> PlaceRecord:
         latitude = round(latitude, 6)
         longitude = round(longitude, 6)
         if self.errors:
             raise self.errors.pop(0)
         self.calls.append((latitude, longitude))
-        place = self.results.get((latitude, longitude))
-        if place is None:
+        value = self.results.get((latitude, longitude))
+        if value is None:
             cell = cell_for(latitude, longitude)
-            place = self.results.get((cell.latitude, cell.longitude))
-        if place is None:
-            place = self.default_place
-        return place
+            value = self.results.get((cell.latitude, cell.longitude))
+        if value is None:
+            value = self.default_place
+        return self._as_record(value)
 
 
 def run_index(

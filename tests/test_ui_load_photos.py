@@ -10,7 +10,7 @@ import sqlite3
 
 import pytest
 
-from foto.core.geocoding import Place
+from foto.core.geocoding import Place, PlaceRecord
 from foto.storage.catalog import Catalog
 from foto.storage.library import ensure_library
 from foto.ui.app import load_photos
@@ -56,7 +56,17 @@ def test_ui_loads_the_resolved_place_fields(tmp_path):
         )
         catalog.update_place(
             photo_hash,
-            Place(country="España", country_code="ES", state="Cataluña", city="Barcelona"),
+            PlaceRecord(
+                place=Place(
+                    country="España",
+                    country_code="ES",
+                    state="Cataluña",
+                    city="Barcelona",
+                    municipality="Barcelona",
+                ),
+                display_name="Passeig de Colom, Barcelona, Cataluña, España",
+                address_json='{"city": "Barcelona", "country": "España"}',
+            ),
             NOW,
         )
         catalog.commit()
@@ -70,6 +80,9 @@ def test_ui_loads_the_resolved_place_fields(tmp_path):
     assert photos[0].place_country_code == "ES"
     assert photos[0].place_state == "Cataluña"
     assert photos[0].place_city == "Barcelona"
+    assert photos[0].place_municipality == "Barcelona"
+    assert photos[0].place_display_name == "Passeig de Colom, Barcelona, Cataluña, España"
+    assert photos[0].place_address_json == '{"city": "Barcelona", "country": "España"}'
 
 
 def test_ui_loads_photos_from_an_existing_catalog(tmp_path):

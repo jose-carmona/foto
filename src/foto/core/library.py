@@ -35,6 +35,9 @@ class CatalogPhoto:
     place_country_code: str | None = None
     place_state: str | None = None
     place_city: str | None = None
+    place_municipality: str | None = None
+    place_display_name: str | None = None
+    place_address_json: str | None = None
     favorite: bool = False
     path: Path | None = None
     canonical_rel_path: str | None = None
@@ -196,6 +199,9 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
             place_country_code=canonical["place_country_code"],
             place_state=canonical["place_state"],
             place_city=canonical["place_city"],
+            place_municipality=canonical["place_municipality"],
+            place_display_name=canonical["place_display_name"],
+            place_address_json=canonical["place_address_json"],
             path=full_path,
             canonical_rel_path=str(canonical["rel_path"]),
             other_locations=tuple(str(r["rel_path"]) for r in others),

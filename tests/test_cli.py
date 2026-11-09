@@ -421,12 +421,11 @@ class _FailingGeocoder:
 class _StubGeocoder:
     """Geocodificador fijo inyectado en la CLI."""
 
-    from foto.core.geocoding import Place
-
     def __init__(self):
+        from foto.core.geocoding import PlaceRecord
         from tests.test_geocoding import make_place
 
-        self._place = make_place()
+        self._record = PlaceRecord(place=make_place())
 
     def reverse(self, latitude, longitude):
-        return self._place
+        return self._record

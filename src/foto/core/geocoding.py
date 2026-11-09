@@ -17,6 +17,12 @@ PLACE_STATES = ("none", "pending", "ok", "error")
 #: Decimales del redondeo por celda: 3 decimales ≈ 110 m de lado.
 CELL_DECIMALS = 3
 
+#: Zoom de Nominatim para las peticiones ``reverse``: nivel aldea/localidad,
+#: que devuelve la jerarquía completa (país, región, municipio…) sin arrastrar
+#: números de portal. Las celdas cacheadas con menos zoom se vuelven a pedir
+#: (ADR 0005, revisión de 2026-11-09).
+REVERSE_ZOOM = 14
+
 #: Variantes de «ciudad» que devuelve la sección ``address`` de Nominatim.
 CITY_KEYS = ("city", "town", "village", "municipality")
 
@@ -26,25 +32,39 @@ class Place:
     """Lugar normalizado de una foto.
 
     Los campos que el servicio no devolvió son ``None``: no se inventan
-    cadenas vacías ni nombres.
+    cadenas vacías ni nombres. ``city`` agrupa las variantes de localidad
+    (``city``, ``town``, ``village`` y, por último, ``municipality``);
+    ``municipality`` conserva el campo literal del servicio para agrupar
+    administrativamente.
     """
 
     country: str | None = None
     country_code: str | None = None
     state: str | None = None
     city: str | None = None
+    municipality: str | None = None
 
     @property
     def known(self) -> bool:
         """True si el servicio devolvió alguna parte de la jerarquía."""
         return any(
             part is not None
-            for part in (self.country, self.country_code, self.state, self.city)
+            for part in (
+                self.country,
+                self.country_code,
+                self.state,
+                self.city,
+                self.municipality,
+            )
         )
 
     def display(self) -> str | None:
-        """Formato de visualización ``Ciudad, País`` con lo disponible."""
-        primary = self.city if self.city is not None else self.state
+        """Formato de visualización ``Municipio, País`` con lo disponible.
+
+        Prefiere el municipio (la entidad administrativa que agrupa las
+        fotos de un mismo sitio), luego la localidad y luego la región.
+        """
+        primary = self.municipality or self.city or self.state
         if primary is None:
             primary = self.country
             secondary = None
@@ -57,6 +77,21 @@ class Place:
         if secondary is None:
             return primary
         return f"{primary}, {secondary}"
+
+
+@dataclass(frozen=True)
+class PlaceRecord:
+    """Lugar resuelto por el servicio con toda su información.
+
+    ``place`` es la jerarquía normalizada que usan orden, grupos y panel;
+    ``display_name`` y ``address_json`` son «toda la información» del
+    servicio tal cual llegó: la cadena completa que renderiza Nominatim y
+    el objeto ``address`` íntegro serializado (ADR 0005, revisión).
+    """
+
+    place: Place
+    display_name: str | None = None
+    address_json: str | None = None
 
 
 def _clean_part(value: object) -> str | None:
@@ -83,6 +118,7 @@ def place_from_address(address: Mapping[str, object]) -> Place:
         country_code=_clean_part(address.get("country_code")),
         state=_clean_part(address.get("state")),
         city=city,
+        municipality=_clean_part(address.get("municipality")),
     )
 
 
@@ -110,11 +146,13 @@ def cell_for(latitude: float, longitude: float) -> Cell:
 class Geocoder(Protocol):
     """Contrato de un geocodificador inverso: coordenadas en, lugar fuera."""
 
-    def reverse(self, latitude: float, longitude: float) -> Place:
+    def reverse(self, latitude: float, longitude: float) -> PlaceRecord:
         """Resuelve una celda con el servicio.
 
-        Devuelve un ``Place`` (con partes ``None`` si la jerarquía venía
-        incompleta) o lanza ``GeocodingRejectedError`` ante un rechazo del
-        servicio o un fallo de red, y ``GeocodingResponseError`` si la
-        respuesta es vacía o no interpretable para esa petición concreta.
+        Devuelve un ``PlaceRecord`` —la jerarquía normalizada en ``place``
+        (con partes ``None`` si venía incompleta) más el ``display_name`` y
+        el ``address`` completo del servicio— o lanza
+        ``GeocodingRejectedError`` ante un rechazo del servicio o un fallo
+        de red, y ``GeocodingResponseError`` si la respuesta es vacía o no
+        interpretable para esa petición concreta.
         """

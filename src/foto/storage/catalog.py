@@ -10,12 +10,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from foto.core.errors import CatalogError, CatalogVersionError
-from foto.core.geocoding import Place
+from foto.core.geocoding import Place, PlaceRecord
 from foto.core.metadata import PhotoMetadata
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CATALOG_FILE_NAME = "catalog.sqlite"
 
 SCHEMA_V1 = """
@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS scan_runs (
 """
 
 # Fases del historial de la pasada y caché por celda del lugar (ver ADR 0005).
+# ``geocode_cells`` guarda además toda la información del servicio: el
+# ``municipality`` literal, el ``display_name`` y el objeto ``address``
+# completo serializado (revisión de 2026-11-09), y el ``zoom`` con el que
+# resolvió la celda para poder invalidarla si sube el detalle pedido.
 SCHEMA_V2_TABLES = """
 CREATE TABLE IF NOT EXISTS geocode_cells (
     latitude      REAL NOT NULL,
@@ -86,6 +90,10 @@ CREATE TABLE IF NOT EXISTS geocode_cells (
     country_code  TEXT,
     state         TEXT,
     city          TEXT,
+    municipality  TEXT,
+    display_name  TEXT,
+    address_json  TEXT,
+    zoom          INTEGER NOT NULL,
     fetched_at    TEXT NOT NULL,
     PRIMARY KEY (latitude, longitude)
 );
@@ -118,6 +126,26 @@ PLACE_COLUMNS_V2 = (
     ("place_state", "TEXT"),
     ("place_city", "TEXT"),
     ("place_updated_at", "TEXT"),
+)
+
+# Columnas de detalle completo del servicio añadidas a ``photos`` en v3
+# (revisión de 2026-11-09): municipio literal, cadena completa del servicio
+# y objeto ``address`` íntegro serializado.
+PLACE_COLUMNS_V3 = (
+    ("place_municipality", "TEXT"),
+    ("place_display_name", "TEXT"),
+    ("place_address_json", "TEXT"),
+)
+
+# Columnas de detalle añadidas a ``geocode_cells`` en v3. Las celdas que
+# estaban guardadas quedan con el zoom 10 con el que se resolvieron: al
+# exigir el zoom actual la siguiente pasada las vuelve a pedir (ADR 0005,
+# revisión).
+CELL_COLUMNS_V3 = (
+    ("municipality", "TEXT"),
+    ("display_name", "TEXT"),
+    ("address_json", "TEXT"),
+    ("zoom", "INTEGER NOT NULL DEFAULT 10"),
 )
 
 
@@ -289,8 +317,10 @@ class Catalog:
         try:
             if version < 2:
                 self._migrate_to_v2()
-                self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                self._conn.commit()
+            if version < 3:
+                self._migrate_to_v3()
+            self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self._conn.commit()
         except sqlite3.Error as exc:
             raise CatalogError(f"No se pudo aplicar la migración del catálogo: {exc}") from exc
 
@@ -308,14 +338,31 @@ class Catalog:
         }
         if "photos" not in tables:
             self._conn.executescript(SCHEMA_V1)
+        self._ensure_columns("photos", PLACE_COLUMNS_V2)
+        self._conn.executescript(SCHEMA_V2_TABLES)
+
+    def _migrate_to_v3(self) -> None:
+        """Aplica la migración a v3: detalle completo del lugar.
+
+        Añade a ``photos`` las columnas del detalle del servicio y a
+        ``geocode_cells`` el municipio, el detalle completo y el ``zoom``
+        de resolución. Las celdas existentes quedan con el zoom 10 con el
+        que se crearon: al exigir el zoom actual (14), la siguiente pasada
+        las vuelve a pedir y refresca el lugar con la jerarquía completa
+        (ADR 0005, revisión de 2026-11-09).
+        """
+        self._ensure_columns("geocode_cells", CELL_COLUMNS_V3)
+        self._ensure_columns("photos", PLACE_COLUMNS_V3)
+
+    def _ensure_columns(self, table: str, columns: tuple[tuple[str, str], ...]) -> None:
+        """Añade a la tabla las columnas que le falten (idempotente)."""
         existing = {
             str(row[1])
-            for row in self._conn.execute("PRAGMA table_info(photos)")
+            for row in self._conn.execute(f"PRAGMA table_info({table})")
         }
-        for name, definition in PLACE_COLUMNS_V2:
+        for name, definition in columns:
             if name not in existing:
-                self._conn.execute(f"ALTER TABLE photos ADD COLUMN {name} {definition}")
-        self._conn.executescript(SCHEMA_V2_TABLES)
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     # ------------------------------------------------------------------
     # Utilidades de conexión
@@ -623,39 +670,69 @@ class Catalog:
             (1 if full else 0,),
         )
 
-    def get_place_cell(self, latitude: float, longitude: float) -> Place | None:
-        """Lugar cacheado para una celda, o ``None`` si hay que pedirlo."""
+    def get_place_cell(
+        self, latitude: float, longitude: float, *, min_zoom: int
+    ) -> PlaceRecord | None:
+        """Lugar cacheado para una celda, o ``None`` si hay que pedirlo.
+
+        ``min_zoom`` invalida la caché: una celda resuelta con menos zoom
+        del exigido se vuelve a pedir para refrescarla con más detalle
+        (ADR 0005, revisión).
+        """
         row = self._conn.execute(
-            "SELECT country, country_code, state, city FROM geocode_cells "
+            "SELECT country, country_code, state, city, municipality, "
+            "display_name, address_json, zoom FROM geocode_cells "
             "WHERE latitude = ? AND longitude = ?",
             (latitude, longitude),
         ).fetchone()
-        if row is None:
+        if row is None or int(row["zoom"]) < min_zoom:
             return None
-        return Place(
-            country=row["country"],
-            country_code=row["country_code"],
-            state=row["state"],
-            city=row["city"],
+        return PlaceRecord(
+            place=Place(
+                country=row["country"],
+                country_code=row["country_code"],
+                state=row["state"],
+                city=row["city"],
+                municipality=row["municipality"],
+            ),
+            display_name=row["display_name"],
+            address_json=row["address_json"],
         )
 
-    def put_place_cell(self, latitude: float, longitude: float, place: Place, now: str) -> None:
+    def put_place_cell(
+        self,
+        latitude: float,
+        longitude: float,
+        record: PlaceRecord,
+        *,
+        zoom: int,
+        now: str,
+    ) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO geocode_cells "
-            "(latitude, longitude, country, country_code, state, city, fetched_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (latitude, longitude, place.country, place.country_code, place.state,
-             place.city, now),
+            "(latitude, longitude, country, country_code, state, city, "
+            "municipality, display_name, address_json, zoom, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (latitude, longitude, record.place.country, record.place.country_code,
+             record.place.state, record.place.city, record.place.municipality,
+             record.display_name, record.address_json, zoom, now),
         )
 
-    def update_place(self, photo_hash: str, place: Place, now: str) -> None:
-        """Guarda el lugar de una foto: la fila queda siempre en ``ok``."""
+    def update_place(self, photo_hash: str, record: PlaceRecord, now: str) -> None:
+        """Guarda el lugar de una foto: la fila queda siempre en ``ok``.
+
+        Guarda la jerarquía normalizada y el detalle completo del servicio
+        (``display_name`` y ``address`` íntegro) para el panel.
+        """
         self._conn.execute(
             "UPDATE photos SET place_country = ?, place_country_code = ?, "
-            "place_state = ?, place_city = ?, place_status = 'ok', "
+            "place_state = ?, place_city = ?, place_municipality = ?, "
+            "place_display_name = ?, place_address_json = ?, "
+            "place_status = 'ok', "
             "place_error = NULL, place_updated_at = ?, updated_at = ? WHERE hash = ?",
-            (place.country, place.country_code, place.state, place.city, now, now,
-             photo_hash),
+            (record.place.country, record.place.country_code, record.place.state,
+             record.place.city, record.place.municipality, record.display_name,
+             record.address_json, now, now, photo_hash),
         )
 
     def update_place_error(self, photo_hash: str, message: str, now: str) -> None:
@@ -770,6 +847,9 @@ class Catalog:
                 p.place_country_code,
                 p.place_state,
                 p.place_city,
+                p.place_municipality,
+                p.place_display_name,
+                p.place_address_json,
                 p.orientation,
                 p.metadata_status
             FROM locations l

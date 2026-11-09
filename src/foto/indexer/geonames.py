@@ -23,15 +23,16 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from foto.core.errors import GeocodingRejectedError, GeocodingResponseError
-from foto.core.geocoding import Place, place_from_address
+from foto.core.geocoding import REVERSE_ZOOM, PlaceRecord, place_from_address
 
 logger = logging.getLogger(__name__)
 
 #: Parámetros fijos del endpoint ``reverse`` de Nominatim (jsonv2 + dirección).
 REVERSE_FORMAT_PARAMS = (("format", "jsonv2"), ("addressdetails", "1"))
 
-#: Zoom de Nominatim que devuelve jerarquía país/región/ciudad (ADR 0005).
-REVERSE_ZOOM = 10
+#: El zoom de la petición vive en ``core/geocoding`` (``REVERSE_ZOOM``) para
+#: que la caché por celda sepa qué celdas quedaron resueltas con menos
+#: detalle y hay que volver a pedir.
 
 
 @dataclass(frozen=True)
@@ -72,12 +73,12 @@ class NominatimGeocoder:
         self._monotonic = monotonic
         self._next_at: float | None = None
 
-    def reverse(self, latitude: float, longitude: float) -> Place:
+    def reverse(self, latitude: float, longitude: float) -> PlaceRecord:
         """Resuelve una celda con Nominatim, respetando el throttle."""
         self._throttle()
-        place = self._reverse_raw(latitude, longitude)
+        record = self._reverse_raw(latitude, longitude)
         self._next_at = self._monotonic() + self._config.request_interval_seconds
-        return place
+        return record
 
     # ------------------------------------------------------------------
     def _throttle(self) -> None:
@@ -91,7 +92,7 @@ class NominatimGeocoder:
             # relee para dejar la ventana coherente con el reloj inyectado.
             self._next_at = self._monotonic()
 
-    def _reverse_raw(self, latitude: float, longitude: float) -> Place:
+    def _reverse_raw(self, latitude: float, longitude: float) -> PlaceRecord:
         params = {
             "lat": repr(float(latitude)),
             "lon": repr(float(longitude)),
@@ -140,4 +141,15 @@ class NominatimGeocoder:
             raise GeocodingResponseError(
                 "El servicio no devolvió un lugar interpretable para esa celda"
             )
-        return place_from_address(address)
+        display_name = payload.get("display_name")
+        if not isinstance(display_name, str) or not display_name.strip():
+            display_name = None
+        return PlaceRecord(
+            place=place_from_address(address),
+            display_name=display_name,
+            address_json=json.dumps(
+                {str(key): value for key, value in address.items() if isinstance(value, str)},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )

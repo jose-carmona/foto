@@ -46,6 +46,9 @@ class Photo:
     place_country_code: str | None = None
     place_state: str | None = None
     place_city: str | None = None
+    place_municipality: str | None = None
+    place_display_name: str | None = None
+    place_address_json: str | None = None
     favorite: bool = False
     path: Path | None = None
     canonical_rel_path: str | None = None

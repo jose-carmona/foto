@@ -12,14 +12,19 @@ from foto.core.errors import (
     GeocodingResponseError,
     IndexingError,
 )
-from foto.core.geocoding import Place
+from foto.core.geocoding import REVERSE_ZOOM, Place, PlaceRecord
 from foto.core.indexing import INDEXING_PHASES, Indexer, IndexingOptions
 from foto.core.metadata import PhotoMetadata
-from foto.storage.catalog import SCHEMA_VERSION, Catalog
+from foto.storage.catalog import (
+    PLACE_COLUMNS_V2,
+    SCHEMA_VERSION,
+    Catalog,
+)
 from tests.conftest import FakeExtractor, FakeGeocoder, read_photos, run_index, write_image
 from tests.test_geocoding import make_place
 
 MADRID = make_place()
+MADRID_RECORD = PlaceRecord(place=MADRID)
 
 
 def _photos_with_place(root):
@@ -36,6 +41,9 @@ def _place_fields(photo: dict[str, object]) -> dict[str, object]:
             "place_country_code",
             "place_state",
             "place_city",
+            "place_municipality",
+            "place_display_name",
+            "place_address_json",
         )
     }
 
@@ -180,14 +188,16 @@ def test_migration_is_idempotent(tmp_path):
     path = root / ".foto" / "catalog.sqlite"
 
     first = Catalog.open(path)
-    first.put_place_cell(40.417, -3.704, MADRID, "2026-01-01T00:00:00+00:00")
+    first.put_place_cell(
+        40.417, -3.704, MADRID_RECORD, zoom=REVERSE_ZOOM, now="2026-01-01T00:00:00+00:00"
+    )
     first.commit()
     first.close()
 
     second = Catalog.open(path)
     try:
-        place = second.get_place_cell(40.417, -3.704)
-        assert place == MADRID
+        record = second.get_place_cell(40.417, -3.704, min_zoom=REVERSE_ZOOM)
+        assert record == MADRID_RECORD
     finally:
         second.close()
 
@@ -204,17 +214,172 @@ def test_newer_schema_still_aborts(tmp_path):
         Catalog.open(path)
 
 
+# Esquema v2 real: ``geocode_cells`` sin el detalle de la revisión.
+SCHEMA_V2_CELLS_DDL = """
+CREATE TABLE geocode_cells (
+    latitude      REAL NOT NULL,
+    longitude     REAL NOT NULL,
+    country       TEXT,
+    country_code  TEXT,
+    state         TEXT,
+    city          TEXT,
+    fetched_at    TEXT NOT NULL,
+    PRIMARY KEY (latitude, longitude)
+);
+
+CREATE TABLE run_phases (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        INTEGER NOT NULL REFERENCES scan_runs(id),
+    phase         TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    reason        TEXT,
+    candidates    INTEGER,
+    processed     INTEGER,
+    errors        INTEGER,
+    cache_hits    INTEGER,
+    http_requests INTEGER,
+    recorded_at   TEXT NOT NULL
+);
+"""
+
+
+def _create_v2_catalog(path) -> None:
+    connection = sqlite3.connect(path)
+    connection.executescript(SCHEMA_V1_DDL)
+    # Columnas de lugar de la v2 (la revisión v3 añade las suyas encima).
+    for name, definition in PLACE_COLUMNS_V2:
+        connection.execute(f"ALTER TABLE photos ADD COLUMN {name} {definition}")
+    connection.executescript(SCHEMA_V2_CELLS_DDL)
+    connection.execute(
+        "INSERT INTO photos (hash, extension, gps_latitude, gps_longitude, "
+        "metadata_status, created_at, updated_at) VALUES (?, '.jpg', 44.652, "
+        "-1.198, 'ok', '2026-01-01', '2026-01-01')",
+        ("sha256:" + "9" * 64,),
+    )
+    connection.execute(
+        "INSERT INTO photos (hash, extension, metadata_status, created_at, "
+        "updated_at) VALUES (?, '.jpg', 'ok', '2026-01-01', '2026-01-01')",
+        ("sha256:" + "8" * 64,),
+    )
+    # La celda pobre que motivó la revisión: solo país, resuelta a zoom 10.
+    connection.execute(
+        "INSERT INTO geocode_cells (latitude, longitude, country, country_code, "
+        "state, city, fetched_at) VALUES (44.652, -1.198, 'Francia', 'fr', "
+        "NULL, NULL, '2026-01-01')"
+    )
+    connection.execute("PRAGMA user_version = 2")
+    connection.commit()
+    connection.close()
+
+
+def test_migration_from_v2_adds_detail_and_marks_old_cells(tmp_path):
+    """La migración v3 añade columnas y marca las celdas con su zoom real.
+
+    Las celdas guardadas bajo el esquema v2 se resolvieron con zoom 10:
+    quedan marcadas así para que la siguiente pasada las vuelva a pedir
+    con el zoom actual y refresque el lugar (caso de Arcachón).
+    """
+    root = tmp_path / "biblioteca"
+    (root / ".foto").mkdir(parents=True)
+    path = root / ".foto" / "catalog.sqlite"
+    _create_v2_catalog(path)
+
+    catalog = Catalog.open(path)
+    try:
+        assert catalog.user_version() == SCHEMA_VERSION
+        cell_columns = {
+            str(row[1])
+            for row in catalog._conn.execute("PRAGMA table_info(geocode_cells)")
+        }
+        assert {"municipality", "display_name", "address_json", "zoom"} <= cell_columns
+        photo_columns = {
+            str(row[1]) for row in catalog._conn.execute("PRAGMA table_info(photos)")
+        }
+        assert {
+            "place_municipality",
+            "place_display_name",
+            "place_address_json",
+        } <= photo_columns
+        # La celda vieja conserva sus datos pero queda con el zoom 10.
+        row = catalog._conn.execute(
+            "SELECT * FROM geocode_cells"
+        ).fetchone()
+        assert row["country"] == "Francia"
+        assert row["zoom"] == 10
+        assert catalog.get_place_cell(44.652, -1.198, min_zoom=REVERSE_ZOOM) is None
+        # Y los datos de fotos siguen ahí: quedan pendientes de geocodificar
+        # hasta que la siguiente pasada las repone.
+        rows = {
+            r["hash"]: r["place_status"]
+            for r in catalog._conn.execute("SELECT hash, place_status FROM photos")
+        }
+        assert rows["sha256:" + "9" * 64] == "pending"
+        assert rows["sha256:" + "8" * 64] == "pending"
+    finally:
+        catalog.close()
+
+
+def test_next_run_refreshes_a_poor_cell_without_full(tmp_path):
+    """Fin del caso real: tras la migración, la pasada repone la jerarquía."""
+    root = tmp_path / "biblioteca"
+    (root / ".foto").mkdir(parents=True)
+    path = root / ".foto" / "catalog.sqlite"
+    _create_v2_catalog(path)
+
+    geocoder = FakeGeocoder()
+    summary = run_index(root, extractor=FakeExtractor(), geocoder=geocoder)
+
+    # La celda pobre se volvió a pedir con el zoom actual y la foto quedó
+    # con el lugar completo, sin necesidad de --full.
+    assert geocoder.calls == [(44.652, -1.198)]
+    assert summary.geocode.geocoded_ok == 1
+    assert summary.geocode.cache_hits == 0
+    catalog = Catalog.open(path)
+    try:
+        row = catalog._conn.execute("SELECT * FROM photos WHERE place_status = 'ok'").fetchone()
+        assert row["place_country"] == "España"
+        assert row["place_city"] == "Madrid"
+        cell = catalog._conn.execute("SELECT zoom FROM geocode_cells").fetchone()
+        assert cell["zoom"] == REVERSE_ZOOM
+    finally:
+        catalog.close()
+
+
 # ----------------------------------------------------------------------
 # Operaciones del catálogo: caché por celda y estados
 # ----------------------------------------------------------------------
 def test_cell_cache_roundtrip(tmp_path):
     _root, catalog = _open(tmp_path)
     try:
-        assert catalog.get_place_cell(40.417, -3.704) is None
-        catalog.put_place_cell(40.417, -3.704, MADRID, "2026-02-02")
+        assert catalog.get_place_cell(40.417, -3.704, min_zoom=REVERSE_ZOOM) is None
+        catalog.put_place_cell(
+            40.417, -3.704, MADRID_RECORD, zoom=REVERSE_ZOOM, now="2026-02-02"
+        )
         catalog.commit()
-        assert catalog.get_place_cell(40.417, -3.704) == MADRID
-        assert catalog.get_place_cell(40.418, -3.704) is None
+        assert catalog.get_place_cell(
+            40.417, -3.704, min_zoom=REVERSE_ZOOM
+        ) == MADRID_RECORD
+        assert catalog.get_place_cell(40.418, -3.704, min_zoom=REVERSE_ZOOM) is None
+    finally:
+        catalog.close()
+
+
+def test_cells_cached_with_an_older_zoom_are_requested_again(tmp_path):
+    """Revisión del ADR 0005: celdas resueltas con zoom 10 se re-piden.
+
+    Un catálogo cacheado con el zoom antiguo no sirve: la celda vuelve a
+    pedirse y el lugar se refresca con la jerarquía completa, sin `--full`.
+    """
+    _root, catalog = _open(tmp_path)
+    try:
+        catalog.put_place_cell(
+            40.417, -3.704, PlaceRecord(place=Place(country="Francia")),
+            zoom=10, now="2026-02-02",
+        )
+        catalog.commit()
+        # Con el zoom antiguo servía la caché; con el actual, no.
+        assert catalog.get_place_cell(40.417, -3.704, min_zoom=10) is not None
+        assert catalog.get_place_cell(40.417, -3.704, min_zoom=14) is None
     finally:
         catalog.close()
 
@@ -224,11 +389,32 @@ def test_update_place_guards_ok_state(tmp_path):
     photo = "sha256:" + "2" * 64
     try:
         catalog.insert_photo(photo, ".jpg", "JPEG", "2026-02-02T00:00:00")
-        catalog.update_place(photo, MADRID, "2026-02-02T00:00:00")
+        catalog.update_place(photo, MADRID_RECORD, "2026-02-02T00:00:00")
         row = catalog._conn.execute("SELECT * FROM photos").fetchone()
         assert row["place_status"] == "ok"
         assert row["place_city"] == "Madrid"
         assert row["place_error"] is None
+    finally:
+        catalog.close()
+
+
+def test_update_place_stores_the_full_service_detail(tmp_path):
+    """«Toda la información del servicio» queda junto a la jerarquía."""
+    _root, catalog = _open(tmp_path)
+    photo = "sha256:" + "7" * 64
+    record = PlaceRecord(
+        place=make_place(municipality="Arcachón"),
+        display_name="Boulevard de la Mer, Arcachón, Gironda, Francia",
+        address_json='{"country": "Francia", "town": "Arcachón"}',
+    )
+    try:
+        catalog.insert_photo(photo, ".jpg", "JPEG", "2026-02-02T00:00:00")
+        catalog.update_place(photo, record, "2026-02-02T00:00:00")
+        row = catalog._conn.execute("SELECT * FROM photos").fetchone()
+        assert row["place_municipality"] == "Arcachón"
+        assert row["place_display_name"] == record.display_name
+        assert row["place_address_json"] == record.address_json
+        assert row["place_status"] == "ok"
     finally:
         catalog.close()
 
@@ -292,7 +478,7 @@ def test_update_metadata_never_downgrades_ok_place(tmp_path):
     photo = "sha256:" + "5" * 64
     try:
         catalog.insert_photo(photo, ".jpg", "JPEG", "2026-02-02")
-        catalog.update_place(photo, MADRID, "2026-02-02")
+        catalog.update_place(photo, MADRID_RECORD, "2026-02-02")
         catalog.update_metadata(
             photo,
             PhotoMetadata(gps_latitude=40.4168, gps_longitude=-3.7038),

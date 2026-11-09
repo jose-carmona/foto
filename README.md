@@ -126,8 +126,9 @@ forma de publicación o compartición.
   desde bash, cron o un `systemd` oneshot.
 - **Catálogo:** SQLite como índice rápido de búsqueda y metadatos normalizados.
   Es reconstruible desde los originales; si se borra, la siguiente pasada lo
-  regenera. El visor lee también de él el lugar resuelto (`place_*`), con el
-  que busca por ciudad/región/país y ordena con `:sort location`.
+  regenera. El visor lee también de él el lugar resuelto (`place_*`, con el
+  `address` completo que devolvió el servicio), con el que busca por
+  municipio/región/país y ordena con `:sort location`.
 - **Miniaturas:** derivados JPEG en `<fototeca>/.foto/thumbs/`, nombrados por
   hash de contenido, tamaño y versión. También son reconstruibles y nunca
   sustituyen al original; la caché todavía no se poda automáticamente. En

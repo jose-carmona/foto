@@ -12,6 +12,7 @@ importar Qt o la ventana.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +33,7 @@ from foto.ui.presentation import (
     photo_group,
     photo_location_display,
     photo_place,
+    photo_place_details,
     photo_search_text,
     photo_sort_value,
     sorted_photos,
@@ -52,6 +54,9 @@ def _photo(
     place_country_code: str | None = None,
     place_state: str | None = None,
     place_city: str | None = None,
+    place_municipality: str | None = None,
+    place_display_name: str | None = None,
+    place_address_json: str | None = None,
 ) -> Photo:
     return Photo(
         name=name,
@@ -77,6 +82,9 @@ def _photo(
         place_country_code=place_country_code,
         place_state=place_state,
         place_city=place_city,
+        place_municipality=place_municipality,
+        place_display_name=place_display_name,
+        place_address_json=place_address_json,
     )
 
 
@@ -346,6 +354,32 @@ _BARCELONA = {
     "place_city": "Barcelona",
 }
 
+_ARCACHON = {
+    # Caso real de la revisión: foto en un cromo de Arcachón, con
+    # municipality, town y jerarquía completa en el address.
+    "place_country": "Francia",
+    "place_country_code": "FR",
+    "place_state": "Nueva Aquitania",
+    "place_city": "Arcachón",
+    "place_municipality": "Arcachón",
+    "place_display_name": "Boulevard de la Mer, Arcachón, Gironda, Francia",
+    "place_address_json": json.dumps(
+        {
+            "road": "Boulevard de la Mer",
+            "hamlet": "Ancien Sanatorium Vincent de Paul",
+            "town": "Arcachón",
+            "municipality": "Arcachón",
+            "county": "Gironda",
+            "state": "Nueva Aquitania",
+            "postcode": "33120",
+            "country": "Francia",
+            "country_code": "fr",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    ),
+}
+
 _CATALUNYA_ONLY = {
     "place_country": "España",
     "place_country_code": "ES",
@@ -369,6 +403,12 @@ def test_photo_place_treats_empty_strings_as_missing_parts():
     assert place.state is None
 
 
+def test_photo_location_display_prefers_the_municipality():
+    photo = _photo("a.jpg", **_ARCACHON)
+
+    assert photo_location_display(photo) == "Arcachón, Francia"
+
+
 def test_photo_location_display_shows_the_available_parts():
     full = _photo("a.jpg", **_BARCELONA)
     assert photo_location_display(full) == "Barcelona, España"
@@ -380,14 +420,37 @@ def test_photo_location_display_shows_the_available_parts():
     assert photo_location_display(without_place) == ""
 
 
+def test_photo_place_details_extracts_the_curated_rows_and_display_name():
+    photo = _photo("a.jpg", **_ARCACHON)
+
+    assert photo_place_details(photo) == (
+        ("Calle", "Boulevard de la Mer"),
+        ("Comarca", "Gironda"),
+        ("Código postal", "33120"),
+        ("Dirección", "Boulevard de la Mer, Arcachón, Gironda, Francia"),
+    )
+
+
+def test_photo_place_details_without_stored_detail_is_empty():
+    photo = _photo("a.jpg", **_BARCELONA)
+
+    assert photo_place_details(photo) == ()
+
+
+def test_photo_place_details_with_corrupt_json_does_not_raise():
+    photo = _photo("a.jpg", place_address_json="{no-es-json", place_display_name="X")
+
+    assert photo_place_details(photo) == (("Dirección", "X"),)
+
+
 def test_search_document_includes_the_place_parts():
-    photo = _photo("playa.jpg", **_BARCELONA)
+    photo = _photo("playa.jpg", **_ARCACHON)
 
     document = photo_search_text(photo)
 
-    assert "barcelona" in document
-    assert "cataluña" in document
-    assert "españa" in document
+    assert "arcachón" in document
+    assert "nueva aquitania" in document
+    assert "francia" in document
 
 
 def test_search_document_without_place_stays_as_before():
@@ -400,13 +463,13 @@ def test_sort_keys_includes_location():
     assert SORT_KEYS == ("date", "camera", "location")
 
 
-def test_sorted_photos_by_location_orders_country_state_city():
+def test_sorted_photos_by_location_orders_country_then_municipality():
     photos = [
         _photo("francia.jpg", place_country="Francia", place_city="París"),
         _photo("madrid.jpg", place_country="España", place_city="Madrid"),
         _photo("granada.jpg", place_country="España", place_city="Granada"),
-        _photo("sitges.jpg", **_BARCELONA),
-        # España sin región: "" ordena antes que «cataluña» dentro del país.
+        _photo("arcachon.jpg", **_ARCACHON),
+        # España sin municipio: "" ordena antes que «barcelona» y compañía.
         _photo("euskadi.jpg", place_country="España"),
     ]
 
@@ -414,7 +477,7 @@ def test_sorted_photos_by_location_orders_country_state_city():
         "euskadi.jpg",
         "granada.jpg",
         "madrid.jpg",
-        "sitges.jpg",
+        "arcachon.jpg",
         "francia.jpg",
     ]
 
@@ -434,15 +497,15 @@ def test_sorted_photos_put_photos_without_location_at_the_end():
 
 
 def test_photo_sort_value_flags_the_location_to_keep_empties_last():
-    with_place = _photo("a.jpg", **_BARCELONA)
+    with_place = _photo("a.jpg", **_ARCACHON)
     without_place = _photo("b.jpg")
 
     assert photo_sort_value(with_place, "location") == (
         False,
-        ("españa", "cataluña", "barcelona"),
+        ("francia", "arcachón"),
     )
     # Sin reversa, True ordena después: la sin lugar cae al final.
-    assert photo_sort_value(without_place, "location") == (True, ("", "", ""))
+    assert photo_sort_value(without_place, "location") == (True, ("", ""))
 
 
 def test_photo_location_display_uses_the_country_code_as_last_resort():
@@ -451,43 +514,48 @@ def test_photo_location_display_uses_the_country_code_as_last_resort():
     assert photo_place(photo).display() == "ES"
 
 
-def test_photo_group_location_labels_the_city_and_contains_it_in_the_key():
-    photo = _photo("a.jpg", **_BARCELONA)
+def test_photo_group_location_groups_by_country_and_municipality():
+    # Revisión del ADR 0005: el grupo es «country» + «municipality», con la
+    # etiqueta «Municipio, País»; si no hay municipality, cae a la localidad.
+    photo = _photo("a.jpg", **_ARCACHON)
 
     key, label = photo_group(photo, "location")
 
-    assert label == "Barcelona, España"
-    # La clave separa las partes: dos ciudades del mismo nombre en regiones
-    # distintas no comparten grupo.
-    assert "españa" in key
-    assert "barcelona" in key
-    assert "cataluña" in key
+    assert label == "Arcachón, Francia"
+    assert key == "francia\u001farcachón"
+
+    without_municipality = _photo("b.jpg", **_BARCELONA)
+    assert photo_group(without_municipality, "location") == (
+        "españa\u001fbarcelona",
+        "Barcelona, España",
+    )
 
 
-def test_photo_group_location_uses_the_state_when_the_city_is_missing():
+def test_photo_group_location_uses_the_state_when_no_locality():
     photo = _photo("a.jpg", **_CATALUNYA_ONLY)
 
     key, label = photo_group(photo, "location")
 
     assert label == "Cataluña, España"
-    assert "cataluña" in key
+    assert key == "españa\u001fcataluña"
 
 
 def test_photo_group_location_reports_missing_place_as_its_own_group():
     assert photo_group(_photo("a.jpg"), "location") == ("", "Sin ubicación")
 
 
-def test_photo_group_location_keeps_same_named_cities_apart():
-    # Dos «Zaragoza» con el mismo país pero regiones distintas no comparten
-    # grupo, aunque el rótulo «Ciudad, País» sea idéntico.
-    first = _photo("a.jpg", place_country="España", place_state="Aragón", place_city="Zaragoza")
-    other = _photo("b.jpg", place_country="España", place_state="Cataluña", place_city="Zaragoza")
+def test_photo_group_location_keeps_same_named_municipalities_apart():
+    # Dos «Zaragoza» de países distintos no comparten grupo aunque el
+    # rótulo empiece igual.
+    first = _photo("a.jpg", place_country="España", place_city="Zaragoza")
+    other = _photo("b.jpg", place_country="Portugal", place_city="Zaragoza")
 
     first_group = photo_group(first, "location")
     other_group = photo_group(other, "location")
 
     assert first_group[0] != other_group[0]
-    assert first_group[1] == other_group[1] == "Zaragoza, España"
+    assert first_group[1] == "Zaragoza, España"
+    assert other_group[1] == "Zaragoza, Portugal"
 
 
 # ----------------------------------------------------------------------

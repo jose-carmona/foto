@@ -9,7 +9,7 @@ import urllib.parse
 import pytest
 
 from foto.core.errors import GeocodingRejectedError, GeocodingResponseError
-from foto.core.geocoding import Place, cell_for, place_from_address
+from foto.core.geocoding import Place, PlaceRecord, cell_for, place_from_address
 from foto.indexer.geonames import NominatimGeocoder, ReverseGeocoderConfig
 
 
@@ -32,6 +32,16 @@ def test_place_display_format_is_city_country():
     assert make_place().display() == "Madrid, España"
 
 
+def test_place_display_prefers_the_municipality():
+    # Revisión del ADR 0005: el grupo es «Municipio, País»; cuando el
+    # servicio dio municipality, manda sobre la localidad.
+    assert make_place(municipality="Madrid").display() == "Madrid, España"
+    assert make_place(
+        municipality="Comunidad de Madrid", city="Madrid"
+    ).display() == "Comunidad de Madrid, España"
+    assert make_place(municipality=None).display() == "Madrid, España"
+
+
 def test_place_display_with_missing_parts():
     assert make_place(city=None).display() == "Comunidad de Madrid, España"
     assert make_place(city=None, state=None).display() == "España"
@@ -40,6 +50,14 @@ def test_place_display_with_missing_parts():
     assert make_place(
         city=None, state=None, country=None, country_code=None
     ).display() is None
+
+
+def test_place_record_defaults_without_detail():
+    record = PlaceRecord(place=make_place())
+
+    assert record.place == make_place()
+    assert record.display_name is None
+    assert record.address_json is None
 
 
 def test_cell_rounding_to_three_decimals():
@@ -58,6 +76,26 @@ def test_place_from_address_variants_of_city():
     assert place.city == "Zumaia"
     place = place_from_address({"municipality": "Zumaia"})
     assert place.city == "Zumaia"
+
+
+def test_place_from_address_keeps_the_municipality_literal():
+    # Caso real de Arcachón: town y municipality coinciden; en comunas
+    # rurales solo hay municipality y ``city`` cae a ella por el fallback.
+    place = place_from_address(
+        {
+            "hamlet": "Ancien Sanatorium Vincent de Paul",
+            "town": "Arcachón",
+            "municipality": "Arcachón",
+            "state": "Nueva Aquitania",
+            "country": "Francia",
+            "country_code": "fr",
+        }
+    )
+
+    assert place.city == "Arcachón"
+    assert place.municipality == "Arcachón"
+    assert place.state == "Nueva Aquitania"
+    assert place.display() == "Arcachón, Francia"
 
 
 def test_place_from_address_normalizes_empty_values():
@@ -146,9 +184,17 @@ def test_reverse_maps_a_hierarchical_response():
     fake = FakeURLOpen(body=HIERARCHICAL_BODY)
     client = make_client(fake)
 
-    place = client.reverse(40.4168, -3.7038)
+    record = client.reverse(40.4168, -3.7038)
 
-    assert place == make_place(country_code="es")
+    assert record.place == make_place(country_code="es")
+    # «Toda la información del servicio»: cadena completa y address íntegro.
+    assert record.display_name == "Madrid, España"
+    assert json.loads(record.address_json) == {
+        "city": "Madrid",
+        "state": "Comunidad de Madrid",
+        "country": "España",
+        "country_code": "es",
+    }
 
 
 def test_reverse_request_holds_policy_and_parameters():
@@ -162,7 +208,9 @@ def test_reverse_request_holds_policy_and_parameters():
     query = urllib.parse.parse_qs(request.full_url.split("?", 1)[1])
     assert query["format"] == ["jsonv2"]
     assert query["addressdetails"] == ["1"]
-    assert query["zoom"] == ["10"]
+    # Zoom 14 (aldea/localidad): con 10 la respuesta era solo país/región
+    # (caso de Arcachón: «Francia metropolitana, Francia»).
+    assert query["zoom"] == ["14"]
     assert query["lat"] == ["40.4168"]
     assert query["lon"] == ["-3.7038"]
     assert query["accept-language"] == ["ca"]
@@ -174,9 +222,37 @@ def test_reverse_handles_response_without_hierarchy_parts():
     ).encode()
     client = make_client(FakeURLOpen(body=body))
 
-    place = client.reverse(45.8326, 6.8652)
+    record = client.reverse(45.8326, 6.8652)
 
-    assert place == Place(country="Francia")
+    assert record.place == Place(country="Francia")
+    assert record.display_name == "Mont Blanc"
+    assert json.loads(record.address_json) == {"country": "Francia"}
+
+
+def test_reverse_keeps_only_string_address_values():
+    body = json.dumps(
+        {
+            "display_name": "Rara",
+            "address": {"country": "España", "extra": {"anidada": 1}},
+        }
+    ).encode()
+    client = make_client(FakeURLOpen(body=body))
+
+    record = client.reverse(1.0, 2.0)
+
+    assert json.loads(record.address_json) == {"country": "España"}
+
+
+def test_reverse_without_display_name_leaves_it_none():
+    body = json.dumps(
+        {"address": {"country": "España", "country_code": "es"}}
+    ).encode()
+    client = make_client(FakeURLOpen(body=body))
+
+    record = client.reverse(1.0, 2.0)
+
+    assert record.display_name is None
+    assert record.place.display() == "España"
 
 
 def test_response_without_address_is_not_interpretable():

@@ -31,6 +31,16 @@ sin tocar código.
 
 ## Decisión
 
+> **Revisión (2026-11-09).** La primera geocodificación real dejó a una foto
+> de Arcachón (44.652, -1.198) con solo «Francia»: el `zoom=10` inicial hacía
+> que Nominatim resolviera el punto a la frontera administrativa «Francia
+> metropolitana» y la jerarquía quedara casi vacía. Se revisan aquí tres
+> puntos —el zoom pasa a 14, se guarda toda la información del servicio
+> (``address`` completo y ``display_name``, lo que sustituye la prohibición
+> del JSON crudo) y los grupos del visor se hacen por país + municipio— con
+> un esquema v3 que invalida y vuelve a pedir las celdas resueltas con el
+> zoom antiguo. El resto de la decisión no cambia.
+
 ### 1. Pipeline de fases
 
 `foto-index` es un **pipeline de fases** que se ejecutan en orden dentro de una
@@ -56,17 +66,20 @@ sin tocar código.
 ### 2. Servicio y contrato
 
 - El núcleo define un **contrato propio** en `core/geocoding.py`: el protocolo
-  `Geocoder` recibe coordenadas y devuelve un `Place` normalizado o lanza las
-  excepciones propias (`GeocodingRejectedError` para rechazo/fallo de red,
-  `GeocodingResponseError` para una respuesta no interpretable). El indexador y
-  los tests no conocen HTTP.
+  `Geocoder` recibe coordenadas y devuelve un `PlaceRecord` —la jerarquía
+  normalizada (`Place`) más el `display_name` y el `address` completo del
+  servicio— o lanza las excepciones propias (`GeocodingRejectedError` para
+  rechazo/fallo de red, `GeocodingResponseError` para una respuesta no
+  interpretable). El indexador y los tests no conocen HTTP.
 - La implementación inicial es un cliente Nominatim `reverse` aislado en
   `indexer/geonames.py`, sobre `urllib.request` de la stdlib, sin shell y sin
   dependencias nuevas. Peticiones contra
   `https://nominatim.openstreetmap.org/reverse` con `format=jsonv2`,
-  `addressdetails=1` y **`zoom=10`** (nivel de la jerarquía Nominatim que
-  devuelve país/región/ciudad sin arrastrar calles). El endpoint es
-  configurable para poder apuntar a otra instancia o a un futuro proveedor.
+  `addressdetails=1` y **`zoom=14`** (nivel aldea/localidad de la jerarquía
+  Nominatim: país/región/municipio completos sin números de portal; el zoom
+  10 inicial devolvía solo país/región en celdas costeras — caso de
+  Arcachón). El endpoint es configurable para poder apuntar a otra instancia
+  o a un futuro proveedor.
 - **Throttle siempre activo: máximo 1 petición por segundo**, garantizado con
   `sleep` y reloj monótonicos **inyectables** (probables en tests). Se cumple
   desde la primera petición, no solo tras un rechazo.
@@ -103,19 +116,30 @@ tenga coordenadas leídas y el resto sigue pendiente de metadatos.
 ### 4. Datos de lugar, caché por celda y esquema
 
 - De la respuesta se extrae y normaliza una jerarquía: `country`,
-  `country_code`, región/provincia (`state` en Nominatim) y `city` (con las
-  variantes `city`, `town`, `village`, `municipality`). El formato de
-  visualización es **`Ciudad, País`**; para ordenar y agrupar se usan los
-  campos separados. Un campo ausente se guarda `NULL`, nunca cadena vacía.
+  `country_code`, región/provincia (`state` en Nominatim), localidad `city`
+  (con las variantes `city`, `town`, `village`, `municipality`) y el
+  `municipality` literal del servicio, que es la entidad con la que el visor
+  agrupa. Además se conservan **todos los datos del servicio**: el objeto
+  `address` completo serializado (`address_json`) y la cadena
+  `display_name`, en la celda y en la foto. Lo que no se guarda es el resto
+  del *payload* (`place_id`, `boundingbox`, licencia), que no aporta al
+  visor. Un campo ausente se guarda `NULL`, nunca cadena vacía.
 - **Caché por celda:** las coordenadas se redondean a **3 decimales**
-  (~110 m) y la clave de caché es la pareja redondeada, persistida en la tabla
-  `geocode_cells` como dato derivado. Dos fotos del mismo sitio comparten una
-  petición; una celda ya resuelta no genera HTTP ni siquiera entre pasadas.
-- No se guarda el JSON crudo de la respuesta; solo la jerarquía normalizada.
-- Esquema: **bump de `PRAGMA user_version` a 2** con migración idempotente al
-  abrir: columnas de lugar y `place_status` en `photos` y tabla
-  `geocode_cells`. Un catálogo de una versión más nueva aborta con mensaje
-  claro, como hasta ahora.
+  (~110 m) y la clave de caché es la pareja redondeada, persistida en la
+  tabla `geocode_cells` como dato derivado, junto al **`zoom` con el que se
+  resolvió la celda**. Dos fotos del mismo sitio comparten una petición; una
+  celda ya resuelta **con el zoom actual o más** no genera HTTP ni siquiera
+  entre pasadas; una celda guardada con menos zoom se vuelve a pedir y
+  refresca. Así la revisión del zoom (10 → 14) invalida sola las celdas
+  pobres —como la de Arcachón— sin `--full`.
+- Esquema: **bump de `PRAGMA user_version` a 3** con migración idempotente
+  al abrir: en v2 columnas de lugar y `place_status` en `photos` y tabla
+  `geocode_cells`; en v3 columnas de detalle (`place_municipality`,
+  `place_display_name`, `place_address_json` en `photos`; `municipality`,
+  `display_name`, `address_json` y `zoom` en `geocode_cells`, esta última
+  `NOT NULL DEFAULT 10` para que las celdas previas queden con el zoom con
+  el que se crearon). Un catálogo de una versión más nueva aborta con
+  mensaje claro, como hasta ahora.
 - Respuestas válidas sin parte de la jerarquía (montaña, lugar aislado): la
   foto queda `ok` con los campos ausentes como `NULL`; la presentación las
   tratará como sin ubicación (al final, sin grupo). No se inventan cadenas.
@@ -166,18 +190,26 @@ la geocodificación inversa con OpenStreetMap (activada por defecto en la fase
 No hay telemetría ni llamadas adicionales; el resto del programa sigue sin
 llamar a la red.
 
-### 8. Integración en el visor (decisiones, implementadas en el paso 2)
+### 8. Integración en el visor
 
-- El modelo `Photo` de la UI gana los campos de lugar resueltos y la consulta
-  de carga los incluye. Sin Qt en el SQL ni en las reglas puras.
-- Los campos de lugar entran en `photo_search_text()` (ciudad, región, país),
-  con el estilo casefold/espacios del documento de búsqueda existente.
-- `:sort location`: orden país → región → ciudad (`casefold`, ascendente) con
-  las fotos sin ubicación siempre al final; grupos por ciudad con clave y
-  etiqueta `Ciudad, País` y grupo propio «Sin ubicación» al final. `g m` sigue
-  funcionando desde las coordenadas EXIF y no cambia.
-- El panel de metadatos muestra el lugar resuelto en formato `Ciudad, País`
-  cuando existe; si falta alguna parte, muestra lo disponible.
+- El modelo `Photo` de la UI gana los campos de lugar resueltos —jerarquía
+  normalizada y detalle completo del servicio— y la consulta de carga los
+  incluye. Sin Qt en el SQL ni en las reglas puras.
+- Los campos de lugar entran en `photo_search_text()` (municipio, localidad,
+  región, país), con el estilo casefold/espacios del documento de búsqueda
+  existente.
+- `:sort location`: orden **país → municipio** (`casefold`, ascendente; el
+  municipio es `municipality` y, si no llegó, la localidad o la región) con
+  las fotos sin ubicación siempre al final; grupos por **`country` +
+  `municipality`** con clave compuesta y etiqueta `Municipio, País`, y grupo
+  propio «Sin ubicación» al final. (Revisión: el orden país → región →
+  ciudad inicial dejaba los grupos no contiguos cuando la región faltaba;
+  el orden sigue a los grupos.) `g m` sigue funcionando desde las
+  coordenadas EXIF y no cambia.
+- El panel de metadatos muestra el lugar en formato `Municipio, País` cuando
+  existe; si falta alguna parte, lo disponible; y añade el detalle del
+  `address` completo: calle, comarca, código postal y la cadena
+  `display_name` del servicio.
 
 ## Consecuencias
 
@@ -198,6 +230,8 @@ llamar a la red.
 - La fase `geocode` sale a la red por defecto: hay que poder apagarla sin
   código (hecho con `--skip` y `[geocoding]`), y el ritmo de Nominatim limita a
   ~3 600 fotos nuevas por hora en la primera geocodificación de una biblioteca.
+- Subir el zoom (revisión) obliga a re-pedir una vez las celdas ya resueltas
+  con el zoom anterior; la columna `zoom` de la caché lo hace automático.
 - La geocodificación de celdas sin cobertura (mar) quedará `error` y solo se
   reintentará con `--full`.
 - Dos tablas de historial (`scan_runs` + `run_phases`) en lugar de una.
@@ -212,7 +246,7 @@ llamar a la red.
 | Geocodificar por ruta o por ubicación | El lugar es función del contenido; geocodificar por ruta repetiría peticiones para cada copia. |
 | Peticiones concurrentes o por lotes (`/batch`) | Violan la política de uso de Nominatim y no son parte de esta entrega. |
 | Reintento con backoff ante rechazos | Un 429 pide parar; la reanudación sin repetir peticiones hace innecesario insistir en la misma pasada. |
-| Guardar el JSON crudo de Nominatim | Infla el catálogo y guarda datos que cambian al refinar Nominatim; solo se conserva la jerarquía normalizada. |
+| Guardar el JSON crudo de Nominatim | El *payload* entero (place_id, boundingbox, licencia) no aporta al visor; de la respuesta viajan el `address` completo y el `display_name` (revisión de 2026-11-09). |
 | Métodos de caché en ficheros aparte | La caché por celda es derivada pero estática; en SQLite viaja con el catálogo y se respeta al mover la biblioteca. |
 | Pasadas separadas por fase (varios procesos) | Complica cron/lock y obliga a reabrir el catálogo; el marco de fases dentro de una pasada conserva la garantía de escritor único. |
 | Redes/bibliotecas de geocodificación (SDK) | Dependencias nuevas sin necesidad: `urllib` y JSON de la stdlib bastan. |
@@ -223,9 +257,10 @@ llamar a la red.
 - **Refresco de lugares ya calculados** (p. ej. tras mejorar los datos de
   Nominatim o cambiar `language`): se necesitaría `--full geocode` o un
   indicador de versión de servicio en `geocode_cells`. No se implementa ahora.
-- **Borrado de la caché de celdas** (reparar una celda mal resuelta): hoy exige
-  borrar la fila de `geocode_cells` y lanzar `--full` para volver a pedir;
-  falta una historia cómoda para el usuario.
+- **Borrado de la caché de celdas** (reparar una celda mal resuelta): el
+  `zoom` de la celda da invalidación automática cuando el detalle pedido
+  cambia (hecho en la revisión), pero borrar y re-pedir una celda concreta
+  sigue exigiendo SQL a mano; falta una historia cómoda para el usuario.
 - **Otros proveedores** (geocodificación local sin red, proveedores por lotes):
   el contrato en `core/` los permite sin tocar el indexador.
 - **Fase futura de poda de miniaturas** se apoyará en el marco de fases; su

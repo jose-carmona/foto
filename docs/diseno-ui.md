@@ -163,9 +163,11 @@ ayuda, y `q` cierra el visor o sugiere `Ctrl+q`. Las flechas laterales (`←`,
 
 La ficha agrupa los metadatos de la foto: captura, exposición, archivo y
 ubicación. En esta última, el lugar resuelto por el indexador se muestra en
-formato `Ciudad, País` (con las partes disponibles si falta alguna) y debajo
-las coordenadas EXIF exactas, que son la referencia de `g m`. Sin lugar
-resuelto la ficha no muestra fila alguna añadida.
+formato `Municipio, País` (con las partes disponibles si falta alguna),
+seguido del detalle que guardó el servicio —calle, comarca, código postal y
+la dirección completa— y de las coordenadas EXIF exactas, que son la
+referencia de `g m`. Sin lugar resuelto la ficha no muestra fila alguna
+añadida.
 
 El cursor se mueve al instante, sin esperar a que cargue la miniatura. En los
 extremos de la rejilla no hay salto circular: el cursor se detiene y la barra de
@@ -404,11 +406,12 @@ Reglas de la anatomía:
   la ventana (sin rejilla fija de columnas).
 - La rejilla se agrupa según la ordenación activa. `:sort date` agrupa por año y
   mes, del grupo más reciente al más antiguo; `:sort camera` agrupa por cámara,
-  en orden alfabético. `:sort location` agrupa por ciudad con la etiqueta
-  `Ciudad, País`, en orden país → región → ciudad alfabético ascendente; las
-  fotos sin lugar resuelto quedan al final en `Sin ubicación`. Cada grupo
-  muestra una cabecera y, debajo, sus miniaturas. Las fotos sin fecha o sin
-  cámara quedan al final en `Sin fecha` o `Sin cámara`.
+  en orden alfabético. `:sort location` agrupa por municipio (`country` +
+  `municipality` del servicio) con la etiqueta `Municipio, País`, en orden
+  país → municipio alfabético ascendente; las fotos sin lugar resuelto quedan
+  al final en `Sin ubicación`. Cada grupo muestra una cabecera y, debajo, sus
+  miniaturas. Las fotos sin fecha o sin cámara quedan al final en `Sin fecha`
+  o `Sin cámara`.
   Un filtro oculta las cabeceras cuyos grupos se quedan sin coincidencias.
 - Tamaño de miniatura: 400 × 247 px (proporción áurea). Recorte centrado para
   llenar el recuadro sin deformar la imagen. Sin marco ni borde alrededor de la
