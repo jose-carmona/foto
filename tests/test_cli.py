@@ -55,11 +55,13 @@ def test_cli_indexes_and_emits_valid_json(tmp_path, capsys):
 
     assert code == 0
     assert summary["status"] == "ok"
-    assert summary["added"] == 1
-    assert summary["photos_total"] == 1
-    assert summary["metadata_pending"] == 1
-    assert summary["hashed_files"] == 1
-    assert summary["metadata_extracted"] == 0
+    assert summary["phases"]["scan"]["added"] == 1
+    assert summary["totals"]["photos"] == 1
+    assert summary["totals"]["metadata_pending"] == 1
+    assert summary["phases"]["scan"]["hashed_files"] == 1
+    assert summary["phases"]["scan"]["metadata_extracted"] == 0
+    assert summary["phases"]["geocode"]["status"] == "ok"
+    assert summary["phases"]["geocode"]["candidates"] == 0
     assert (root / ".foto" / "library.toml").is_file()
     assert (root / ".foto" / "catalog.sqlite").is_file()
     assert next(iter(read_photos(root).values()))["metadata_status"] == "pending"
@@ -224,7 +226,7 @@ def test_cli_partial_scan_exits_1(tmp_path, monkeypatch, capsys):
 
     assert code == 1
     assert summary["status"] == "partial"
-    assert summary["missing"] == 0
+    assert summary["phases"]["scan"]["missing"] == 0
 
 
 def test_cli_dry_run_does_not_create_anything(tmp_path, capsys):
@@ -237,7 +239,7 @@ def test_cli_dry_run_does_not_create_anything(tmp_path, capsys):
 
     assert code == 0
     assert summary["dry_run"] is True
-    assert summary["added"] == 1
+    assert summary["phases"]["scan"]["added"] == 1
     assert not (root / ".foto").exists()
 
 
@@ -285,3 +287,146 @@ def test_importing_indexer_does_not_import_qt():
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "False"
+
+
+# ----------------------------------------------------------------------
+# Pipeline de fases: --skip, geocodificación y --dry-run
+# ----------------------------------------------------------------------
+def test_skip_rejects_unknown_phase_with_exit_code_2(capsys):
+    with pytest.raises(SystemExit) as raised:
+        main(["--library", "/no-importa", "--skip", "minimizar"])
+
+    assert raised.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
+def test_skip_geocode_leaves_text_summary_noting_it(tmp_path, capsys):
+    root = tmp_path / "biblioteca"
+    write_image(root / "a.jpg", b"a")
+
+    code = main(["--library", str(root), "--skip", "geocode"])
+
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "geocode: omitida" in output
+    assert "--skip geocode" in output
+
+
+def test_skip_scan_and_geocode_run_no_phases(tmp_path, capsys):
+    root = tmp_path / "biblioteca"
+    write_image(root / "a.jpg", b"a")
+
+    code = main(
+        ["--library", str(root), "--skip", "scan", "--skip", "geocode", "--json"]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert summary["phases"]["scan"]["status"] == "skipped"
+    assert summary["phases"]["geocode"]["status"] == "skipped"
+    assert summary["phases"]["scan"]["scanned"] == 0
+
+
+def test_geocoding_disabled_by_config_is_skipped(tmp_path, capsys):
+    root = tmp_path / "biblioteca"
+    write_image(root / "a.jpg", b"a")
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'version = 1\n\n[library]\npath = "{root.as_posix()}"\n'
+        f"\n[geocoding]\nenabled = false\n",
+        encoding="utf-8",
+    )
+
+    code = main(["--config", str(config)])
+    output = capsys.readouterr()
+
+    assert code == 0
+    assert "geocode: omitida" in output.out
+    assert "enabled = false" in output.err
+
+
+def test_invalid_geocoding_config_exits_2(tmp_path, capsys):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "[geocoding]\nrequest_interval_seconds = -1\n", encoding="utf-8"
+    )
+
+    code = main(["--library", str(tmp_path / "no-importa"), "--config", str(config)])
+
+    assert code == 2
+    assert "request_interval_seconds" in capsys.readouterr().err
+
+
+def test_dry_run_reports_geocode_candidates_without_network(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "biblioteca"
+    write_image(root / "a.jpg", b"a")
+    monkeypatch.setattr(
+        "foto.indexer.cli.ExifToolExtractor.from_environment",
+        classmethod(lambda cls: _StaticExtractor()),
+    )
+    monkeypatch.setattr(
+        "foto.indexer.cli.NominatimGeocoder", lambda *a, **kw: _FailingGeocoder()
+    )
+
+    code = main(["--library", str(root), "--dry-run"])
+
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "geocode: candidatas=1" in output
+    assert "celdas_a_pedir=1" in output
+    assert "sin red" in output
+
+
+def test_cli_run_geocodes_with_injected_service(tmp_path, capsys, monkeypatch):
+    root = tmp_path / "biblioteca"
+    write_image(root / "a.jpg", b"a")
+    monkeypatch.setattr(
+        "foto.indexer.cli.ExifToolExtractor.from_environment",
+        classmethod(lambda cls: _StaticExtractor()),
+    )
+    geocoder = _StubGeocoder()
+    monkeypatch.setattr("foto.indexer.cli.NominatimGeocoder", lambda *a, **kw: geocoder)
+
+    code = main(["--library", str(root), "--json"])
+    summary = json.loads(capsys.readouterr().out)
+    photos = read_photos(root)
+
+    assert code == 0
+    assert summary["phases"]["geocode"]["geocoded_ok"] == 1
+    assert summary["phases"]["geocode"]["http_requests"] == 1
+    assert next(iter(photos.values()))["place_city"] == "Madrid"
+
+
+class _StaticExtractor:
+    """Extractor sin exiftool que devuelve metadatos fijos con GPS."""
+
+    def extract_batch(self, paths):
+        from foto.core.metadata import ExtractionOutcome, PhotoMetadata
+
+        metadata = PhotoMetadata(
+            file_type="JPEG",
+            gps_latitude=40.4168,
+            gps_longitude=-3.7038,
+        )
+        return {path: ExtractionOutcome(metadata=metadata) for path in paths}
+
+
+class _FailingGeocoder:
+    """Geocodificador de la CLI de dry-run: no debe llamarse nunca."""
+
+    def reverse(self, latitude, longitude):
+        raise AssertionError("La simulación no debe tocar la red")
+
+
+class _StubGeocoder:
+    """Geocodificador fijo inyectado en la CLI."""
+
+    from foto.core.geocoding import Place
+
+    def __init__(self):
+        from tests.test_geocoding import make_place
+
+        self._place = make_place()
+
+    def reverse(self, latitude, longitude):
+        return self._place

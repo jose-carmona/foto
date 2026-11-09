@@ -71,5 +71,5 @@ historial, `Enter` ejecuta y `Esc` cancela.
 | Comando | Acción |
 | --- | --- |
 | `:q` / `:quit` | Salir de la aplicación |
-| `:sort` date / camera | Ordenar por fecha / cámara |
+| `:sort` date / camera / location | Ordenar por fecha / cámara / ubicación |
 | `:help` | Abrir esta ayuda |

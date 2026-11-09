@@ -17,9 +17,10 @@ from foto.core.errors import (
     LockBusyError,
     LockError,
 )
-from foto.core.indexing import Indexer, IndexingOptions, IndexingSummary
+from foto.core.indexing import INDEXING_PHASES, Indexer, IndexingOptions, IndexingSummary
+from foto.indexer.geonames import NominatimGeocoder, ReverseGeocoderConfig
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
-from foto.storage.config import ConfigError
+from foto.storage.config import ConfigError, load_config
 from foto.storage.exiftool import ExifToolExtractor
 from foto.storage.library import ensure_library, foto_dir
 from foto.storage.lock import LOCK_FILE_NAME, IndexerLock
@@ -34,17 +35,24 @@ precedencia de la biblioteca:
   3. [library].path de config.toml
 Para el fichero de configuración: --config PATH, FOTO_CONFIG o platformdirs.
 
+fases del pipeline (todas por defecto); --skip FASE las excluye:
+  scan    recorrido del filesystem, hashing, metadatos y ausencias
+  geocode geocodificación inversa (OpenStreetMap/Nominatim) de las fotos con GPS
+
 códigos de salida:
   0  éxito, con o sin cambios
-  1  error no fatal, recorrido parcial o errores de ficheros
+  1  error no fatal, recorrido parcial, errores de ficheros o fase detenida
   2  configuración inválida, biblioteca inexistente o esquema incompatible
   3  otro indexador tiene el lock
 
 ejemplos:
   uv run foto-index --library ~/Fotos
   uv run foto-index --library ~/Fotos --json
+  uv run foto-index --library ~/Fotos --skip geocode
   uv run foto-index --library ~/Fotos --prune --prune-after 30
 """
+
+ALL_PHASES = tuple(INDEXING_PHASES)
 
 
 def _non_negative_int(value: str) -> int:
@@ -82,6 +90,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dry-run", action="store_true", help="no escribe nada en disco")
     parser.add_argument(
+        "--skip",
+        metavar="FASE",
+        action="append",
+        choices=list(ALL_PHASES),
+        default=[],
+        help=f"excluye una fase; repetible: {', '.join(ALL_PHASES)}",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="escribe el resumen en JSON por stdout"
     )
     verbosity = parser.add_mutually_exclusive_group()
@@ -116,9 +132,8 @@ def _emit_summary(summary: IndexingSummary, args: argparse.Namespace) -> None:
         print(json.dumps(summary.to_dict(), ensure_ascii=False, sort_keys=True))
         return
 
-    mode = summary.mode
     prefix = "Simulación" if summary.dry_run else "Indexado"
-    print(f"{prefix} {mode}: {summary.status}")
+    print(f"{prefix} {summary.mode}: {summary.status}")
     print(
         "  "
         f"escaneados={summary.scanned} sin_cambios={summary.unchanged} "
@@ -143,8 +158,31 @@ def _emit_summary(summary: IndexingSummary, args: argparse.Namespace) -> None:
             f"limpiadas={summary.pruned_locations} ubicaciones y "
             f"{summary.pruned_photos} fotos"
         )
+    _emit_geocode_phase(summary)
     if summary.partial_reason:
         print(f"  aviso: {summary.partial_reason}")
+
+
+def _emit_geocode_phase(summary: IndexingSummary) -> None:
+    """Resumen de la fase geocode en una línea, según cómo terminó."""
+    geocode = summary.geocode
+    if geocode.dry_run:
+        print(
+            "  "
+            f"geocode: candidatas={geocode.candidates} "
+            f"celdas_a_pedir={geocode.http_requests} (sin red)"
+        )
+        return
+    if summary.geocode.status == "skipped":
+        reason = summary.geocode.reason or "excluida con --skip geocode"
+        print(f"  geocode: omitida ({reason})")
+        return
+    print(
+        "  "
+        f"geocode: candidatas={geocode.candidates} geocodificadas={geocode.geocoded_ok} "
+        f"con_error={geocode.geocoded_error} cacheadas={geocode.cache_hits} "
+        f"peticiones={geocode.http_requests}"
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -152,6 +190,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     _configure_logging(args)
+
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        logger.error("Configuración inválida: %s", exc)
+        return 2
 
     try:
         root = _resolve_library(args)
@@ -218,6 +262,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "y los metadatos quedarán pendientes"
             )
 
+        skip = set(args.skip)
+        geocoder = None
+        if config.geocoding.enabled and "geocode" not in skip:
+            geocoder = NominatimGeocoder(
+                ReverseGeocoderConfig(
+                    endpoint=config.geocoding.endpoint,
+                    user_agent=config.geocoding.user_agent,
+                    language=config.geocoding.language,
+                    request_interval_seconds=config.geocoding.request_interval_seconds,
+                    timeout_seconds=config.geocoding.timeout_seconds,
+                )
+            )
+        elif "geocode" not in skip:
+            skip.add("geocode")
+            logger.info(
+                "Geocodificación desactivada en la configuración "
+                "([geocoding] enabled = false)"
+            )
+
         indexer = Indexer(
             catalog,
             root,
@@ -226,8 +289,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prune=args.prune,
                 prune_after_days=args.prune_after,
                 dry_run=args.dry_run,
+                skip=frozenset(skip),
             ),
             extractor=extractor,
+            geocoder=geocoder,
         )
         summary = indexer.run()
         _emit_summary(summary, args)

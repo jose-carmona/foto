@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from foto.core.geocoding import Place, cell_for
 from foto.core.hashing import hash_bytes
 from foto.core.indexing import Indexer, IndexingOptions, IndexingSummary
 from foto.core.metadata import ExtractionOutcome, PhotoMetadata
@@ -103,12 +104,62 @@ class FakeExtractor:
         self.calls.clear()
 
 
+class FakeGeocoder:
+    """Geocodificador determinista inyectable, sin red.
+
+    ``reverse`` registra cada celda pedida y responde con:
+
+    - ``results``: ``Place`` explícito por clave de celda (tupla lat/lon ya
+      redondeada); incluye ``Place()`` parcialmente vacío.
+    - ``default_place``: ``Place`` para las celdas que no están en ``results``.
+    - ``errors``: cola de excepciones que se lanzan en orden antes de
+      responder; permite simular rechazos (``GeocodingRejectedError``) y
+      respuestas no interpretables (``GeocodingResponseError``).
+    """
+
+    def __init__(
+        self,
+        *,
+        default_place: Place | None = None,
+        results: Mapping[tuple[float, float], Place] | None = None,
+        errors: Sequence[Exception] | None = None,
+    ) -> None:
+        self.default_place = default_place or Place(
+            country="España",
+            country_code="ES",
+            state="Comunidad de Madrid",
+            city="Madrid",
+        )
+        self.results = dict(results or {})
+        self.errors = list(errors or [])
+        self.calls: list[tuple[float, float]] = []
+
+    def reset(self) -> None:
+        self.calls.clear()
+        self.errors.clear()
+
+    def reverse(self, latitude: float, longitude: float) -> Place:
+        latitude = round(latitude, 6)
+        longitude = round(longitude, 6)
+        if self.errors:
+            raise self.errors.pop(0)
+        self.calls.append((latitude, longitude))
+        place = self.results.get((latitude, longitude))
+        if place is None:
+            cell = cell_for(latitude, longitude)
+            place = self.results.get((cell.latitude, cell.longitude))
+        if place is None:
+            place = self.default_place
+        return place
+
+
 def run_index(
     root: Path,
     *,
     options: IndexingOptions | None = None,
     hasher: CountingHasher | None = None,
     extractor: FakeExtractor | None = None,
+    geocoder: FakeGeocoder | None = None,
     catalog: Catalog | None = None,
 ) -> IndexingSummary:
     """Ejecuta el indexador sobre una biblioteca temporal."""
@@ -122,6 +173,7 @@ def run_index(
             options=options or IndexingOptions(),
             hasher=hasher,
             extractor=extractor,
+            geocoder=geocoder,
         ).run()
     finally:
         if own_catalog:

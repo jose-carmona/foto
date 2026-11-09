@@ -31,6 +31,10 @@ class CatalogPhoto:
     location: str
     gps_latitude: float | None = None
     gps_longitude: float | None = None
+    place_country: str | None = None
+    place_country_code: str | None = None
+    place_state: str | None = None
+    place_city: str | None = None
     favorite: bool = False
     path: Path | None = None
     canonical_rel_path: str | None = None
@@ -188,6 +192,10 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
             location=_format_location(canonical["gps_latitude"], canonical["gps_longitude"]),
             gps_latitude=canonical["gps_latitude"],
             gps_longitude=canonical["gps_longitude"],
+            place_country=canonical["place_country"],
+            place_country_code=canonical["place_country_code"],
+            place_state=canonical["place_state"],
+            place_city=canonical["place_city"],
             path=full_path,
             canonical_rel_path=str(canonical["rel_path"]),
             other_locations=tuple(str(r["rel_path"]) for r in others),

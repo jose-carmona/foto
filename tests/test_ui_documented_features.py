@@ -93,6 +93,66 @@ CAMERA_PHOTOS = [
     _photo("c.jpg", "2024-05-01 08:00", camera="Canon EOS R5"),
 ]
 
+# Dos ciudades de países distintos más una foto sin lugar resuelto: con
+# ``:sort location`` el grupo de París va primero (Francia < España), luego
+# Barcelona, y la sin ubicación queda al final en su grupo propio.
+LOCATION_PHOTOS = [
+    Photo(
+        name="paris.jpg",
+        taken="2024-05-01 08:00",
+        camera="Nikon Z 6",
+        lens="Nikkor 35mm",
+        focal="35 mm",
+        aperture="f/1,8",
+        shutter="1/250 s",
+        iso="200",
+        folder="2024",
+        fmt="JPEG",
+        dimensions="6000 × 4000",
+        size="2 MB",
+        location="",
+        place_country="Francia",
+        place_country_code="FR",
+        place_city="París",
+        photo_hash="sha256:" + "1" * 64,
+    ),
+    Photo(
+        name="barcelona.jpg",
+        taken="2024-05-02 08:00",
+        camera="Nikon Z 6",
+        lens="Nikkor 35mm",
+        focal="35 mm",
+        aperture="f/1,8",
+        shutter="1/250 s",
+        iso="200",
+        folder="2024",
+        fmt="JPEG",
+        dimensions="6000 × 4000",
+        size="2 MB",
+        location="",
+        place_country="España",
+        place_country_code="ES",
+        place_state="Cataluña",
+        place_city="Barcelona",
+        photo_hash="sha256:" + "2" * 64,
+    ),
+    Photo(
+        name="sin-lugar.jpg",
+        taken="2024-05-03 08:00",
+        camera="Nikon Z 6",
+        lens="Nikkor 35mm",
+        focal="35 mm",
+        aperture="f/1,8",
+        shutter="1/250 s",
+        iso="200",
+        folder="2024",
+        fmt="JPEG",
+        dimensions="6000 × 4000",
+        size="2 MB",
+        location="",
+        photo_hash="sha256:" + "3" * 64,
+    ),
+]
 
 @pytest.fixture(scope="module")
 def qapp():
@@ -270,6 +330,29 @@ def test_sort_camera_command_reorders_the_grid(qapp):
     assert window._sort_key == "camera"
     # Canon EOS R5 agrupa primero (orden alfabético).
     assert window._visible_keys_cache == ["a.jpg", "c.jpg", "b.jpg"]
+
+
+def test_sort_location_command_reorders_the_grid_by_place(qapp):
+    window = _make_window(qapp, LOCATION_PHOTOS)
+    assert window._sort_key == "date"
+
+    window._run_command("sort location")
+
+    assert window._sort_key == "location"
+    # País → región → ciudad ascendente: «españa» antes que «francia» y, al
+    # final, el grupo propio «Sin ubicación».
+    assert window._visible_keys_cache == ["barcelona.jpg", "paris.jpg", "sin-lugar.jpg"]
+
+    # La primera cabecera de grupo lleva el rótulo «Ciudad, País».
+    assert window.grid.item(0).text() == "Barcelona, España"
+
+
+def test_sort_unknown_key_reports_the_documented_usage(qapp):
+    window = _make_window(qapp, CAMERA_PHOTOS)
+
+    window._run_command("sort inventado")
+
+    assert "date | camera | location" in window.status.message_label.text()
 
 
 def test_help_command_toggles_the_overlay(qapp):

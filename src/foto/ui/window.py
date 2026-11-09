@@ -1068,7 +1068,7 @@ class PhotoWindow(QMainWindow):
             if key in SORT_KEYS:
                 self._sort_grid(key)
                 return
-            self.status.show_error("uso: :sort date | camera")
+            self.status.show_error("uso: :sort date | camera | location")
             return
         self.status.show_error(
             f"comando desconocido: {command} · :help para ver los comandos"

@@ -27,13 +27,21 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   handler. Todos son módulos sin Qt que la ventana consume.
 - Indexador `foto-index` completo en `src/foto/indexer/` + `core/` + `storage/`:
   catálogo SQLite incremental, hashes SHA-256 de contenido, rutas relativas,
-  reconciliación de ausencias, `exiftool` opcional y lock de escritor único.
+  reconciliación de ausencias, `exiftool` opcional y lock de escritor único. Es
+  un **pipeline de fases** (`scan` y `geocode`, [ADR 0005](docs/adr/0005-fases-y-geocodificacion.md)):
+  la fase `geocode` geocodifica en inverso con Nominatim las fotos con GPS y
+  sin lugar (`place_status`), con caché por celda de 3 decimales, throttle de
+  1 petición/segundo y parada por rechazo con reanudación. Para hacerla correr
+  los tests, el servicio es inyectable (`core/geocoding.py`) y sin red.
 - El catálogo vive en `<fototeca>/.foto/catalog.sqlite` y es reconstruible. El
   indexador no importa Qt.
 - El visor **consume el catálogo** (`ADR 0003`): lee solo desde
   `<fototeca>/.foto/catalog.sqlite` (ubicaciones `present`). Si no existe el
   catálogo, la app avisa y se cierra. Las búsquedas y ordenaciones se hacen
-  contra el índice. `foto-index` es independiente (CLI/cron/systemd).
+  contra el índice, incluida la búsqueda por lugar y el orden
+  `:sort date`/`camera`/`location` con grupos por `Ciudad, País`; el lugar
+  llega de las columnas de `place_*` que la fase `geocode` llenó. `foto-index`
+  es independiente (CLI/cron/systemd).
 - La imagen grande del visor se decodifica en segundo plano. Las miniaturas
   visibles de la rejilla se generan en un pool de trabajo, pidiendo al lector
   una decodificación ya escalada, y se guardan en una caché persistente en
@@ -55,8 +63,11 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
    SQLite o a un nuevo fichero derivado (miniaturas, caché).
 2. **XMP es la fuente de verdad.** SQLite es un índice reconstruible; ningún
    dato debe existir solo en la base de datos.
-3. **Sin red por defecto.** La única salida permitida es la copia de seguridad a
-   S3, y solo si el usuario la ha configurado. Nada de telemetría, analítica ni
+3. **Sin red por defecto.** Las únicas salidas a la red son la copia de
+   seguridad a S3 (cuando exista, optativa) y la geocodificación inversa de
+   las fotos con GPS contra OpenStreetMap en la fase `geocode` del indexador,
+   activada por defecto y desactivable sin tocar código (`--skip geocode` o
+   `[geocoding] enabled = false`). Nada de telemetría, analítica ni otros
    servicios externos.
 4. **Multiplataforma real.** Omarchy (Arch + Hyprland/Wayland) y macOS son
    objetivos de primera clase. Aísla cualquier diferencia de sistema en
@@ -93,8 +104,8 @@ foto/
 │   ├── adr/          # decisiones de arquitectura
 │   └── diseno-ui.md  # reglas de interfaz
 ├── src/foto/
-│   ├── core/         # hashing, scanner, metadatos, indexado
-│   ├── indexer/      # CLI foto-index y __main__
+│   ├── core/         # hashing, scanner, metadatos, geocoding, indexado
+│   ├── indexer/      # CLI foto-index, cliente Nominatim y __main__
 │   ├── storage/      # catálogo SQLite, exiftool, lock y config TOML
 │   └── ui/           # ventana orquestadora, widgets (rejilla, visor,
 │                     # paneles, ayuda), tokens y QSS de widgets, comandos,
@@ -149,7 +160,9 @@ Decisión completa en `docs/adr/0001-configuracion.md`. Resumen operativo:
 
 ## Indexador y catálogo
 
-Decisión completa en `docs/adr/0002-indexado.md`. Resumen operativo:
+Decisión completa en `docs/adr/0002-indexado.md`.
+El marco de fases y la geocodificación, en `docs/adr/0005-fases-y-geocodificacion.md`.
+Resumen operativo:
 
 - **Identidad:** `sha256:<64 hex>` del contenido. Una fila en `photos` por hash y
   N filas en `locations` por ruta relativa POSIX.
@@ -164,6 +177,11 @@ Decisión completa en `docs/adr/0002-indexado.md`. Resumen operativo:
   borra filas del catálogo.
 - **Metadatos:** EXIF de la imagen, normalizados; `exiftool` es opcional, de solo
   lectura, sin shell y por lotes. Sin él quedan `pending`.
+- **Fases:** una pasada ejecuta `scan` y después `geocode`; `--skip`
+  excluye fases y cada fase se registra en `run_phases` con estado y
+  contadores. La geocodificación (`geocode`) consulta Nominatim con un
+  User-Agent propio y como máximo 1 petición por segundo; ante un rechazo se
+  detiene sin marcar error, reanudando en la siguiente pasada.
 - **Concurrencia:** WAL, `foreign_keys=ON`, `busy_timeout` y lock exclusivo en
   `.foto/index.lock`. Un solo escritor; el futuro lector no debe bloquearse.
 - **Sin Qt:** `core/`, `storage/` e `indexer/` no importan `foto.ui` ni PySide6.

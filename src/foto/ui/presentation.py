@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from foto.core.geocoding import Place
 from foto.ui.models import Photo
 
 
@@ -24,13 +25,37 @@ def photo_accessible_name(photo: Photo) -> str:
     return ", ".join(parts)
 
 
+def photo_place(photo: Photo) -> Place:
+    """Lugar resuelto por el indexador como ``Place`` normalizado.
+
+    Los partes que el catálogo no resolvió llegan como ``None``; las cadenas
+    vacías se tratan como ausentes para que nunca se inventen nombres.
+    """
+    return Place(
+        country=photo.place_country or None,
+        country_code=photo.place_country_code or None,
+        state=photo.place_state or None,
+        city=photo.place_city or None,
+    )
+
+
+def photo_location_display(photo: Photo) -> str:
+    """Formato de visualización del lugar: ``Ciudad, País`` con lo disponible.
+
+    ``""`` cuando la foto no tiene lugar resuelto: ni grupo ni campo en el
+    panel, igual que con los metadatos ausentes.
+    """
+    return photo_place(photo).display() or ""
+
+
 def photo_search_text(photo: Photo) -> str:
     """Documento de búsqueda normalizado, una entrada por foto (V03).
 
     Examina nombre, ruta relativa (carpeta y ubicación canónica), réplicas,
-    cámara, objetivo, tipo, fecha y el resto de campos indexados que el
-    catálogo aporta al modelo de UI. El filtrado es en memoria, contra este
-    documento, sin volver a recorrer el filesystem (ADR 0003).
+    cámara, objetivo, tipo, fecha, el lugar resuelto (ciudad, región y país)
+    y el resto de campos indexados que el catálogo aporta al modelo de UI. El
+    filtrado es en memoria, contra este documento, sin volver a recorrer el
+    filesystem (ADR 0003).
     """
     parts = (
         photo.name,
@@ -43,6 +68,9 @@ def photo_search_text(photo: Photo) -> str:
         photo.iso,
         photo.folder,
         photo.fmt,
+        photo.place_city or "",
+        photo.place_state or "",
+        photo.place_country or "",
         photo.location,
         photo.canonical_rel_path or "",
         " ".join(photo.other_locations),
@@ -55,7 +83,7 @@ def photo_search_text(photo: Photo) -> str:
 # Orden y grupos
 # ---------------------------------------------------------------------------
 DEFAULT_SORT = "date"
-SORT_KEYS = ("date", "camera")
+SORT_KEYS = ("date", "camera", "location")
 
 MONTH_NAMES = (
     "enero",
@@ -73,18 +101,42 @@ MONTH_NAMES = (
 )
 
 
-def photo_sort_value(photo: Photo, key: str) -> tuple[bool, str]:
-    """Clave de ordenación; las fotos sin dato quedan siempre al final."""
+def _location_parts(place: Place) -> tuple[str, str, str]:
+    """Partes del lugar para ordenar y agrupar: país, región y ciudad.
+
+    Casefolded y con ``""`` donde falta la parte, en la jerarquía
+    país → región (``state`` en Nominatim) → ciudad (ADR 0005).
+    """
+    return (
+        (place.country or "").casefold(),
+        (place.state or "").casefold(),
+        (place.city or "").casefold(),
+    )
+
+
+def photo_sort_value(photo: Photo, key: str) -> tuple[bool, object]:
+    """Clave de ordenación; las fotos sin dato quedan siempre al final.
+
+    ``location`` ordena país → región → ciudad (casefold, ascendente) y el
+    segundo elemento es una tupla con las partes del lugar; la fotos sin
+    lugar alguno quedan al final por el primer elemento.
+    """
     if key == "camera":
         camera = photo.camera.strip().casefold()
         return (not camera, camera)
+    if key == "location":
+        place = photo_place(photo)
+        empty = ("", "", "")
+        if place.display() is None:
+            return (True, empty)
+        return (False, _location_parts(place))
     taken = photo.taken.strip()
     # Con reverse=True, True ordena antes: las fotos con fecha van primero.
     return (bool(taken), taken)
 
 
 def sorted_photos(photos: list[Photo], key: str) -> list[Photo]:
-    """Ordena por fecha (más nueva primero) o cámara; desempata por nombre."""
+    """Ordena por fecha (más nueva primero), cámara o lugar; desempata por nombre."""
     ordered = sorted(photos, key=lambda photo: photo.name.casefold())
     ordered.sort(
         key=lambda photo: photo_sort_value(photo, key),
@@ -100,6 +152,15 @@ def photo_group(photo: Photo, key: str) -> tuple[str, str]:
         if not camera:
             return "", "Sin cámara"
         return camera.casefold(), camera
+
+    if key == "location":
+        place = photo_place(photo)
+        label = place.display()
+        if label is None:
+            return "", "Sin ubicación"
+        # La etiqueta agrupa los mismos nombres de ciudad de distintos
+        # estados o países; la clave lleva las tres partes separadas.
+        return "\u001f".join(_location_parts(place)), label
 
     taken = photo.taken.strip()
     if not taken:

@@ -27,6 +27,25 @@ class MetadataError(IndexingError):
     """Error no recuperable del extractor de metadatos."""
 
 
+class GeocodingError(IndexingError):
+    """Error de la fase de geocodificación inversa."""
+
+
+class GeocodingRejectedError(GeocodingError):
+    """El servicio rechazó la petición (o la red no respondió).
+
+    La fase de geocodificación se detiene en el acto sin marcar error en
+    ninguna foto: lo pendiente se retoma en la siguiente pasada.
+    """
+
+
+class GeocodingResponseError(GeocodingError):
+    """Respuesta no interpretable o vacía para una foto concreta.
+
+    Se marca esa foto como ``error`` y la fase continúa con el resto.
+    """
+
+
 class CatalogError(FotoError):
     """Error del catálogo SQLite."""
 

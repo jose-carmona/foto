@@ -10,6 +10,7 @@ import sqlite3
 
 import pytest
 
+from foto.core.geocoding import Place
 from foto.storage.catalog import Catalog
 from foto.storage.library import ensure_library
 from foto.ui.app import load_photos
@@ -34,6 +35,41 @@ def _seed_catalog(root, photo_hash: str) -> None:
         catalog.commit()
     finally:
         catalog.close()
+
+
+def test_ui_loads_the_resolved_place_fields(tmp_path):
+    root = tmp_path / "biblioteca"
+    write_image(root / "2024" / "una.jpg", b"visibles")
+    ensure_library(root)
+    photo_hash = "sha256:" + "d" * 64
+    catalog = Catalog.open(root / ".foto" / "catalog.sqlite")
+    try:
+        catalog.insert_photo(photo_hash, ".jpg", "JPEG", NOW)
+        catalog.insert_location(
+            rel_path="2024/una.jpg",
+            photo_hash=photo_hash,
+            size=5,
+            mtime_ns=1,
+            inode=1,
+            device=1,
+            now=NOW,
+        )
+        catalog.update_place(
+            photo_hash,
+            Place(country="España", country_code="ES", state="Cataluña", city="Barcelona"),
+            NOW,
+        )
+        catalog.commit()
+    finally:
+        catalog.close()
+
+    photos = load_photos(root)
+
+    assert len(photos) == 1
+    assert photos[0].place_country == "España"
+    assert photos[0].place_country_code == "ES"
+    assert photos[0].place_state == "Cataluña"
+    assert photos[0].place_city == "Barcelona"
 
 
 def test_ui_loads_photos_from_an_existing_catalog(tmp_path):

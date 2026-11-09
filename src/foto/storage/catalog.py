@@ -10,11 +10,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from foto.core.errors import CatalogError, CatalogVersionError
+from foto.core.geocoding import Place
 from foto.core.metadata import PhotoMetadata
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CATALOG_FILE_NAME = "catalog.sqlite"
 
 SCHEMA_V1 = """
@@ -76,6 +77,49 @@ CREATE TABLE IF NOT EXISTS scan_runs (
 );
 """
 
+# Fases del historial de la pasada y caché por celda del lugar (ver ADR 0005).
+SCHEMA_V2_TABLES = """
+CREATE TABLE IF NOT EXISTS geocode_cells (
+    latitude      REAL NOT NULL,
+    longitude     REAL NOT NULL,
+    country       TEXT,
+    country_code  TEXT,
+    state         TEXT,
+    city          TEXT,
+    fetched_at    TEXT NOT NULL,
+    PRIMARY KEY (latitude, longitude)
+);
+
+CREATE TABLE IF NOT EXISTS run_phases (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        INTEGER NOT NULL REFERENCES scan_runs(id),
+    phase         TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('ok', 'partial', 'skipped', 'error')),
+    reason        TEXT,
+    candidates    INTEGER,
+    processed     INTEGER,
+    errors        INTEGER,
+    cache_hits    INTEGER,
+    http_requests INTEGER,
+    recorded_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS run_phases_run_idx ON run_phases(run_id);
+"""
+
+# Columnas de lugar y estado de geocodificación añadidas a ``photos`` en v2.
+PLACE_COLUMNS_V2 = (
+    ("place_status",
+     ("TEXT NOT NULL DEFAULT 'pending' CHECK (place_status IN "
+      "('none', 'pending', 'ok', 'error'))")),
+    ("place_error", "TEXT"),
+    ("place_country", "TEXT"),
+    ("place_country_code", "TEXT"),
+    ("place_state", "TEXT"),
+    ("place_city", "TEXT"),
+    ("place_updated_at", "TEXT"),
+)
+
 
 @dataclass(frozen=True)
 class LocationRow:
@@ -106,6 +150,16 @@ class CatalogCounts:
     locations: int
     duplicate_photos: int
     metadata_pending: int
+    place_pending: int
+
+
+@dataclass(frozen=True)
+class GeocodeTarget:
+    """Foto con GPS pendiente de geocodificar."""
+
+    hash: str
+    latitude: float
+    longitude: float
 
 
 class Catalog:
@@ -233,12 +287,35 @@ class Catalog:
             return
 
         try:
-            if version < 1:
-                self._conn.executescript(SCHEMA_V1)
+            if version < 2:
+                self._migrate_to_v2()
                 self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 self._conn.commit()
         except sqlite3.Error as exc:
             raise CatalogError(f"No se pudo aplicar la migración del catálogo: {exc}") from exc
+
+    def _migrate_to_v2(self) -> None:
+        """Aplica la migración a v2: esquema base, columnas de lugar y tablas.
+
+        Idempotente: sirve tanto para un catálogo vacío como para uno real
+        de la versión 1.
+        """
+        tables = {
+            str(row[0])
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if "photos" not in tables:
+            self._conn.executescript(SCHEMA_V1)
+        existing = {
+            str(row[1])
+            for row in self._conn.execute("PRAGMA table_info(photos)")
+        }
+        for name, definition in PLACE_COLUMNS_V2:
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE photos ADD COLUMN {name} {definition}")
+        self._conn.executescript(SCHEMA_V2_TABLES)
 
     # ------------------------------------------------------------------
     # Utilidades de conexión
@@ -455,11 +532,20 @@ class Catalog:
         ]
 
     def update_metadata(self, photo_hash: str, metadata: PhotoMetadata, now: str) -> None:
+        """Guarda metadatos y corrige el estado del lugar.
+
+        Con coordenadas GPS el lugar pasa a ``pending`` si aún no está
+        resuelto; sin coordenadas queda ``none``. Un ``ok`` nunca se degrada.
+        """
         self._conn.execute(
             "UPDATE photos SET file_type = ?, width = ?, height = ?, captured_at = ?, "
             "camera_make = ?, camera_model = ?, lens_model = ?, iso = ?, f_number = ?, "
             "exposure_time = ?, focal_length = ?, gps_latitude = ?, gps_longitude = ?, "
             "orientation = ?, metadata_status = 'ok', metadata_error = NULL, "
+            "place_status = CASE "
+            "  WHEN ? IS NULL AND ? IS NULL AND place_status = 'pending' THEN 'none' "
+            "  WHEN ? IS NOT NULL AND ? IS NOT NULL AND place_status = 'none' THEN 'pending' "
+            "  ELSE place_status END, "
             "metadata_updated_at = ?, updated_at = ? WHERE hash = ?",
             (
                 metadata.file_type,
@@ -476,6 +562,10 @@ class Catalog:
                 metadata.gps_latitude,
                 metadata.gps_longitude,
                 metadata.orientation,
+                metadata.gps_latitude,
+                metadata.gps_longitude,
+                metadata.gps_latitude,
+                metadata.gps_longitude,
                 now,
                 now,
                 photo_hash,
@@ -488,6 +578,130 @@ class Catalog:
             "metadata_updated_at = ?, updated_at = ? WHERE hash = ?",
             (message[:500], now, now, photo_hash),
         )
+
+    # ------------------------------------------------------------------
+    # Geocodificación inversa y caché por celda (ADR 0005)
+    # ------------------------------------------------------------------
+    def fetch_geocode_targets(
+        self,
+        *,
+        full: bool,
+        after_hash: str | None,
+        limit: int | None,
+    ) -> list[GeocodeTarget]:
+        """Fotos con GPS y sin lugar, a reanudar por ``place_status``.
+
+        En ``full`` también entran las fotos cuyo lugar quedó en ``error``,
+        igual que los metadatos.
+        """
+        query = (
+            "SELECT hash, gps_latitude, gps_longitude FROM photos "
+            "WHERE gps_latitude IS NOT NULL AND gps_longitude IS NOT NULL "
+            "AND (place_status = 'pending' OR (? = 1 AND place_status = 'error')) "
+            "AND (? IS NULL OR hash > ?) "
+            "ORDER BY hash"
+        )
+        query += " LIMIT ?" if limit is not None else ""
+        parameters: list[object] = [1 if full else 0, after_hash, after_hash]
+        if limit is not None:
+            parameters.append(limit)
+        rows = self._conn.execute(query, parameters).fetchall()
+        return [
+            GeocodeTarget(
+                hash=str(row["hash"]),
+                latitude=float(row["gps_latitude"]),
+                longitude=float(row["gps_longitude"]),
+            )
+            for row in rows
+        ]
+
+    def count_geocode_candidates(self, *, full: bool) -> int:
+        return self._scalar(
+            "SELECT COUNT(*) FROM photos "
+            "WHERE gps_latitude IS NOT NULL AND gps_longitude IS NOT NULL "
+            "AND (place_status = 'pending' OR (? = 1 AND place_status = 'error'))",
+            (1 if full else 0,),
+        )
+
+    def get_place_cell(self, latitude: float, longitude: float) -> Place | None:
+        """Lugar cacheado para una celda, o ``None`` si hay que pedirlo."""
+        row = self._conn.execute(
+            "SELECT country, country_code, state, city FROM geocode_cells "
+            "WHERE latitude = ? AND longitude = ?",
+            (latitude, longitude),
+        ).fetchone()
+        if row is None:
+            return None
+        return Place(
+            country=row["country"],
+            country_code=row["country_code"],
+            state=row["state"],
+            city=row["city"],
+        )
+
+    def put_place_cell(self, latitude: float, longitude: float, place: Place, now: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO geocode_cells "
+            "(latitude, longitude, country, country_code, state, city, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (latitude, longitude, place.country, place.country_code, place.state,
+             place.city, now),
+        )
+
+    def update_place(self, photo_hash: str, place: Place, now: str) -> None:
+        """Guarda el lugar de una foto: la fila queda siempre en ``ok``."""
+        self._conn.execute(
+            "UPDATE photos SET place_country = ?, place_country_code = ?, "
+            "place_state = ?, place_city = ?, place_status = 'ok', "
+            "place_error = NULL, place_updated_at = ?, updated_at = ? WHERE hash = ?",
+            (place.country, place.country_code, place.state, place.city, now, now,
+             photo_hash),
+        )
+
+    def update_place_error(self, photo_hash: str, message: str, now: str) -> None:
+        self._conn.execute(
+            "UPDATE photos SET place_status = 'error', place_error = ?, "
+            "place_updated_at = ?, updated_at = ? WHERE hash = ?",
+            (message[:500], now, now, photo_hash),
+        )
+
+    # ------------------------------------------------------------------
+    # Historial de fases de la pasada
+    # ------------------------------------------------------------------
+    def record_phase(
+        self,
+        run_id: int,
+        phase: str,
+        *,
+        status: str,
+        reason: str | None = None,
+        candidates: int | None = None,
+        processed: int | None = None,
+        errors: int | None = None,
+        cache_hits: int | None = None,
+        http_requests: int | None = None,
+        now: str,
+    ) -> None:
+        """Registra el resultado de una fase en ``run_phases``."""
+        self._conn.execute(
+            "INSERT INTO run_phases "
+            "(run_id, phase, status, reason, candidates, processed, errors, "
+            "cache_hits, http_requests, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                phase,
+                status,
+                reason[:500] if reason is not None else None,
+                candidates,
+                processed,
+                errors,
+                cache_hits,
+                http_requests,
+                now,
+            ),
+        )
+        self.commit()
 
     # ------------------------------------------------------------------
     # Limpieza y totales
@@ -517,11 +731,17 @@ class Catalog:
             ")"
         )
         pending = self._scalar("SELECT COUNT(*) FROM photos WHERE metadata_status = 'pending'")
+        place_pending = self._scalar(
+            "SELECT COUNT(*) FROM photos "
+            "WHERE place_status = 'pending' "
+            "AND gps_latitude IS NOT NULL AND gps_longitude IS NOT NULL"
+        )
         return CatalogCounts(
             photos=photos,
             locations=locations,
             duplicate_photos=duplicates,
             metadata_pending=pending,
+            place_pending=place_pending,
         )
 
     def list_present_locations(self) -> list[sqlite3.Row]:
@@ -546,6 +766,10 @@ class Catalog:
                 p.focal_length,
                 p.gps_latitude,
                 p.gps_longitude,
+                p.place_country,
+                p.place_country_code,
+                p.place_state,
+                p.place_city,
                 p.orientation,
                 p.metadata_status
             FROM locations l

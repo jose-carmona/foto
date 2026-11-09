@@ -15,6 +15,14 @@ visualizador actual recorre la carpeta y genera miniaturas con Qt, pero no tiene
 un índice estable ni incremental. Este ADR fija el proceso que llena
 `<fototeca>/.foto/catalog.sqlite` sin acoplarse a Qt.
 
+> **Nota 2026-11-09:** el indexador es ahora un **pipeline de fases** (`scan`,
+> `geocode`) con una tabla nueva `run_phases` en el historial y metadatos de
+> lugar (`place_status` y jerarquía país/región/ciudad con caché por celda) en
+> el esquema, tras subir `PRAGMA user_version` a 2. Las decisiones completas
+> están en [`ADR 0005`](0005-fases-y-geocodificacion.md), que amplía sin
+> reemplazar este ADR: el recorrido, la reconciliación y `--prune` siguen
+> siendo tal como se describen aquí, ahora como fase `scan`.
+
 Restricciones ya fijadas en `AGENT.md` y en el prompt de esta entrega:
 
 - Los originales **no se modifican, mueven ni borran**. El indexador solo escribe

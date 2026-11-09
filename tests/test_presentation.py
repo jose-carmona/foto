@@ -24,11 +24,14 @@ from foto.ui.presentation import (
     KEY_4,
     KEY_5,
     KEY_DOLLAR,
+    SORT_KEYS,
     is_group_end,
     is_group_start,
     muted_rgb,
     photo_accessible_name,
     photo_group,
+    photo_location_display,
+    photo_place,
     photo_search_text,
     photo_sort_value,
     sorted_photos,
@@ -45,6 +48,10 @@ def _photo(
     favorite: bool = False,
     canonical_rel_path: str | None = None,
     other_locations: tuple[str, ...] = (),
+    place_country: str | None = None,
+    place_country_code: str | None = None,
+    place_state: str | None = None,
+    place_city: str | None = None,
 ) -> Photo:
     return Photo(
         name=name,
@@ -66,6 +73,10 @@ def _photo(
         ),
         other_locations=other_locations,
         photo_hash=f"sha256:{abs(hash(name)) % 100000:08d}",
+        place_country=place_country,
+        place_country_code=place_country_code,
+        place_state=place_state,
+        place_city=place_city,
     )
 
 
@@ -323,6 +334,160 @@ def test_photo_group_falls_back_to_the_date_when_month_is_out_of_range():
     key, label = photo_group(_photo("a.jpg", taken="2024-13-01 08:00"), "date")
 
     assert (key, label) == ("2024-13-01", "2024-13-01")
+
+
+# ----------------------------------------------------------------------
+# Lugar resuelto: búsqueda, orden y grupos por ubicación (Paso 2, ADR 0005)
+# ----------------------------------------------------------------------
+_BARCELONA = {
+    "place_country": "España",
+    "place_country_code": "ES",
+    "place_state": "Cataluña",
+    "place_city": "Barcelona",
+}
+
+_CATALUNYA_ONLY = {
+    "place_country": "España",
+    "place_country_code": "ES",
+    "place_state": "Cataluña",
+}
+
+
+def test_photo_place_normalizes_the_resolved_fields():
+    photo = _photo("a.jpg", **_BARCELONA)
+
+    assert photo_place(photo).display() == "Barcelona, España"
+
+
+def test_photo_place_treats_empty_strings_as_missing_parts():
+    photo = _photo("a.jpg", place_country="España", place_city="")
+
+    place = photo_place(photo)
+
+    assert place.country == "España"
+    assert place.city is None
+    assert place.state is None
+
+
+def test_photo_location_display_shows_the_available_parts():
+    full = _photo("a.jpg", **_BARCELONA)
+    assert photo_location_display(full) == "Barcelona, España"
+
+    without_country = _photo("b.jpg", place_city="Altafulla")
+    assert photo_location_display(without_country) == "Altafulla"
+
+    without_place = _photo("c.jpg")
+    assert photo_location_display(without_place) == ""
+
+
+def test_search_document_includes_the_place_parts():
+    photo = _photo("playa.jpg", **_BARCELONA)
+
+    document = photo_search_text(photo)
+
+    assert "barcelona" in document
+    assert "cataluña" in document
+    assert "españa" in document
+
+
+def test_search_document_without_place_stays_as_before():
+    document = photo_search_text(_photo("montana.jpg"))
+
+    assert "españa" not in document
+
+
+def test_sort_keys_includes_location():
+    assert SORT_KEYS == ("date", "camera", "location")
+
+
+def test_sorted_photos_by_location_orders_country_state_city():
+    photos = [
+        _photo("francia.jpg", place_country="Francia", place_city="París"),
+        _photo("madrid.jpg", place_country="España", place_city="Madrid"),
+        _photo("granada.jpg", place_country="España", place_city="Granada"),
+        _photo("sitges.jpg", **_BARCELONA),
+        # España sin región: "" ordena antes que «cataluña» dentro del país.
+        _photo("euskadi.jpg", place_country="España"),
+    ]
+
+    assert [photo.name for photo in sorted_photos(photos, "location")] == [
+        "euskadi.jpg",
+        "granada.jpg",
+        "madrid.jpg",
+        "sitges.jpg",
+        "francia.jpg",
+    ]
+
+
+def test_sorted_photos_put_photos_without_location_at_the_end():
+    # Un lugar con todo vacío y una foto con solo el código de país: la que no
+    # tiene nada que mostrar queda siempre al final.
+    photos = [
+        _photo("sin-lugar.jpg"),
+        _photo("parís.jpg", place_country="Francia", place_city="París"),
+    ]
+
+    assert [photo.name for photo in sorted_photos(photos, "location")] == [
+        "parís.jpg",
+        "sin-lugar.jpg",
+    ]
+
+
+def test_photo_sort_value_flags_the_location_to_keep_empties_last():
+    with_place = _photo("a.jpg", **_BARCELONA)
+    without_place = _photo("b.jpg")
+
+    assert photo_sort_value(with_place, "location") == (
+        False,
+        ("españa", "cataluña", "barcelona"),
+    )
+    # Sin reversa, True ordena después: la sin lugar cae al final.
+    assert photo_sort_value(without_place, "location") == (True, ("", "", ""))
+
+
+def test_photo_location_display_uses_the_country_code_as_last_resort():
+    photo = _photo("a.jpg", place_country_code="ES")
+
+    assert photo_place(photo).display() == "ES"
+
+
+def test_photo_group_location_labels_the_city_and_contains_it_in_the_key():
+    photo = _photo("a.jpg", **_BARCELONA)
+
+    key, label = photo_group(photo, "location")
+
+    assert label == "Barcelona, España"
+    # La clave separa las partes: dos ciudades del mismo nombre en regiones
+    # distintas no comparten grupo.
+    assert "españa" in key
+    assert "barcelona" in key
+    assert "cataluña" in key
+
+
+def test_photo_group_location_uses_the_state_when_the_city_is_missing():
+    photo = _photo("a.jpg", **_CATALUNYA_ONLY)
+
+    key, label = photo_group(photo, "location")
+
+    assert label == "Cataluña, España"
+    assert "cataluña" in key
+
+
+def test_photo_group_location_reports_missing_place_as_its_own_group():
+    assert photo_group(_photo("a.jpg"), "location") == ("", "Sin ubicación")
+
+
+def test_photo_group_location_keeps_same_named_cities_apart():
+    # Dos «Zaragoza» con el mismo país pero regiones distintas no comparten
+    # grupo, aunque el rótulo «Ciudad, País» sea idéntico.
+    first = _photo("a.jpg", place_country="España", place_state="Aragón", place_city="Zaragoza")
+    other = _photo("b.jpg", place_country="España", place_state="Cataluña", place_city="Zaragoza")
+
+    first_group = photo_group(first, "location")
+    other_group = photo_group(other, "location")
+
+    assert first_group[0] != other_group[0]
+    assert first_group[1] == other_group[1] == "Zaragoza, España"
 
 
 # ----------------------------------------------------------------------

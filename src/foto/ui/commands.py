@@ -20,5 +20,6 @@ COMMANDS = (
     Command("quit", "salir de la aplicación"),
     Command("sort date", "ordenar por fecha"),
     Command("sort camera", "ordenar por cámara"),
+    Command("sort location", "ordenar por ubicación"),
     Command("help", "mostrar la ayuda"),
 )

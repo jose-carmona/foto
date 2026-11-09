@@ -161,6 +161,12 @@ visor abierto, `f` alterna favorito, `:` `/` `?` abren comandos, búsqueda y
 ayuda, y `q` cierra el visor o sugiere `Ctrl+q`. Las flechas laterales (`←`,
 `→`) no hacen nada. Los dígitos `1`–`5` tampoco.
 
+La ficha agrupa los metadatos de la foto: captura, exposición, archivo y
+ubicación. En esta última, el lugar resuelto por el indexador se muestra en
+formato `Ciudad, País` (con las partes disponibles si falta alguna) y debajo
+las coordenadas EXIF exactas, que son la referencia de `g m`. Sin lugar
+resuelto la ficha no muestra fila alguna añadida.
+
 El cursor se mueve al instante, sin esperar a que cargue la miniatura. En los
 extremos de la rejilla no hay salto circular: el cursor se detiene y la barra de
 estado lo indica de forma discreta.
@@ -256,7 +262,7 @@ Vocabulario mínimo:
 | Comando | Acción |
 | --- | --- |
 | `:q`, `:quit` | Salir de la aplicación |
-| `:sort date`, `:sort camera` | Cambiar el orden de la rejilla (por defecto, fecha) |
+| `:sort date`, `:sort camera`, `:sort location` | Cambiar el orden de la rejilla (por defecto, fecha) |
 | `:help` | Abrir la ayuda |
 
 No existe `:rescan`: según ADR 0003 (enmendado), la reindexación y la
@@ -398,8 +404,11 @@ Reglas de la anatomía:
   la ventana (sin rejilla fija de columnas).
 - La rejilla se agrupa según la ordenación activa. `:sort date` agrupa por año y
   mes, del grupo más reciente al más antiguo; `:sort camera` agrupa por cámara,
-  en orden alfabético. Cada grupo muestra una cabecera y, debajo, sus miniaturas.
-  Las fotos sin fecha o sin cámara quedan al final en `Sin fecha` o `Sin cámara`.
+  en orden alfabético. `:sort location` agrupa por ciudad con la etiqueta
+  `Ciudad, País`, en orden país → región → ciudad alfabético ascendente; las
+  fotos sin lugar resuelto quedan al final en `Sin ubicación`. Cada grupo
+  muestra una cabecera y, debajo, sus miniaturas. Las fotos sin fecha o sin
+  cámara quedan al final en `Sin fecha` o `Sin cámara`.
   Un filtro oculta las cabeceras cuyos grupos se quedan sin coincidencias.
 - Tamaño de miniatura: 400 × 247 px (proporción áurea). Recorte centrado para
   llenar el recuadro sin deformar la imagen. Sin marco ni borde alrededor de la

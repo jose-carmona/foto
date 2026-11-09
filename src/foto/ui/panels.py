@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from foto.ui.commands import COMMANDS
 from foto.ui.keybindings import PANEL, event_modifiers, key_action
 from foto.ui.models import Photo
+from foto.ui.presentation import photo_location_display
 from foto.ui.theme import (
     COMPLETION_QSS,
     PANEL_SCROLL_QSS,
@@ -188,8 +189,14 @@ class MetadataPanel(QFrame):
         ]
         if file_rows:
             sections.append(("Archivo", file_rows))
-        if photo.location:
-            sections.append(("Ubicación", (("Coordenadas", photo.location),)))
+        place_display = photo_location_display(photo)
+        if photo.location or place_display:
+            location_rows: list[tuple[str, str]] = []
+            if place_display:
+                location_rows.append(("Lugar", place_display))
+            if photo.location:
+                location_rows.append(("Coordenadas", photo.location))
+            sections.append(("Ubicación", tuple(location_rows)))
 
         content = QWidget()
         layout = QVBoxLayout(content)

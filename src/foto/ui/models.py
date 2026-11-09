@@ -42,6 +42,10 @@ class Photo:
     location: str
     gps_latitude: float | None = None
     gps_longitude: float | None = None
+    place_country: str | None = None
+    place_country_code: str | None = None
+    place_state: str | None = None
+    place_city: str | None = None
     favorite: bool = False
     path: Path | None = None
     canonical_rel_path: str | None = None

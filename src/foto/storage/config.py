@@ -14,7 +14,7 @@ except ImportError:
         import tomli as tomllib  # type: ignore
     except ImportError:
         tomllib = None  # type: ignore
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import platformdirs
@@ -24,6 +24,49 @@ LIBRARY_SECTION = "library"
 PATH_KEY = "path"
 LATEST_CONFIG_VERSION = 1
 
+GEOCODING_SECTION = "geocoding"
+ENABLED_KEY = "enabled"
+ENDPOINT_KEY = "endpoint"
+LANGUAGE_KEY = "language"
+USER_AGENT_KEY = "user_agent"
+REQUEST_INTERVAL_KEY = "request_interval_seconds"
+TIMEOUT_KEY = "timeout_seconds"
+
+#: Endpoint por defecto del geocodificador inverso (ver ADR 0005).
+DEFAULT_GEOCODING_ENDPOINT = "https://nominatim.openstreetmap.org/reverse"
+#: Zona horaria/idioma por defecto de los lugares normalizados.
+DEFAULT_GEOCODING_LANGUAGE = "es"
+#: Política de Nominatim: máximo una petición por segundo.
+DEFAULT_REQUEST_INTERVAL_SECONDS = 1.0
+#: Timeout de red por defecto, en segundos.
+DEFAULT_GEOCODING_TIMEOUT_SECONDS = 10.0
+
+
+def _project_version() -> str:
+    """Versión del paquete ``foto`` con respaldo al valor de ``pyproject``."""
+    try:
+        from importlib.metadata import version
+
+        return version("foto")
+    except Exception:  # noqa: BLE001 - cualquier fallo de metadatos cae aquí
+        return "0.1.0"
+
+
+#: User-Agent identificativo y honesto, exigido por la política de Nominatim.
+DEFAULT_GEOCODING_USER_AGENT = f"foto/{_project_version()} (biblioteca personal en local)"
+
+
+@dataclass(frozen=True)
+class GeocodingSettings:
+    """Sección ``[geocoding]``: servicio de geocodificación inversa."""
+
+    enabled: bool = True
+    endpoint: str = DEFAULT_GEOCODING_ENDPOINT
+    language: str = DEFAULT_GEOCODING_LANGUAGE
+    user_agent: str = DEFAULT_GEOCODING_USER_AGENT
+    request_interval_seconds: float = DEFAULT_REQUEST_INTERVAL_SECONDS
+    timeout_seconds: float = DEFAULT_GEOCODING_TIMEOUT_SECONDS
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -32,6 +75,7 @@ class AppConfig:
     config_path: Path
     library_path: Path | None = None
     version: int = 1
+    geocoding: GeocodingSettings = field(default_factory=GeocodingSettings)
 
 
 class ConfigError(Exception):
@@ -105,6 +149,52 @@ def _validate_library_section(data: dict[str, object], base_dir: Path) -> Path |
     return _expand_path(path_value, base_dir)
 
 
+def _validate_geocoding_section(data: dict[str, object]) -> GeocodingSettings:
+    """Valida ``[geocoding]`` y devuelve la configuración efectiva."""
+    section = data.get(GEOCODING_SECTION)
+    if section is None:
+        return GeocodingSettings()
+    if not isinstance(section, dict):
+        raise ConfigError(f"La sección '[{GEOCODING_SECTION}]' debe ser una tabla TOML")
+
+    settings = GeocodingSettings()
+    if ENABLED_KEY in section:
+        value = section[ENABLED_KEY]
+        if type(value) is not bool:
+            raise ConfigError(f"El campo '[{GEOCODING_SECTION}].{ENABLED_KEY}' debe ser booleano")
+        settings = replace(settings, enabled=value)  # type: ignore[arg-type]
+    if ENDPOINT_KEY in section:
+        value = section[ENDPOINT_KEY]
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigError(f"El campo '[{GEOCODING_SECTION}].{ENDPOINT_KEY}' debe ser texto")
+        settings = replace(settings, endpoint=value.strip())
+    if LANGUAGE_KEY in section:
+        value = section[LANGUAGE_KEY]
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigError(f"El campo '[{GEOCODING_SECTION}].{LANGUAGE_KEY}' debe ser texto")
+        settings = replace(settings, language=value.strip())
+    if USER_AGENT_KEY in section:
+        value = section[USER_AGENT_KEY]
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigError(f"El campo '[{GEOCODING_SECTION}].{USER_AGENT_KEY}' debe ser texto")
+        settings = replace(settings, user_agent=value.strip())
+    if REQUEST_INTERVAL_KEY in section:
+        value = section[REQUEST_INTERVAL_KEY]
+        if type(value) not in (int, float) or value < 0:
+            raise ConfigError(
+                f"El campo '[{GEOCODING_SECTION}].{REQUEST_INTERVAL_KEY}' debe ser un número no negativo"
+            )
+        settings = replace(settings, request_interval_seconds=float(value))
+    if TIMEOUT_KEY in section:
+        value = section[TIMEOUT_KEY]
+        if type(value) not in (int, float) or value <= 0:
+            raise ConfigError(
+                f"El campo '[{GEOCODING_SECTION}].{TIMEOUT_KEY}' debe ser un número positivo"
+            )
+        settings = replace(settings, timeout_seconds=float(value))
+    return settings
+
+
 def load_config(config_path: Path | None = None) -> AppConfig:
     """Carga la configuración global, validando esquema y versión."""
     resolved = resolve_config_path(config_path)
@@ -114,8 +204,14 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     data = _read_toml_file(resolved)
     version = _validate_version(data)
     library_path = _validate_library_section(data, resolved.parent)
+    geocoding = _validate_geocoding_section(data)
 
-    return AppConfig(config_path=resolved, library_path=library_path, version=version)
+    return AppConfig(
+        config_path=resolved,
+        library_path=library_path,
+        version=version,
+        geocoding=geocoding,
+    )
 
 
 def _read_toml_file(path: Path) -> dict[str, object]:
