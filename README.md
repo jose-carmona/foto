@@ -7,12 +7,15 @@ depender de iCloud, del ecosistema Apple ni de una base de datos opaca. Los
 originales no se tocan, los metadatos viven en ficheros estándar y todo funciona
 sin conexión.
 
-> **Estado:** prototipo funcional de la UI e indexador de la fototeca. `foto`
-> abre una carpeta, muestra la rejilla, el visor con la rejilla en una fila y el
-> panel de metadatos. `foto-index` recorre la biblioteca, identifica las fotos
-> por el hash de su contenido, mantiene un catálogo SQLite incremental y cachea
-> las miniaturas en `<fototeca>/.foto/thumbs/`. Falta la lectura/escritura de
-> XMP.
+> **Estado:** Fase 1 (visualización y metadatos) casi completa. `foto` consume
+> el catálogo SQLite: rejilla agrupada por fecha, cámara o lugar, visor con
+> zoom y paneo, panel de metadatos con el lugar resuelto, búsqueda incremental,
+> ordenación por fecha/cámara/lugar, ayuda integrada y temas claro/oscuro.
+> `foto-index` es un pipeline de fases (`scan` + `geocode`) que identifica las
+> fotos por el hash de su contenido, mantiene un catálogo SQLite incremental y
+> cachea las miniaturas en `<fototeca>/.foto/thumbs/`. Falta: favoritos
+> persistidos en XMP (el atajo `f` alterna en memoria), poda de la caché de
+> miniaturas y menú contextual.
 
 ## Objetivo
 
@@ -68,24 +71,31 @@ forma de publicación o compartición.
   - [ ] Endurecer el rendimiento para bibliotecas grandes
     - [x] Ventana de miniaturas en memoria y navegación con índices O(1)
     - [ ] Evaluar un modelo/vista si el número de elementos empieza a pesar
-  - Rejilla, panel de foto y panel de metadatos en `src/foto/ui/`: la ventana de
-  `window.py` orquesta los widgets de `grid.py`, `canvas.py` y `panels.py`
-  junto con la ayuda de `help.py`; los tokens, la tipografía y el QSS de los
-  widgets viven en `theme.py` y el vocabulario de comandos en `commands.py`.
-  El visor consume el catálogo: si no existe `catalog.sqlite`, avisa y se
-  cierra, y las búsquedas y ordenaciones se hacen contra el índice. La
-  lógica de presentación pura (orden, grupos, búsqueda, navegación) y la
-  tabla de teclas (`ui/keybindings.py`) viven en módulos sin Qt dentro de
-  `src/foto/ui/`. La demo `prototype.py` usa fotos
-  falsas y no toca disco.
   - [x] Integración del visor con el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md))
-  - [ ] Favoritos persistidos en XMP (decisión de alcance pospuesta al final de la Fase 1)
+  - [x] Búsqueda incremental `/` contra el índice (nombre, ruta, cámara,
+    metadatos, lugar…) con cancelación con `Esc`
+  - [x] Barra de comandos `:` con autocompletado (`Tab`) e historial (`↑`/`↓`)
+  - [x] Ordenación y grupos por fecha, cámara y lugar
+    (`:sort date|camera|location`); dentro de cada grupo, de más nuevo a más
+    viejo
+  - [x] Panel de metadatos con el lugar resuelto (municipio/región/país y la
+    dirección completa que devolvió el servicio)
+  - [x] Ayuda integrada con `?` / `F1` / `:help` (`src/foto/resources/ayuda.md`)
+  - [x] Temas claro y oscuro con retema en caliente según el `colorScheme` del sistema
+  - [x] Abrir la ubicación de la foto en el navegador con `g m` (Google Maps)
+  - [x] Tabla de teclas unificada con contextos (`ui/keybindings.py`) y lógica
+    de presentación pura sin Qt (`ui/presentation.py`, `ui/models.py`)
+  - [x] Ventana partida en módulos por responsabilidades: `window.py` orquesta
+    `grid.py`, `canvas.py`, `panels.py`, `help.py` y `theme.py`; estilos
+    centralizados en `theme.py` y vocabulario de comandos en `commands.py`
+  - [ ] Favoritos persistidos en XMP (el atajo `f` alterna en memoria;
+    decisión de alcance pospuesta al final de la Fase 1)
   - [ ] Menú contextual de ratón con las acciones de la foto (pendiente para más adelante)
 - [ ] **Fase 2 — Organización**
   - Álbumes manuales e inteligentes
   - Búsqueda y filtros por fecha, cámara, etiquetas y ubicación
     - [x] Buscar por lugar y ordenar con `:sort location` en el visor
-      (el lugar ya se calcula en el indexador; entrega en dos pasos)
+    - [x] Buscador por texto libre sobre fecha, cámara, metadatos y lugar
 - [ ] **Fase 3 — Protección de datos**
   - Copia de seguridad a disco local
   - Copia de seguridad a S3 (opcional y configurable)
@@ -140,8 +150,9 @@ forma de publicación o compartición.
 - **Configuración:** TOML en el directorio de configuración del usuario; lo
   específico de cada biblioteca vive en `<fototeca>/.foto/`. Ver
   `docs/adr/0001-configuracion.md`, `docs/adr/0002-indexado.md`,
-  `docs/adr/0003-consumo-del-indice-desde-el-visor.md` y
-  `docs/adr/0004-cache-de-miniaturas.md`.
+  `docs/adr/0003-consumo-del-indice-desde-el-visor.md`,
+  `docs/adr/0004-cache-de-miniaturas.md` y
+  `docs/adr/0005-fases-y-geocodificacion.md`.
 
 Estructura actual:
 
@@ -150,12 +161,14 @@ foto/
 ├── docs/
 │   ├── adr/        # decisiones de arquitectura
 │   └── diseno-ui.md
+├── prompts/        # prompts de trabajo por entrega
 ├── src/foto/
-│   ├── core/       # hashing, recorrido, metadatos e indexado
-│   ├── indexer/    # CLI foto-index y python -m foto.indexer
-│   ├── storage/    # SQLite, exiftool, lock y configuración TOML
-│   └── ui/         # ventana orquestadora, widgets (rejilla, visor, paneles,
-│                   # ayuda), tokens y vocabulario de comandos, demo y miniaturas
+│   ├── core/       # hashing, recorrido, metadatos, geocodificación e indexado
+│   ├── indexer/    # CLI foto-index, python -m foto.indexer y Nominatim
+│   ├── storage/    # SQLite, exiftool, lock, biblioteca y configuración TOML
+│   ├── ui/         # ventana orquestadora, widgets, teclas, comandos, temas,
+│   │               # ayuda, demo y miniaturas
+│   └── resources/  # ayuda integrada (markdown empaquetado)
 ├── tests/          # suite pytest que se ejecuta sin pantalla
 └── README.md
 ```
@@ -180,9 +193,11 @@ foto/
 `foto` abre la última biblioteca configurada o pide una carpeta y consume el
 catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md)). Si no
 existe `catalog.sqlite`, avisa y se cierra. La rejilla agrupa las miniaturas por
-año y mes o por cámara según la ordenación activa. Pide solo las miniaturas
-visibles a un pool de trabajo y las guarda en `<fototeca>/.foto/thumbs/`; el
-visor decodifica el original en segundo plano.
+año y mes, por cámara o por lugar (municipio, país) según la ordenación
+activa. Pide solo las miniaturas visibles a un pool de trabajo y las guarda en
+`<fototeca>/.foto/thumbs/`; el visor decodifica el original en segundo plano.
+La búsqueda `/` y las ordenaciones `:sort` se aplican contra lo cargado del
+índice; `g m` abre la ubicación en el navegador y `?` abre la ayuda integrada.
 
 ```sh
 uv sync
@@ -209,6 +224,8 @@ uv run foto-index --library ~/Fotos --prune --prune-after 30
 uv run foto-index --library ~/Fotos --full
 uv run foto-index --library ~/Fotos --skip geocode
 ```
+
+También se puede lanzar como módulo: `python -m foto.indexer --library ~/Fotos`.
 
 Opciones principales:
 
@@ -245,7 +262,8 @@ estado y los contadores de cada fase (incluida la geocodificación). Con
 
 La geocodificación es la única red del indexador: consulta Nominatim con un
 User-Agent identificativo, como máximo una petición por segundo, y guarda la
-jerarquía país/región/ciudad en el catálogo, con una caché por celda de 3
+jerarquía país/región/municipio en el catálogo, junto con el nombre visible y
+el `address` completo del servicio, con una caché por celda de 3
 decimales. Si el servicio rechaza peticiones o la red falla, la fase se detiene
 sin marcar error en ninguna foto; la siguiente pasada continúa por las
 `pending` sin repetir lo ya resuelto. Se desactiva con `--skip geocode` o con
