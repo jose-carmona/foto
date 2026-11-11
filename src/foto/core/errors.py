@@ -54,6 +54,10 @@ class CatalogVersionError(CatalogError):
     """El catálogo usa una versión de esquema no soportada."""
 
 
+class TagError(FotoError):
+    """Error al normalizar, resolver o escribir etiquetas (ADR 0006)."""
+
+
 class LockError(FotoError):
     """No se pudo usar el lock del indexador."""
 

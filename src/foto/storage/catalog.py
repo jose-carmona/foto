@@ -6,16 +6,17 @@ import logging
 import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from foto.core.errors import CatalogError, CatalogVersionError
 from foto.core.geocoding import Place, PlaceRecord
 from foto.core.metadata import PhotoMetadata
+from foto.storage.tags import Tag, TagAssignment, assignments_by_hash, list_tags
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 CATALOG_FILE_NAME = "catalog.sqlite"
 
 SCHEMA_V1 = """
@@ -147,6 +148,63 @@ CELL_COLUMNS_V3 = (
     ("address_json", "TEXT"),
     ("zoom", "INTEGER NOT NULL DEFAULT 10"),
 )
+
+# Tablas de etiquetas (ADR 0006, revisión de 2026-11-11): taxonomía plana,
+# sin ``parent_id`` ni ``merged_into``. ``tags`` guarda qué existe (con
+# ``kind``) y ``photo_tags`` qué foto lleva qué etiqueta y con qué
+# procedencia. El índice único parcial garantiza en el esquema que ``fav``
+# sea la única etiqueta de sistema, y el índice único de asignaciones usa
+# ``COALESCE`` porque en SQLite los NULL no colisionan en los índices.
+SCHEMA_V4_TAGS = """
+CREATE TABLE IF NOT EXISTS tags (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL CHECK (length(trim(name)) > 0),
+    name_normalized TEXT NOT NULL UNIQUE,
+    kind            TEXT NOT NULL DEFAULT 'free'
+                    CHECK (kind IN ('system', 'person', 'place', 'event', 'free')),
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+-- 'fav' es la única etiqueta de sistema; el esquema lo garantiza.
+CREATE UNIQUE INDEX IF NOT EXISTS tags_system_singleton_idx
+    ON tags(kind) WHERE kind = 'system';
+
+CREATE TABLE IF NOT EXISTS photo_tags (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    photo_hash  TEXT NOT NULL REFERENCES photos(hash) ON DELETE CASCADE,
+    tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    source      TEXT NOT NULL DEFAULT 'manual'
+                CHECK (source IN ('manual', 'ml')),
+    status      TEXT NOT NULL DEFAULT 'confirmed'
+                CHECK (status IN ('confirmed', 'suggested', 'rejected')),
+    confidence  REAL CHECK (confidence IS NULL
+                        OR (confidence >= 0.0 AND confidence <= 1.0)),
+    region_x    REAL,
+    region_y    REAL,
+    region_w    REAL,
+    region_h    REAL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    CHECK ((region_x IS NULL AND region_y IS NULL
+            AND region_w IS NULL AND region_h IS NULL)
+        OR (region_x >= 0.0 AND region_x <= 1.0
+            AND region_y >= 0.0 AND region_y <= 1.0
+            AND region_w > 0.0 AND region_w <= 1.0
+            AND region_h > 0.0 AND region_h <= 1.0))
+);
+
+-- Una asignación por (foto, etiqueta, cara). El COALESCE existe porque en
+-- SQLite los NULL no colisionan en los índices únicos: sin él, la
+-- asignación de foto completa (región NULL) se podría duplicar.
+CREATE UNIQUE INDEX IF NOT EXISTS photo_tags_assign_unique_idx
+    ON photo_tags (photo_hash, tag_id,
+                   COALESCE(region_x, -1.0), COALESCE(region_y, -1.0),
+                   COALESCE(region_w, -1.0), COALESCE(region_h, -1.0));
+
+CREATE INDEX IF NOT EXISTS photo_tags_photo_idx ON photo_tags(photo_hash);
+CREATE INDEX IF NOT EXISTS photo_tags_tag_idx   ON photo_tags(tag_id);
+"""
 
 
 @dataclass(frozen=True)
@@ -319,6 +377,8 @@ class Catalog:
                 self._migrate_to_v2()
             if version < 3:
                 self._migrate_to_v3()
+            if version < 4:
+                self._migrate_to_v4()
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._conn.commit()
         except sqlite3.Error as exc:
@@ -353,6 +413,24 @@ class Catalog:
         """
         self._ensure_columns("geocode_cells", CELL_COLUMNS_V3)
         self._ensure_columns("photos", PLACE_COLUMNS_V3)
+
+    def _migrate_to_v4(self) -> None:
+        """Aplica la migración a v4: tablas de etiquetas y etiqueta ``fav``.
+
+        Taxonomía plana (ADR 0006, revisión de 2026-11-11): sin jerarquía
+        ni fusión. No hay datos que convertir —el favorito nunca tuvo
+        columna ni persistencia—, así que solo se crean las tablas y se
+        inserta la etiqueta de sistema ``fav``, que se resolverá siempre
+        por ``kind='system'`` (los ``AUTOINCREMENT`` varían entre
+        bibliotecas) con la hora por parámetro.
+        """
+        self._conn.executescript(SCHEMA_V4_TAGS)
+        now = datetime.now(UTC).replace(microsecond=0).isoformat()
+        self._conn.execute(
+            "INSERT OR IGNORE INTO tags (name, name_normalized, kind, "
+            "created_at, updated_at) VALUES ('fav', 'fav', 'system', :now, :now)",
+            {"now": now},
+        )
 
     def _ensure_columns(self, table: str, columns: tuple[tuple[str, str], ...]) -> None:
         """Añade a la tabla las columnas que le falten (idempotente)."""
@@ -820,6 +898,14 @@ class Catalog:
             metadata_pending=pending,
             place_pending=place_pending,
         )
+
+    def tag_list(self) -> list[Tag]:
+        """Vocabulario de etiquetas del catálogo (delega en ``storage.tags``)."""
+        return list_tags(self._conn)
+
+    def tag_assignments(self) -> dict[str, tuple[TagAssignment, ...]]:
+        """Asignaciones foto–etiqueta por hash (delega en ``storage.tags``)."""
+        return assignments_by_hash(self._conn)
 
     def list_present_locations(self) -> list[sqlite3.Row]:
         """Devuelve ubicaciones presentes con sus metadatos de foto."""
