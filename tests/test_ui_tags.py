@@ -14,8 +14,8 @@ import sqlite3
 
 import pytest
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtGui import QKeyEvent, QPixmap
+from PySide6.QtWidgets import QApplication
 
 from foto.storage.catalog import Catalog
 from foto.storage.library import ensure_library
@@ -27,16 +27,19 @@ from foto.storage.tags import (
     toggle_favorite,
 )
 from foto.ui.app import load_tags
+from foto.ui.canvas import PhotoCanvas
+from foto.ui.chips import PANEL_CHIP_H, TagChipFlow
 from foto.ui.grid import FAVORITE_ROLE
 from foto.ui.models import Photo, PhotoTag
 from foto.ui.presentation import (
     find_tag_in_catalog,
     photo_matches_tag_name,
     photo_search_text,
-    tag_panel_rows,
+    tag_chips,
     with_favorite_tag,
 )
 from foto.ui.prototype import make_photos
+from foto.ui.theme import CHIP_FAVORITE_COLOR
 from foto.ui.window import PhotoWindow
 from tests.conftest import write_image
 from tests.test_ui_load_photos import load_photos
@@ -234,7 +237,7 @@ def test_find_tag_in_catalog_resolves_by_normalized_name():
     assert find_tag_in_catalog("inexistente", catalog) is None
 
 
-def test_tag_panel_rows_show_kind_status_and_source():
+def test_tag_chips_carry_name_tooltip_and_favorite_flag():
     tags = (
         _fav(),
         PhotoTag(name="playa", kind="free", status="confirmed", source="manual"),
@@ -242,13 +245,25 @@ def test_tag_panel_rows_show_kind_status_and_source():
         PhotoTag(name="secreto", kind="free", status="rejected", source="manual"),
     )
 
-    rows = tag_panel_rows(_pure_photo(tags=tags))
+    chips = tag_chips(_pure_photo(tags=tags))
 
-    assert rows == (
-        ("Etiqueta", "fav · system"),
-        ("Etiqueta", "playa"),
-        ("Etiqueta", "montaña · sugerida · machine learning"),
+    assert chips == (
+        ("", "favorita", True),
+        ("playa", "playa", False),
+        ("montaña", "montaña · sugerida · machine learning", False),
     )
+
+
+def test_tag_chips_without_favorite_have_no_heart_chip():
+    chips = tag_chips(
+        _pure_photo(
+            tags=(
+                PhotoTag(name="playa", kind="free", status="confirmed", source="manual"),
+            )
+        )
+    )
+
+    assert chips == (("playa", "playa", False),)
 
 
 def test_prototype_photos_still_carry_the_favorite_tag():
@@ -460,27 +475,83 @@ def test_search_finds_photos_by_tag_name(qapp, library):
 
 
 # ----------------------------------------------------------------------
-# Panel de metadatos: sección «Etiquetas»
+# Panel de metadatos: sección «Etiquetas» con chips
 # ----------------------------------------------------------------------
-def test_metadata_panel_shows_the_tags_section(qapp, library):
+def test_metadata_panel_shows_the_tag_chips(qapp, library):
     window = _window(qapp, library)
     window.panel.set_photo(_photo_by_name(window, "a.jpg"))
 
-    texts = [label.text() for label in window.panel.findChildren(QLabel)]
-    joined = "\n".join(texts)
+    flows = window.panel.findChildren(TagChipFlow)
 
-    assert "Etiquetas" in texts
-    assert "fav · system" in joined
-    assert "Playa" in joined
-    assert "Montaña · sugerida · machine learning" in joined
-    # «rejected» no se muestra nunca.
-    assert "ciudad" not in joined
+    assert len(flows) == 1
+    flow = flows[0]
+    assert flow.labels() == ("", "Montaña", "Playa")
+    assert flow._chips[0] == ("", "favorita", True)
+    assert flow._chips[1] == ("Montaña", "Montaña · sugerida · machine learning", False)
 
 
 def test_metadata_panel_without_tags_has_no_tags_section(qapp, library):
     window = _window(qapp, library)
     window.panel.set_photo(_photo_by_name(window, "b.jpg"))
 
-    texts = [label.text() for label in window.panel.findChildren(QLabel)]
+    assert window.panel.findChildren(TagChipFlow) == []
 
-    assert "Etiquetas" not in texts
+
+# ----------------------------------------------------------------------
+# Dibujo de los chips (rejilla, visor y panel)
+# ----------------------------------------------------------------------
+def test_chip_flow_wraps_into_rows_by_width(qapp):
+    flow = TagChipFlow()
+    flow.set_chips(
+        (
+            ("una", "una", False),
+            ("dos", "dos", False),
+            ("tres", "tres", False),
+            ("cuatro", "cuatro", False),
+        )
+    )
+    flow.resize(160, 40)
+
+    assert flow.heightForWidth(160) > PANEL_CHIP_H  # dos filas como mínimo
+    assert flow.heightForWidth(1200) == PANEL_CHIP_H  # todo en una fila
+
+
+def test_chip_flow_paints_and_shows_the_tooltip(qapp):
+    flow = TagChipFlow()
+    flow.set_chips((("", "favorita", True), ("playa", "playa · playa", False)))
+    flow.resize(300, PANEL_CHIP_H)
+    pixmap = flow.grab()
+
+    assert not pixmap.isNull()
+    # El chip de favorito es carmesí: algún píxel de la zona izquierda.
+    colors = {
+        pixmap.toImage().pixelColor(x, PANEL_CHIP_H // 2).name()
+        for x in range(40)
+    }
+    assert CHIP_FAVORITE_COLOR.name() in colors
+
+
+def test_canvas_paints_the_favorite_chip(qapp):
+    canvas = PhotoCanvas()
+    pixmap = QPixmap(200, 120)
+    pixmap.fill(Qt.darkGray)
+    canvas.resize(200, 120)
+    canvas.set_image(pixmap)
+    canvas.set_favorite(True)
+
+    grabbed = canvas.grab().toImage()
+    colors = {
+        grabbed.pixelColor(x, y).name()
+        for x in range(140, 200, 2)
+        for y in range(16, 56, 2)
+    }
+    assert CHIP_FAVORITE_COLOR.name() in colors
+
+    canvas.set_favorite(False)
+    grabbed = canvas.grab().toImage()
+    colors = {
+        grabbed.pixelColor(x, y).name()
+        for x in range(140, 200, 2)
+        for y in range(16, 56, 2)
+    }
+    assert CHIP_FAVORITE_COLOR.name() not in colors

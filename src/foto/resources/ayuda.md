@@ -53,7 +53,10 @@ El paneo solo tiene efecto con zoom.
 
 ## Panel de metadatos
 
-Muestra los datos de la foto seleccionada. Con el foco en el panel, las teclas
+Muestra los datos de la foto seleccionada. Las etiquetas se muestran como
+chips —el favorito, como un chip carmesí con un corazón— y el detalle de cada
+una (sugerida, machine learning) se ve en el tooltip. Con el foco en el panel,
+las teclas
 de la rejilla siguen operando la rejilla; solo las flechas desplazan el panel.
 
 | Tecla | Acción |

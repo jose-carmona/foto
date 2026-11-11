@@ -22,13 +22,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from foto.ui.chips import TagChipFlow
 from foto.ui.commands import COMMANDS
 from foto.ui.keybindings import PANEL, event_modifiers, key_action
 from foto.ui.models import Photo
 from foto.ui.presentation import (
     photo_location_display,
     photo_place_details,
-    tag_panel_rows,
+    tag_chips,
 )
 from foto.ui.theme import (
     COMPLETION_QSS,
@@ -202,11 +203,9 @@ class MetadataPanel(QFrame):
             if photo.location:
                 location_rows.append(("Coordenadas", photo.location))
             sections.append(("Ubicación", tuple(location_rows)))
-        # Última sección: las etiquetas de la foto, favorito incluido (ADR
-        # 0006, Decisión 13). Las ``rejected`` no se muestran.
-        tag_rows = tag_panel_rows(photo)
-        if tag_rows:
-            sections.append(("Etiquetas", list(tag_rows)))
+        # Última sección: las etiquetas como chips, favorito incluido (ADR
+        # 0006). Las ``rejected`` no se muestran; el detalle va en el tooltip.
+        chips = tag_chips(photo)
 
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -220,6 +219,10 @@ class MetadataPanel(QFrame):
                 continue
             rendered = True
             layout.addWidget(self._section(title, visible_rows))
+
+        if chips:
+            rendered = True
+            layout.addWidget(self._tags_section(chips))
 
         if not rendered:
             layout.addWidget(self._muted_label("Sin datos EXIF", 12))
@@ -265,6 +268,23 @@ class MetadataPanel(QFrame):
             grid.addWidget(text, row, 1)
 
         layout.addLayout(grid)
+        return section
+
+    def _tags_section(self, chips) -> QWidget:
+        """Sección «Etiquetas»: título y flujo de chips (``chips.py``)."""
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        title_label = QLabel("Etiquetas")
+        title_label.setFont(ui_font(11, QFont.DemiBold))
+        set_muted(title_label)
+        layout.addWidget(title_label)
+
+        flow = TagChipFlow()
+        flow.set_chips(chips)
+        layout.addWidget(flow)
         return section
 
     @staticmethod

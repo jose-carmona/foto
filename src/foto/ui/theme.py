@@ -166,6 +166,15 @@ def error_color(widget: QWidget) -> QColor:
     return QColor(255, 125, 125)
 
 
+# Chips de etiqueta (ADR 0006): colores fijos, iguales en ambos temas, porque
+# se pintan sobre la foto (miniatura, visor) y sobre el panel. El contenido
+# (corazón y texto) es blanco sobre cualquiera de los dos; el agujero de la
+# etiqueta es transparente.
+CHIP_FAVORITE_COLOR = QColor("#b03d5d")
+CHIP_TAG_COLOR = QColor("#222226")
+CHIP_CONTENT_COLOR = QColor("#ffffff")
+
+
 # --- Plantillas QSS de los widgets -----------------------------------------
 # Todo el QSS estructural de la UI vive aquí: los widgets consumen su
 # plantilla en el constructor y la re-aplican vía ``reapply_style`` al cambiar

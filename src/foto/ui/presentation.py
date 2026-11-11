@@ -74,15 +74,17 @@ def find_tag_in_catalog(name: str, catalog: Sequence[Tag]) -> Tag | None:
     return None
 
 
-def tag_panel_rows(photo: Photo) -> tuple[tuple[str, str], ...]:
-    """Filas de la sección «Etiquetas» del panel (ADR 0006, Decisión 13).
+def tag_chips(photo: Photo) -> tuple[tuple[str, str, bool], ...]:
+    """Chips de la sección «Etiquetas» del panel (ADR 0006, Decisión 13).
 
-    Una fila por etiqueta visible con el nombre y, tras él, su detalle: el
-    tipo cuando no es libre, «sugerida» cuando el estado no es ``confirmed``
-    y «machine learning» cuando el origen es ML. El favorito se muestra como
-    cualquier otra etiqueta; las ``rejected`` no aparecen.
+    Cada chip es ``(texto, tooltip, es_favorito)``; el texto vacío pinta el
+    chip carmesí con corazón (el favorito va primero, como cualquier otra
+    etiqueta visible). El detalle —el tipo cuando no es libre, «sugerida»
+    cuando el estado no es ``confirmed`` y «machine learning» cuando el
+    origen es ML— viaja en el tooltip. Las ``rejected`` no aparecen.
     """
-    rows: list[tuple[str, str]] = []
+    favorite: tuple[str, str, bool] | None = None
+    chips: list[tuple[str, str, bool]] = []
     for tag in photo.tags:
         if tag.status not in TAG_VISIBLE_STATUSES:
             continue
@@ -93,9 +95,21 @@ def tag_panel_rows(photo: Photo) -> tuple[tuple[str, str], ...]:
             parts.append("sugerida")
         if tag.source == "ml":
             parts.append("machine learning")
-        value = tag.name if not parts else f"{tag.name} · {' · '.join(parts)}"
-        rows.append(("Etiqueta", value))
-    return tuple(rows)
+        detail = " · ".join(parts)
+        if tag.kind == "system":
+            tooltip = "favorita" if tag.status == "confirmed" else f"favorita · {detail}"
+            favorite = ("", tooltip, True)
+            continue
+        chips.append(
+            (
+                tag.name,
+                f"{tag.name} · {detail}" if detail else tag.name,
+                False,
+            )
+        )
+    if favorite is not None:
+        return (favorite, *chips)
+    return tuple(chips)
 
 
 # ---------------------------------------------------------------------------

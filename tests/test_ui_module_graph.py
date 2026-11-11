@@ -19,6 +19,7 @@ _UI = Path("src/foto/ui")
 _THEME = _UI / "theme.py"
 _WIDGETS = (
     _THEME,
+    _UI / "chips.py",
     _UI / "grid.py",
     _UI / "canvas.py",
     _UI / "panels.py",

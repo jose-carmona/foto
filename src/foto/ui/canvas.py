@@ -9,10 +9,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QRunnable, QSizeF, Qt, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QRunnable,
+    QSizeF,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+from foto.ui.chips import draw_tag_chip, favorite_chip_size
 from foto.ui.keybindings import VIEWER, event_modifiers, key_action
 from foto.ui.theme import muted_color, ui_font
 
@@ -66,6 +78,7 @@ class PhotoCanvas(QWidget):
         self._preview = False
         self._zoom: float | None = None
         self._pan = QPointF(0, 0)
+        self._favorite = False
         self.focus_ring = True
 
     def set_image(self, pixmap: QPixmap | None, *, preview: bool = False) -> None:
@@ -80,7 +93,14 @@ class PhotoCanvas(QWidget):
         self._preview = False
         self._zoom = None
         self._pan = QPointF(0, 0)
+        self._favorite = False
         self.update()
+
+    def set_favorite(self, favorite: bool) -> None:
+        """Muestra u oculta el chip de favorito sobre la foto."""
+        if self._favorite != favorite:
+            self._favorite = favorite
+            self.update()
 
     def has_image(self) -> bool:
         return self._pixmap is not None and not self._pixmap.isNull()
@@ -186,6 +206,14 @@ class PhotoCanvas(QWidget):
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
         self._paint_focus_ring(painter)
+
+        # Chip de favorito sobre la foto, arriba a la derecha, fijo (no
+        # acompaña al zoom ni al paneo: es parte del visor, no de la imagen).
+        if self._favorite:
+            size = favorite_chip_size(32)
+            chip = QRect(QPoint(0, 0), size)
+            chip.moveTopRight(QPoint(self.width() - 20, 20))
+            draw_tag_chip(painter, chip, favorite=True)
 
     def _paint_focus_ring(self, painter: QPainter) -> None:
         if not self.focus_ring or not self.hasFocus():

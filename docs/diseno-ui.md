@@ -161,13 +161,19 @@ visor abierto, `f` alterna favorito, `:` `/` `?` abren comandos, búsqueda y
 ayuda, y `q` cierra el visor o sugiere `Ctrl+q`. Las flechas laterales (`←`,
 `→`) no hacen nada. Los dígitos `1`–`5` tampoco.
 
-La ficha agrupa los metadatos de la foto: captura, exposición, archivo y
-ubicación. En esta última, el lugar resuelto por el indexador se muestra en
-formato `Municipio, País` (con las partes disponibles si falta alguna),
-seguido del detalle que guardó el servicio —calle, comarca, código postal y
-la dirección completa— y de las coordenadas EXIF exactas, que son la
+La ficha agrupa los metadatos de la foto: captura, exposición, archivo,
+ubicación y etiquetas. En la ubicación, el lugar resuelto por el indexador se
+muestra en formato `Municipio, País` (con las partes disponibles si falta
+alguna), seguido del detalle que guardó el servicio —calle, comarca, código
+postal y la dirección completa— y de las coordenadas EXIF exactas, que son la
 referencia de `g m`. Sin lugar resuelto la ficha no muestra fila alguna
 añadida.
+
+La sección «Etiquetas» muestra las etiquetas visibles como chips con forma de
+etiqueta —chip carmesí con corazón para el favorito, chip negro con el nombre
+para el resto, sin `#`— y el detalle de cada una (tipo, «sugerida»,
+«machine learning») en su tooltip. Las etiquetas rechazadas no aparecen
+(ADR 0006).
 
 El cursor se mueve al instante, sin esperar a que cargue la miniatura. En los
 extremos de la rejilla no hay salto circular: el cursor se detiene y la barra de
@@ -420,8 +426,10 @@ Reglas de la anatomía:
   llenar el recuadro sin deformar la imagen. Sin marco ni borde alrededor de la
   miniatura.
 - Separación de 16 px entre miniaturas; margen exterior según composición.
-- El favorito se muestra como una insignia discreta en una esquina, sobre un
-  velo semitransparente para garantizar legibilidad sobre cualquier foto. Nunca
+- El favorito se muestra como un chip de etiqueta carmesí con un corazón
+  blanco en la esquina superior derecha de la miniatura y de la foto del
+  visor, con la misma forma de etiqueta que los chips del panel; el color es
+  fijo en ambos temas para garantizar legibilidad sobre cualquier foto. Nunca
   aparece solo al pasar el ratón.
 - Al estar seleccionada, se añade un leve sombreado al recuadro y un borde fino.
   Con el foco en la rejilla, el borde usa el acento; sin foco, un gris neutro.

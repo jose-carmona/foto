@@ -903,6 +903,7 @@ class PhotoWindow(QMainWindow):
             self.viewer.canvas.set_image(fallback, preview=True)
         else:
             self.viewer.canvas.clear()
+        self.viewer.canvas.set_favorite(photo.favorite)
         self._displayed_key = photo.key
         self._pending_image_key = photo.key
         self._ensure_image_loaded(photo)
@@ -1412,6 +1413,7 @@ class PhotoWindow(QMainWindow):
         self.photos[photo.key] = updated
         item.setData(FAVORITE_ROLE, updated.favorite)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
+        self.viewer.canvas.set_favorite(updated.favorite)
         self.grid.viewport().update()
         message = "favorito" if updated.favorite else "sin favorito"
         if self.tag_connection is None or photo.photo_hash is None:
@@ -1430,6 +1432,7 @@ class PhotoWindow(QMainWindow):
             self.photos[photo.key] = photo
             item.setData(FAVORITE_ROLE, photo.favorite)
             item.setData(Qt.AccessibleTextRole, photo_accessible_name(photo))
+            self.viewer.canvas.set_favorite(photo.favorite)
             self.grid.viewport().update()
             self.status.show_error(str(exc))
             return

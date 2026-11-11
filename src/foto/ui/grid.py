@@ -12,7 +12,6 @@ from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
-    QFontMetrics,
     QIcon,
     QPainter,
     QPainterPath,
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from foto.ui.chips import draw_tag_chip, favorite_chip_size
 from foto.ui.keybindings import (
     GRID,
     GRID_VIEWER,
@@ -159,24 +159,10 @@ class ThumbnailDelegate(QStyledItemDelegate):
 
         favorite = bool(index.data(FAVORITE_ROLE))
         if favorite:
-            text = "♥"
-
-            font = ui_font(11, QFont.DemiBold)
-            painter.setFont(font)
-            metrics = QFontMetrics(font)
-            badge_w = metrics.horizontalAdvance(text) + 16
-            badge_h = metrics.height() + 8
-            badge = QRect(
-                icon_rect.right() - badge_w - 12,
-                icon_rect.top() + 12,
-                badge_w,
-                badge_h,
-            )
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(0, 0, 0, 120))
-            painter.drawRoundedRect(badge, 2, 2)
-            painter.setPen(QColor(255, 255, 255, 235))
-            painter.drawText(badge, Qt.AlignCenter, text)
+            size = favorite_chip_size(26)
+            rect = QRect(QPoint(0, 0), size)
+            rect.moveTopRight(QPoint(icon_rect.right() - 12, icon_rect.top() + 12))
+            draw_tag_chip(painter, rect, favorite=True)
 
         painter.restore()
 
