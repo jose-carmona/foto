@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from foto.storage.catalog import Catalog
+from foto.storage.tags import TagAssignment
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".heic", ".raf", ".cr2", ".nef", ".arw", ".dng", ".png", ".tif", ".tiff"}
 
@@ -38,11 +39,23 @@ class CatalogPhoto:
     place_municipality: str | None = None
     place_display_name: str | None = None
     place_address_json: str | None = None
-    favorite: bool = False
+    tags: tuple[TagAssignment, ...] = ()
     path: Path | None = None
     canonical_rel_path: str | None = None
     other_locations: tuple[str, ...] = ()
     photo_hash: str | None = None
+
+    @property
+    def favorite(self) -> bool:
+        """Favorito según la etiqueta de sistema (ADR 0006, Decisión 8).
+
+        Misma regla que ``Photo.favorite`` en la UI; se duplica aquí a
+        propósito para que el núcleo no dependa del modelo de presentación.
+        """
+        return any(
+            tag.kind == "system" and tag.status in ("confirmed", "suggested")
+            for tag in self.tags
+        )
 
     @property
     def key(self) -> str:
@@ -153,6 +166,8 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
     for row in rows:
         grouped.setdefault(row["photo_hash"], []).append(row)
 
+    assignments = catalog.tag_assignments()
+
     photos: list[CatalogPhoto] = []
     for photo_hash, items in grouped.items():
         items_sorted = sorted(items, key=lambda r: str(r["rel_path"]))
@@ -202,6 +217,7 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
             place_municipality=canonical["place_municipality"],
             place_display_name=canonical["place_display_name"],
             place_address_json=canonical["place_address_json"],
+            tags=assignments.get(photo_hash, ()),
             path=full_path,
             canonical_rel_path=str(canonical["rel_path"]),
             other_locations=tuple(str(r["rel_path"]) for r in others),

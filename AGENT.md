@@ -26,8 +26,11 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   las acciones con un único dispatcher (`_dispatch`) con registro acción →
   handler. Todos son módulos sin Qt que la ventana consume.
 - Indexador `foto-index` completo en `src/foto/indexer/` + `core/` + `storage/`:
-  catálogo SQLite incremental, hashes SHA-256 de contenido, rutas relativas,
-  reconciliación de ausencias, `exiftool` opcional y lock de escritor único. Es
+  catálogo SQLite incremental (esquema v4, con las tablas `tags` y
+  `photo_tags` de [ADR 0006](docs/adr/0006-etiquetas.md) y la etiqueta de
+  sistema `fav` sembrada por `kind='system'`), hashes SHA-256 de contenido,
+  rutas relativas, reconciliación de ausencias, `exiftool` opcional y lock de
+  escritor único. Es
   un **pipeline de fases** (`scan` y `geocode`, [ADR 0005](docs/adr/0005-fases-y-geocodificacion.md)):
   la fase `geocode` geocodifica en inverso con Nominatim las fotos con GPS y
   sin lugar (`place_status`), con caché por celda de 3 decimales invalidada
@@ -35,7 +38,9 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   reanudación; de la respuesta guarda la jerarquía normalizada y el detalle
   completo (`municipality`, `display_name` y `address` íntegro). Para hacerla
   correr los tests, el servicio es inyectable (`core/geocoding.py`) y sin red.
-- El catálogo vive en `<fototeca>/.foto/catalog.sqlite` y es reconstruible. El
+- El catálogo vive en `<fototeca>/.foto/catalog.sqlite`. Es reconstruible en lo
+  que deriva del contenido (fotos, ubicaciones, metadatos, lugares); las
+  etiquetas y los favoritos no se regeneran y exigen copia de seguridad. El
   indexador no importa Qt.
 - El visor **consume el catálogo** (`ADR 0003`): lee solo desde
   `<fototeca>/.foto/catalog.sqlite` (ubicaciones `present`). Si no existe el
@@ -44,6 +49,11 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   `:sort date`/`camera`/`location` con grupos por `Municipio, País`
   (`country` + `municipality`); el lugar llega de las columnas de `place_*`
   que la fase `geocode` llenó. `foto-index` es independiente (CLI/cron/systemd).
+- El visor **escribe** las etiquetas y los favoritos en el catálogo con una
+  conexión RW dedicada (`storage/tags.py`, `connect_read_write`, ADR 0006):
+  no toma `index.lock` (WAL + `busy_timeout`), `f` conmuta la etiqueta de
+  sistema `fav` con escritura inmediata y `:tag <nombre>` filtra por etiqueta
+  (taxonomía plana).
 - La imagen grande del visor se decodifica en segundo plano. Las miniaturas
   visibles de la rejilla se generan en un pool de trabajo, pidiendo al lector
   una decodificación ya escalada, y se guardan en una caché persistente en

@@ -21,5 +21,6 @@ COMMANDS = (
     Command("sort date", "ordenar por fecha"),
     Command("sort camera", "ordenar por cámara"),
     Command("sort location", "ordenar por ubicación"),
+    Command("tag", "filtrar por etiqueta (:tag <nombre>)"),
     Command("help", "mostrar la ayuda"),
 )

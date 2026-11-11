@@ -25,7 +25,11 @@ from PySide6.QtWidgets import (
 from foto.ui.commands import COMMANDS
 from foto.ui.keybindings import PANEL, event_modifiers, key_action
 from foto.ui.models import Photo
-from foto.ui.presentation import photo_location_display, photo_place_details
+from foto.ui.presentation import (
+    photo_location_display,
+    photo_place_details,
+    tag_panel_rows,
+)
 from foto.ui.theme import (
     COMPLETION_QSS,
     PANEL_SCROLL_QSS,
@@ -198,6 +202,11 @@ class MetadataPanel(QFrame):
             if photo.location:
                 location_rows.append(("Coordenadas", photo.location))
             sections.append(("Ubicación", tuple(location_rows)))
+        # Última sección: las etiquetas de la foto, favorito incluido (ADR
+        # 0006, Decisión 13). Las ``rejected`` no se muestran.
+        tag_rows = tag_panel_rows(photo)
+        if tag_rows:
+            sections.append(("Etiquetas", list(tag_rows)))
 
         content = QWidget()
         layout = QVBoxLayout(content)
@@ -412,6 +421,9 @@ class StatusBar(QWidget):
         self._idle_right = ""
         self._search_right = ""
         self._message = ""
+        # Texto persistente bajo los mensajes temporales: el filtro de
+        # etiqueta activo («etiqueta: nombre»). Error > mensaje > fijado.
+        self._pinned = ""
         self._help_saved_message = ""
         self._message_timer = QTimer(self)
         self._message_timer.setSingleShot(True)
@@ -488,13 +500,32 @@ class StatusBar(QWidget):
         self.help_mode = enabled
         self.mode_label.setText("AYUDA" if enabled else "NORMAL")
         if enabled:
-            self._help_saved_message = self.message_label.text()
-            self.message_label.setText("")
+            self._help_saved_message = self._message
+            self._message = ""
+            self._apply_message_text()
             self.right_label.setText("Esc/q cerrar")
         else:
-            if self.error_text or self._message:
-                self.message_label.setText(self._help_saved_message)
+            self._message = self._help_saved_message
+            self._apply_message_text()
             self.refresh_right()
+
+    def set_pinned(self, text: str) -> None:
+        """Fija o retira el texto persistente (filtro de etiqueta activo)."""
+        self._pinned = text
+        if self.help_mode:
+            return
+        self._apply_message_text()
+
+    def _apply_message_text(self) -> None:
+        """Texto del área de mensajes: error > temporal > fijado > vacío."""
+        if self.error_text:
+            self.message_label.setText(f"error: {self.error_text}")
+        elif self._message:
+            self.message_label.setText(self._message)
+        elif self._pinned:
+            self.message_label.setText(self._pinned)
+        else:
+            self.message_label.setText("")
 
     def open_command(self) -> None:
         self.prompt_active = True
@@ -535,9 +566,8 @@ class StatusBar(QWidget):
         self.prompt.clear()
         self.popup.hide()
         self._matches = []
-        if not self.error_text and not self._message:
-            self.message_label.setText("")
         self.message_label.show()
+        self._apply_message_text()
         self.refresh_right()
         self.prompt_closed.emit()
 
@@ -545,7 +575,7 @@ class StatusBar(QWidget):
         if self.error_text or self.help_mode:
             return
         self._message = text
-        self.message_label.setText(text)
+        self._apply_message_text()
         self.message_label.setForegroundRole(QPalette.WindowText)
         self._message_timer.start(milliseconds)
 
@@ -554,7 +584,7 @@ class StatusBar(QWidget):
         self._message_timer.stop()
         self._message = ""
         self.message_label.show()
-        self.message_label.setText(f"error: {text}")
+        self._apply_message_text()
         self.message_label.setStyleSheet(f"color: {error_color(self).name()};")
         self.refresh_right()
 
@@ -563,8 +593,8 @@ class StatusBar(QWidget):
             return
         self.error_text = None
         self._message = ""
-        self.message_label.setText("")
         self.message_label.setStyleSheet("")
+        self._apply_message_text()
         self.refresh_right()
 
     def refresh_right(self) -> None:
@@ -586,7 +616,7 @@ class StatusBar(QWidget):
     def _clear_message(self) -> None:
         self._message = ""
         if not self.error_text:
-            self.message_label.setText("")
+            self._apply_message_text()
 
     def _on_text_changed(self, text: str) -> None:
         if not self.prompt_active:

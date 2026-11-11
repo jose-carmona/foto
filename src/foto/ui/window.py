@@ -26,8 +26,9 @@ vertical, teclas de grupo y el color atenuado) siguen en los módulos sin Qt
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import replace
+import sqlite3
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -60,7 +61,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from foto.core.errors import CatalogError, TagError
 from foto.core.thumbnails import eviction_candidates
+from foto.storage.tags import Tag, normalize_tag_name, toggle_favorite
 from foto.ui.canvas import ImageLoadTask, PhotoViewer
 from foto.ui.grid import (
     FAVORITE_ROLE,
@@ -88,10 +91,13 @@ from foto.ui.panels import MetadataPanel, StatusBar
 from foto.ui.presentation import (
     DEFAULT_SORT,
     SORT_KEYS,
+    find_tag_in_catalog,
     photo_accessible_name,
     photo_group,
+    photo_matches_tag_name,
     photo_search_text,
     sorted_photos,
+    with_favorite_tag,
 )
 from foto.ui.theme import (
     app_palette,
@@ -129,12 +135,21 @@ class PhotoWindow(QMainWindow):
         title: str | None = None,
         initial_panel_visible: bool = True,
         grid_row: bool = False,
+        tag_connection: sqlite3.Connection | None = None,
+        tag_catalog: Sequence[Tag] = (),
     ) -> None:
         super().__init__()
         # True usa la rejilla como fila inferior del visor; False muestra el
         # visor a pantalla completa con la rejilla oculta. La app real y la
         # demo usan True.
         self.grid_row = grid_row
+        # Conexión RW dedicada del visor para escribir favoritos en el
+        # catálogo (ADR 0006, Decisión 10) y el vocabulario de etiquetas con
+        # el que ``:tag`` resuelve nombres. Sin conexión (demo, pruebas) el
+        # conmutado de ``f`` queda solo en memoria.
+        self.tag_connection = tag_connection
+        self.tag_catalog = tuple(tag_catalog)
+        self._tag_filter: str | None = None
         self.photos = {photo.key: photo for photo in photos}
         self._sort_key = DEFAULT_SORT
         self.thumbnails = dict(thumbnails or {})
@@ -397,6 +412,8 @@ class PhotoWindow(QMainWindow):
             self._thumbnail_order = list(self.thumbnails)
         self.search_text = ""
         self._search_origin = None
+        self._tag_filter = None
+        self.status.set_pinned("")
         self.grid.blockSignals(True)
         try:
             self._populate_grid(photos)
@@ -976,6 +993,10 @@ class PhotoWindow(QMainWindow):
         if self._visible_count() == 0:
             if self.status.prompt_mode == "search":
                 self.empty_label.setText("Sin coincidencias\nEsc cancela la búsqueda")
+            elif self._tag_filter:
+                self.empty_label.setText(
+                    "Sin coincidencias de etiqueta\n:tag sin nombre quita el filtro"
+                )
             elif self.search_text:
                 self.empty_label.setText("Sin coincidencias\nEsc limpia la búsqueda")
             else:
@@ -994,13 +1015,24 @@ class PhotoWindow(QMainWindow):
 
     def _apply_filter(self, text: str) -> None:
         needle = text.strip().casefold()
+        tag_filter = self._tag_filter
         visible_items: list[QListWidgetItem] = []
         for row in range(self.grid.count()):
             item = self.grid.item(row)
             if item is None or item.data(HEADER_ROLE):
                 continue
             photo = self.photos.get(item.data(PHOTO_ROLE))
-            visible = photo is None or needle in photo_search_text(photo)
+            if photo is None:
+                visible = True
+            else:
+                # La búsqueda ``/`` y el filtro ``:tag`` se componen en AND:
+                # la foto debe cumplir ambos.
+                visible = (
+                    not needle or needle in photo_search_text(photo)
+                ) and (
+                    tag_filter is None
+                    or photo_matches_tag_name(photo, tag_filter)
+                )
             item.setHidden(not visible)
             if visible:
                 visible_items.append(item)
@@ -1070,9 +1102,66 @@ class PhotoWindow(QMainWindow):
                 return
             self.status.show_error("uso: :sort date | camera | location")
             return
+        if command == "tag" or command.startswith("tag "):
+            self._handle_tag_command(command[3:].strip())
+            return
         self.status.show_error(
             f"comando desconocido: {command} · :help para ver los comandos"
         )
+
+    def _handle_tag_command(self, argument: str) -> None:
+        """``:tag <nombre>`` filtra la rejilla por etiqueta (ADR 0006).
+
+        Sin argumento —o repitiendo la etiqueta ya activa— desactiva el
+        filtro; un nombre fuera del vocabulario del catálogo es un error y
+        no crea etiquetas. Taxonomía plana: no hay subárboles que expandir.
+        """
+        if not argument:
+            if self._tag_filter is None:
+                self.status.show_error("uso: :tag <nombre>")
+                return
+            self._deactivate_tag_filter()
+            return
+        if self._tag_filter is not None:
+            try:
+                repeat = normalize_tag_name(argument) == self._tag_filter
+            except TagError:
+                repeat = False
+            if repeat:
+                self._deactivate_tag_filter()
+                return
+        if self.tag_catalog:
+            tag = find_tag_in_catalog(argument, self.tag_catalog)
+            if tag is None:
+                self.status.show_error(f"etiqueta desconocida: {argument}")
+                return
+            name = normalize_tag_name(tag.name)
+        else:
+            # Sin vocabulario (demo y pruebas): cualquier nombre normalizado.
+            try:
+                name = normalize_tag_name(argument)
+            except TagError as exc:
+                self.status.show_error(str(exc))
+                return
+        self._set_tag_filter(name)
+
+    def _deactivate_tag_filter(self) -> None:
+        self._set_tag_filter(None)
+        self.status.show_message("filtro de etiqueta desactivado", 2000)
+
+    def _set_tag_filter(self, name: str | None) -> None:
+        """Aplica o retira el filtro de etiqueta y fija el indicador.
+
+        El filtro activo permanece en la barra de estado («etiqueta:
+        nombre») mientras dure: los mensajes temporales lo tapan y al
+        expirar vuelve a verse.
+        """
+        self._tag_filter = name
+        # Un intento previo fallido (p. ej. «uso: :tag <nombre>») deja de
+        # ser relevante: el filtro aplicado o retirado es la respuesta.
+        self.status.clear_error()
+        self.status.set_pinned(f"etiqueta: {name}" if name else "")
+        self._apply_filter(self.search_text)
 
     def _sort_grid(self, key: str) -> None:
         current = self.grid.currentItem()
@@ -1319,14 +1408,40 @@ class PhotoWindow(QMainWindow):
         item = self.grid.currentItem()
         if photo is None or item is None:
             return
-        updated = replace(photo, favorite=not photo.favorite)
+        updated = with_favorite_tag(photo, not photo.favorite)
         self.photos[photo.key] = updated
         item.setData(FAVORITE_ROLE, updated.favorite)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
         self.grid.viewport().update()
-        self.status.show_message(
-            "favorito" if updated.favorite else "sin favorito", 2000
-        )
+        message = "favorito" if updated.favorite else "sin favorito"
+        if self.tag_connection is None or photo.photo_hash is None:
+            # Demo y pruebas: el conmutado queda solo en memoria.
+            self.status.show_message(message, 2000)
+            return
+        try:
+            toggle_favorite(
+                self.tag_connection,
+                photo.photo_hash,
+                now=datetime.now(UTC).isoformat(),
+            )
+        except CatalogError as exc:
+            # Escritura fallida: se revierte el cambio optimista y el error
+            # permanece en la barra hasta que Esc lo descarta.
+            self.photos[photo.key] = photo
+            item.setData(FAVORITE_ROLE, photo.favorite)
+            item.setData(Qt.AccessibleTextRole, photo_accessible_name(photo))
+            self.grid.viewport().update()
+            self.status.show_error(str(exc))
+            return
+        self.status.show_message(message, 2000)
+
+    def closeEvent(self, event):
+        # La conexión RW de etiquetas es propiedad de la ventana: la app real
+        # la crea en MainWindow y aquí se cierra al salir.
+        if self.tag_connection is not None:
+            self.tag_connection.close()
+            self.tag_connection = None
+        super().closeEvent(event)
 
     def keyPressEvent(self, event):
         # Sin guardas de modo: las de _dispatch son las mismas y únicas.

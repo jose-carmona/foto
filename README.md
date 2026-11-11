@@ -13,8 +13,9 @@ sin conexión.
 > ordenación por fecha/cámara/lugar, ayuda integrada y temas claro/oscuro.
 > `foto-index` es un pipeline de fases (`scan` + `geocode`) que identifica las
 > fotos por el hash de su contenido, mantiene un catálogo SQLite incremental y
-> cachea las miniaturas en `<fototeca>/.foto/thumbs/`. Falta: favoritos
-> persistidos en XMP (el atajo `f` alterna en memoria), poda de la caché de
+> cachea las miniaturas en `<fototeca>/.foto/thumbs/`. Los favoritos (`f`) y el
+> filtro por etiqueta (`:tag <nombre>`) se escriben y leen del catálogo
+> ([ADR 0006](docs/adr/0006-etiquetas.md)). Falta: poda de la caché de
 > miniaturas y menú contextual.
 
 ## Objetivo
@@ -53,10 +54,11 @@ La primera versión se centra en **ver y entender** las fotos, no en editarlas.
 - Vista individual con zoom y navegación entre fotos.
 - Lectura de metadatos: fecha de captura, cámara, objetivo, ISO, apertura,
   velocidad, distancia focal y geolocalización.
-- Favoritos, escritos en el XMP correspondiente.
+- Favoritos, guardados en el catálogo como la etiqueta de sistema `fav`
+  ([ADR 0006](docs/adr/0006-etiquetas.md)).
 - Catálogo SQLite para búsquedas y metadatos, y caché de miniaturas en disco,
-  regenerables desde los originales y, para los metadatos de usuario, desde los
-  XMP.
+  regenerables desde los originales; las etiquetas y los favoritos no se
+  regeneran y exigen copia de seguridad.
 
 Fuera del MVP, por ahora: edición, álbumes, reconocimiento de caras y cualquier
 forma de publicación o compartición.
@@ -92,12 +94,14 @@ forma de publicación o compartición.
   - [x] Ventana partida en módulos por responsabilidades: `window.py` orquesta
     `grid.py`, `canvas.py`, `panels.py`, `help.py` y `theme.py`; estilos
     centralizados en `theme.py` y vocabulario de comandos en `commands.py`
-  - [ ] Favoritos persistidos en XMP (el atajo `f` alterna en memoria;
-    decisión de alcance pospuesta al final de la Fase 1)
+  - [x] Favoritos y etiquetas en el catálogo
+    ([ADR 0006](docs/adr/0006-etiquetas.md)): `f` conmuta la etiqueta `fav`
+    con escritura inmediata y `:tag <nombre>` filtra la rejilla por etiqueta
   - [ ] Menú contextual de ratón con las acciones de la foto (pendiente para más adelante)
 - [ ] **Fase 2 — Organización**
   - Álbumes manuales e inteligentes
-  - Búsqueda y filtros por fecha, cámara, etiquetas y ubicación
+  - Búsqueda y filtros por fecha, cámara, etiquetas y ubicación (el filtro
+    básico por etiqueta ya existe: `:tag <nombre>`)
     - [x] Buscar por lugar y ordenar con `:sort location` en el visor
     - [x] Buscador por texto libre sobre fecha, cámara, metadatos y lugar
 - [ ] **Fase 3 — Protección de datos**
@@ -122,7 +126,7 @@ forma de publicación o compartición.
 │ recorrido, hashing, metadatos, indexado        │
 └─────────┬────────────────────────────┬─────────┘
           │                            │
-      SQLite (índice)          XMP sidecars (futuro)
+      SQLite (índice)          exportación XMP (futurible)
           │
     originales en disco
           │
@@ -139,17 +143,18 @@ forma de publicación o compartición.
   ([ADR 0005](docs/adr/0005-fases-y-geocodificacion.md))). Se puede lanzar
   desde bash, cron o un `systemd` oneshot.
 - **Catálogo:** SQLite como índice rápido de búsqueda y metadatos normalizados.
-  Es reconstruible desde los originales; si se borra, la siguiente pasada lo
-  regenera. El visor lee también de él el lugar resuelto (`place_*`, con el
-  `address` completo que devolvió el servicio), con el que busca por
+  Es reconstruible desde los originales salvo los metadatos de usuario
+  (etiquetas y favoritos), que no se regeneran y exigen copia de seguridad. El
+  visor lee también de él el lugar resuelto (`place_*`, con el `address`
+  completo que devolvió el servicio), con el que busca por
   municipio/región/país y ordena con `:sort location`.
 - **Miniaturas:** derivados JPEG en `<fototeca>/.foto/thumbs/`, nombrados por
   hash de contenido, tamaño y versión. También son reconstruibles y nunca
   sustituyen al original; la caché todavía no se poda automáticamente. En
   memoria solo se conserva una ventana acotada alrededor de lo visible.
 - **Metadatos:** EXIF leídos con `exiftool` (opcional) y normalizados en SQLite.
-  Los sidecars XMP serán la fuente de verdad de los metadatos de usuario en una
-  fase posterior.
+  Las etiquetas y los favoritos viven en el catálogo
+  ([ADR 0006](docs/adr/0006-etiquetas.md)); la exportación a XMP es futurible.
 - **Copias de seguridad:** destino local y, opcionalmente, S3.
 - **Configuración:** TOML en el directorio de configuración del usuario; lo
   específico de cada biblioteca vive en `<fototeca>/.foto/`. Ver
@@ -191,6 +196,8 @@ foto/
     hash de contenido, tamaño y versión, y escritura atómica.
   - `0005-fases-y-geocodificacion.md` — pipeline de fases del indexador y
     geocodificación inversa con Nominatim, con caché por celda y reanudación.
+  - `0006-etiquetas.md` — etiquetas y favoritos en el catálogo: esquema
+    `tags`/`photo_tags`, escritura RW del visor sin `index.lock`.
 
 ## UI
 

@@ -17,7 +17,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from foto.ui.grid import default_thumbnail
-from foto.ui.models import Photo
+from foto.ui.models import Photo, PhotoTag
 from foto.ui.presentation import sorted_photos
 from foto.ui.theme import apply_theme
 from foto.ui.window import (
@@ -38,6 +38,21 @@ def make_photos() -> list[Photo]:
         camera, lens, focal = CAMERAS[i % len(CAMERAS)]
         day = 24 - (i % 20)
         month = 10 if i < 12 else 9
+        tags: tuple[PhotoTag, ...] = ()
+        if i % 4 == 0:
+            # Favorito, como en el catálogo: etiqueta de sistema ``fav``.
+            tags += (
+                PhotoTag(
+                    name="fav", kind="system", status="confirmed", source="manual"
+                ),
+            )
+        if i % 5 == 2:
+            # Una etiqueta libre para ver la sección «Etiquetas» del panel.
+            tags += (
+                PhotoTag(
+                    name="playa", kind="free", status="confirmed", source="manual"
+                ),
+            )
         photos.append(
             Photo(
                 name=f"DSCF{1001 + i}.{'RAF' if i % 3 else 'JPG'}",
@@ -53,7 +68,7 @@ def make_photos() -> list[Photo]:
                 dimensions=f"{6240 - (i % 3) * 240} × {4160 - (i % 3) * 160} px",
                 size=f"{18 + (i % 11) * 2},{(i * 3) % 10} MB",
                 location="" if i % 7 == 1 else f"41,{3800 + i} N · 2,{1600 + i} E",
-                favorite=i % 4 == 0,
+                tags=tags,
             )
         )
     return photos

@@ -11,9 +11,91 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 
 from foto.core.geocoding import Place
-from foto.ui.models import Photo
+from foto.storage.tags import FAVORITE_TAG, Tag, normalize_tag_name
+from foto.ui.models import Photo, PhotoTag
+
+# ---------------------------------------------------------------------------
+# Etiquetas (ADR 0006)
+# ---------------------------------------------------------------------------
+#: Estados de asignación que cuentan para buscar, filtrar y mostrar en el
+#: panel. ``rejected`` nunca aparece ni filtra.
+TAG_VISIBLE_STATUSES = ("confirmed", "suggested")
+
+
+def with_favorite_tag(photo: Photo, favorite: bool) -> Photo:
+    """``Photo`` con la etiqueta de sistema ``fav`` aplicada o retirada.
+
+    Conserva el resto de etiquetas y reconstruye ``fav`` como
+    ``manual``/``confirmed``: el conmutado del visor es una decisión humana;
+    la escritura real la ejecuta el catálogo (ADR 0006, Decisión 8).
+    """
+    tags = tuple(tag for tag in photo.tags if tag.kind != "system")
+    if favorite:
+        tags += (
+            PhotoTag(
+                name=FAVORITE_TAG,
+                kind="system",
+                status="confirmed",
+                source="manual",
+            ),
+        )
+    return replace(photo, tags=tags)
+
+
+def photo_matches_tag_name(photo: Photo, name: str) -> bool:
+    """Coincidencia del filtro ``:tag`` sobre nombres normalizados.
+
+    Normaliza el nombre tecleado (idempotente: el filtro ya guardado
+    también viene normalizado). Solo cuentan los estados visibles
+    (``TAG_VISIBLE_STATUSES``); el ``rejected`` jamás filtra. Taxonomía
+    plana: sin jerarquía que expandir.
+    """
+    target = normalize_tag_name(name)
+    return any(
+        normalize_tag_name(tag.name) == target
+        for tag in photo.tags
+        if tag.status in TAG_VISIBLE_STATUSES
+    )
+
+
+def find_tag_in_catalog(name: str, catalog: Sequence[Tag]) -> Tag | None:
+    """Resuelve el nombre tecleado contra el vocabulario del catálogo.
+
+    La comparación es por nombre normalizado exacto; ``None`` cuando el
+    vocabulario no lo conoce (el filtro no crea etiquetas nuevas).
+    """
+    normalized = normalize_tag_name(name)
+    for tag in catalog:
+        if normalize_tag_name(tag.name) == normalized:
+            return tag
+    return None
+
+
+def tag_panel_rows(photo: Photo) -> tuple[tuple[str, str], ...]:
+    """Filas de la sección «Etiquetas» del panel (ADR 0006, Decisión 13).
+
+    Una fila por etiqueta visible con el nombre y, tras él, su detalle: el
+    tipo cuando no es libre, «sugerida» cuando el estado no es ``confirmed``
+    y «machine learning» cuando el origen es ML. El favorito se muestra como
+    cualquier otra etiqueta; las ``rejected`` no aparecen.
+    """
+    rows: list[tuple[str, str]] = []
+    for tag in photo.tags:
+        if tag.status not in TAG_VISIBLE_STATUSES:
+            continue
+        parts: list[str] = []
+        if tag.kind != "free":
+            parts.append(tag.kind)
+        if tag.status != "confirmed":
+            parts.append("sugerida")
+        if tag.source == "ml":
+            parts.append("machine learning")
+        value = tag.name if not parts else f"{tag.name} · {' · '.join(parts)}"
+        rows.append(("Etiqueta", value))
+    return tuple(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -83,9 +165,10 @@ def photo_search_text(photo: Photo) -> str:
 
     Examina nombre, ruta relativa (carpeta y ubicación canónica), réplicas,
     cámara, objetivo, tipo, fecha, el lugar resuelto (municipio, ciudad,
-    región y país) y el resto de campos indexados que el catálogo aporta al
-    modelo de UI. El filtrado es en memoria, contra este documento, sin
-    volver a recorrer el filesystem (ADR 0003).
+    región y país), los nombres de las etiquetas visibles (confirmed +
+    suggested, jamás rejected) y el resto de campos indexados que el
+    catálogo aporta al modelo de UI. El filtrado es en memoria, contra este
+    documento, sin volver a recorrer el filesystem (ADR 0003).
     """
     parts = (
         photo.name,
@@ -106,6 +189,9 @@ def photo_search_text(photo: Photo) -> str:
         photo.canonical_rel_path or "",
         " ".join(photo.other_locations),
         photo.photo_hash or "",
+        " ".join(
+            tag.name for tag in photo.tags if tag.status in TAG_VISIBLE_STATUSES
+        ),
     )
     return " ".join(part.casefold() for part in parts if part)
 

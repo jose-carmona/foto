@@ -34,7 +34,7 @@ cambia la regla aquí o no se implementa.
 5. **Una sola acción por tecla.** Ninguna tecla cambia de significado según el
    contexto salvo lo documentado en este fichero.
 6. **Nada destructivo en el MVP.** No hay borrar, mover ni sobrescribir. Los
-   favoritos se escriben en XMP y son reversibles.
+   favoritos se escriben en el catálogo (ADR 0006) y son reversibles.
 7. **Silencio visual.** Un único color de acento, tres niveles de texto y
    espacio en blanco como separador principal.
 8. **Nada bloquea.** Indexar o generar miniaturas ocurre fuera del hilo de UI;
@@ -242,8 +242,9 @@ igual que en la rejilla completa. Un clic en una miniatura selecciona esa foto.
 
 - `/` abre un filtro incremental que examina **el índice**, no solo el nombre
   de fichero: nombre, ruta relativa (carpeta y ubicación canónica), réplicas,
-  cámara, objetivo, tipo de fichero, fecha y el resto de campos indexados del
-  catálogo (ver ADR 0003).
+  cámara, objetivo, tipo de fichero, fecha, los nombres de las etiquetas
+  visibles (incluido `fav`) y el resto de campos indexados del catálogo (ver
+  ADR 0003 y ADR 0006).
 - El filtrado se hace en memoria sobre la lista cargada del catálogo, con una
   entrada por foto (por hash); las réplicas no crean entradas adicionales.
 - El texto se escribe en la barra de estado, junto al indicador de modo.
@@ -265,6 +266,7 @@ Vocabulario mínimo:
 | --- | --- |
 | `:q`, `:quit` | Salir de la aplicación |
 | `:sort date`, `:sort camera`, `:sort location` | Cambiar el orden de la rejilla (por defecto, fecha) |
+| `:tag` | Filtrar por etiqueta (`:tag <nombre>`; sin argumento o repetido, quita el filtro) |
 | `:help` | Abrir la ayuda |
 
 No existe `:rescan`: según ADR 0003 (enmendado), la reindexación y la
@@ -511,8 +513,9 @@ Requisitos:
 
 ## Comportamiento y feedback
 
-- **Favoritos:** actualización optimista de la insignia y escritura inmediata en
-  el XMP. Si la escritura falla, se revierte el cambio y se muestra un error
+- **Favoritos:** actualización optimista de la insignia y escritura inmediata
+  en el catálogo (conexión RW del visor, ADR 0006). Si la escritura falla, se
+  revierte el cambio y se muestra un error
   persistente. Nunca se falla en silencio.
 - **Mensajes:** los éxitos y las acciones habituales aparecen en la barra de
   estado durante unos 3 s. Los errores permanecen hasta que el usuario los
@@ -621,4 +624,7 @@ Una pantalla o funcionalidad de UI no se considera terminada hasta que:
   de originales; si hace falta, cargar una versión intermedia para el visor.
 - Evaluar un modelo/vista si el número de `QListWidgetItem` empieza a pesar; la
   memoria de miniaturas y la navegación ya están acotadas.
+- Definir la sintaxis general de etiquetado (asignar etiquetas desde el visor,
+  sugerencias del clasificador ML) y un explorador de etiquetas; hoy el visor
+  solo filtra con `:tag <nombre>` y conmuta `fav` con `f` (ADR 0006).
 - Podar las miniaturas huérfanas y medir el coste de la caché persistente en disco.

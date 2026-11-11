@@ -14,7 +14,7 @@ Funcionan en cualquier vista.
 | `:` | Línea de comandos |
 | `/` | Buscar fotos |
 | `i` | Mostrar u ocultar el panel de metadatos |
-| `f` | Marcar o desmarcar la foto como favorita |
+| `f` | Marcar o desmarcar la foto como favorita (se guarda en el catálogo) |
 | `g m` | Abrir la ubicación de la foto en el navegador (Google Maps) |
 | `Tab` / `Shift+Tab` | Mover el foco entre la rejilla y el panel |
 | `Ctrl+q` / `⌘Q` | Salir de la aplicación |
@@ -72,4 +72,5 @@ historial, `Enter` ejecuta y `Esc` cancela.
 | --- | --- |
 | `:q` / `:quit` | Salir de la aplicación |
 | `:sort` date / camera / location | Ordenar por fecha / cámara / ubicación |
+| `:tag` | Filtrar por etiqueta (`:tag <nombre>`, repita o deje vacío para quitar el filtro) |
 | `:help` | Abrir esta ayuda |

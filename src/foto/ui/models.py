@@ -16,6 +16,21 @@ from pathlib import Path
 MAP_URL = "https://www.google.com/maps?q={lat},{lon}"
 
 
+@dataclass(frozen=True)
+class PhotoTag:
+    """Etiqueta asignada a una foto, tal como la consume la UI (ADR 0006).
+
+    ``kind``/``status``/``source`` son los valores del esquema del catálogo
+    (``system``/``free``, ``confirmed``/``suggested``/``rejected``,
+    ``manual``/``ml``); las reglas de presentación deciden qué se muestra.
+    """
+
+    name: str
+    kind: str
+    status: str
+    source: str
+
+
 def map_url(latitude: float, longitude: float) -> str:
     """URL de Google Maps para unas coordenadas decimales (grados).
 
@@ -49,11 +64,23 @@ class Photo:
     place_municipality: str | None = None
     place_display_name: str | None = None
     place_address_json: str | None = None
-    favorite: bool = False
+    tags: tuple[PhotoTag, ...] = ()
     path: Path | None = None
     canonical_rel_path: str | None = None
     other_locations: tuple[str, ...] = ()
     photo_hash: str | None = None
+
+    @property
+    def favorite(self) -> bool:
+        """Favorito según la etiqueta de sistema ``fav`` (ADR 0006, Decisión 8).
+
+        Ya no es un campo: deriva de las etiquetas. Cuentan los estados
+        ``confirmed`` y ``suggested``; ``rejected`` jamás marca favorito.
+        """
+        return any(
+            tag.kind == "system" and tag.status in ("confirmed", "suggested")
+            for tag in self.tags
+        )
 
     @property
     def key(self) -> str:

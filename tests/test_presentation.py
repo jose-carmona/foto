@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from foto.ui.models import Photo
+from foto.ui.models import Photo, PhotoTag
 from foto.ui.presentation import (
     KEY_0,
     KEY_4,
@@ -47,7 +47,7 @@ def _photo(
     *,
     taken: str = "2024-05-01 12:34",
     camera: str = "Nikon Z 6",
-    favorite: bool = False,
+    tags: tuple[PhotoTag, ...] = (),
     canonical_rel_path: str | None = None,
     other_locations: tuple[str, ...] = (),
     place_country: str | None = None,
@@ -72,7 +72,7 @@ def _photo(
         dimensions="6000 × 4000",
         size="2 MB",
         location="",
-        favorite=favorite,
+        tags=tags,
         canonical_rel_path=(
             canonical_rel_path if canonical_rel_path is not None else f"{folder}/{name}"
         ),
@@ -603,7 +603,8 @@ def test_photo_accessible_name_lists_the_file_name():
 
 
 def test_photo_accessible_name_appends_the_favorite_state():
-    assert photo_accessible_name(_photo("duna.jpg", favorite=True)) == (
+    fav = PhotoTag(name="fav", kind="system", status="confirmed", source="manual")
+    assert photo_accessible_name(_photo("duna.jpg", tags=(fav,))) == (
         "duna.jpg, favorito"
     )
 

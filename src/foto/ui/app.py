@@ -18,8 +18,9 @@ from foto.storage.catalog import Catalog
 from foto.storage.config import AppConfig, ConfigError, load_config, save_config
 from foto.storage.library import LibraryConfig, library_file, load_library, thumbs_dir
 from foto.storage.resolver import resolve_library_path
+from foto.storage.tags import Tag, connect_read_write
 from foto.ui.grid import THUMB_H, THUMB_W
-from foto.ui.models import Photo
+from foto.ui.models import Photo, PhotoTag
 from foto.ui.theme import apply_theme, ui_font
 from foto.ui.thumbnails import ThumbnailService
 from foto.ui.window import (
@@ -106,7 +107,15 @@ def _to_ui_photo(photo: CatalogPhoto) -> Photo:
         place_municipality=photo.place_municipality,
         place_display_name=photo.place_display_name,
         place_address_json=photo.place_address_json,
-        favorite=photo.favorite,
+        tags=tuple(
+            PhotoTag(
+                name=assignment.tag_name,
+                kind=assignment.kind,
+                status=assignment.status,
+                source=assignment.source,
+            )
+            for assignment in photo.tags
+        ),
         path=photo.path,
         canonical_rel_path=photo.canonical_rel_path,
         other_locations=photo.other_locations,
@@ -156,15 +165,52 @@ def load_photos(library_path: Path) -> list[Photo]:
     return [_to_ui_photo(photo) for photo in catalog_photos]
 
 
+def load_tags(library_path: Path) -> list[Tag]:
+    """Carga el vocabulario de etiquetas del catálogo (ADR 0006).
+
+    Solo lectura, igual que ``load_photos``: el visor exige un catálogo ya
+    creado y migrado por ``foto-index``.
+    """
+    catalog_path = library_path / ".foto" / "catalog.sqlite"
+    if not catalog_path.exists():
+        raise FileNotFoundError(
+            "No se encontró el índice de la fototeca. Ejecuta 'foto-index' "
+            "para crear <fototeca>/.foto/catalog.sqlite."
+        )
+
+    try:
+        catalog = Catalog.open_read_only(catalog_path)
+    except CatalogError as exc:
+        raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
+
+    try:
+        return catalog.tag_list()
+    finally:
+        catalog.close()
+
+
 class MainWindow(PhotoWindow):
     def __init__(self, library_path: Path, config: AppConfig) -> None:
         self.library_path = library_path
         self.config = config
         try:
             photos = load_photos(library_path)
+            tags = load_tags(library_path)
             # C04: el modelo validado del descriptor se conserva explícitamente.
             self._library_config = _validated_library(library_path)
         except (OSError, RuntimeError) as exc:
+            QMessageBox.critical(None, "foto", str(exc))
+            sys.exit(1)
+
+        try:
+            # Conexión RW dedicada del visor para los favoritos (ADR 0006,
+            # Decisión 10): no toma index.lock y WAL serializa con el
+            # indexador. Sin ella los favoritos no persisten, así que un
+            # fallo al abrirla es un error de arranque, no un aviso.
+            tag_connection = connect_read_write(
+                library_path / ".foto" / "catalog.sqlite"
+            )
+        except (CatalogError, OSError) as exc:
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)
 
@@ -180,6 +226,8 @@ class MainWindow(PhotoWindow):
             title=self._window_title(),
             initial_panel_visible=False,
             grid_row=True,
+            tag_connection=tag_connection,
+            tag_catalog=tags,
         )
         self._thumbnail_service = service
         service.setParent(self)
