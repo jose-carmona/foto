@@ -31,15 +31,19 @@ inspeccionarla y migrarla con herramientas estándar.
   con GPS contra OpenStreetMap, que se puede desactivar sin tocar código.
 - **Originales intactos.** `foto` nunca modifica ni borra los ficheros
   originales; los cambios se guardan como metadatos.
-- **Metadatos abiertos.** XMP como fuente de verdad, compatible con Lightroom,
-  digiKam y exiftool.
+- **Metadatos de usuario en el catálogo.** Las etiquetas y los favoritos viven
+  en el catálogo SQLite, que es su fuente de verdad
+  ([ADR 0006](docs/adr/0006-etiquetas.md)); la exportación a XMP queda como
+  futurible y la importación no existe.
 - **Multiplataforma real.** Desarrollo y uso diario en Omarchy (Arch Linux +
   Hyprland/Wayland), con soporte de primera clase en macOS.
 - **Sin telemetría.** No sale del equipo nada que no sea explícito: las copias
   de seguridad que yo configure y las consultas de geocodificación inversa
   (Nominatim), limitadas a las fotos con GPS y desactivables.
-- **Componentes reemplazables.** Catálogo reconstruible desde disco: si la base
-  de datos desaparece, se puede regenerar.
+- **Componentes reemplazables.** El catálogo es reconstruible en lo que deriva
+  del contenido (fotos, ubicaciones, metadatos, lugares); las etiquetas y los
+  favoritos no se regeneran desde disco, así que exigen copia de seguridad
+  (Fase 3).
 
 ## Alcance del MVP
 

@@ -63,8 +63,13 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 
 1. **Nunca modificar, mover ni borrar originales.** Toda escritura va a XMP,
    SQLite o a un nuevo fichero derivado (miniaturas, caché).
-2. **XMP es la fuente de verdad.** SQLite es un índice reconstruible; ningún
-   dato debe existir solo en la base de datos.
+2. **El catálogo es la fuente de verdad de etiquetas y favoritos**
+   ([ADR 0006](docs/adr/0006-etiquetas.md)). Los metadatos de usuario
+   (etiquetas, favoritos) viven solo en `catalog.sqlite`: XMP deja de ser su
+   fuente de verdad, la exportación es futurible y la importación no existe.
+   Los originales siguen intactos y todo lo escrito por `foto` vive en
+   `.foto/` (regla 1). El resto de los datos del catálogo —fotos, ubicaciones,
+   metadatos intrínsecos, lugares— sigue siendo derivable del contenido.
 3. **Sin red por defecto.** Las únicas salidas a la red son la copia de
    seguridad a S3 (cuando exista, optativa) y la geocodificación inversa de
    las fotos con GPS contra OpenStreetMap en la fase `geocode` del indexador,

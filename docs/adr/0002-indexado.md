@@ -15,6 +15,13 @@ visualizador actual recorre la carpeta y genera miniaturas con Qt, pero no tiene
 un índice estable ni incremental. Este ADR fija el proceso que llena
 `<fototeca>/.foto/catalog.sqlite` sin acoplarse a Qt.
 
+> **Nota de revisión 2026-11-10:** las tablas de tags han llegado con
+> [`ADR 0006`](0006-etiquetas.md) (`tags` + `photo_tags`, esquema v4) ligadas
+> por `photo_hash`, tal como se anticipaba en las notas de implementación y en
+> «Evolución futura». A diferencia de lo previsto en § 10, **XMP ya no es la
+> fuente de verdad de los datos de usuario**: el catálogo lo es de las
+> etiquetas y los favoritos, y la exportación a XMP queda como futurible.
+>
 > **Nota 2026-11-09:** el indexador es ahora un **pipeline de fases** (`scan`,
 > `geocode`) con una tabla nueva `run_phases` en el historial y metadatos de
 > lugar (`place_status` y jerarquía país/región/ciudad con caché por celda) en
@@ -153,7 +160,8 @@ Notas de implementación:
   ya registra cuándo se hizo la pasada.
 - No se guarda el JSON crudo de `exiftool`.
 - Las tablas de tags, caras y embeddings se añadirán después con `photo_hash`
-  como clave foránea. No existen todavía.
+  como clave foránea. No existen todavía. *(Las de tags llegaron con
+  [`ADR 0006`](0006-etiquetas.md); caras y embeddings siguen pendientes.)*
 
 ### 4. Indexado incremental por firma de `stat`
 
@@ -340,8 +348,10 @@ systemctl --user enable --now foto-index.timer
 
 ### 10. Evolución futura
 
-- **Tags y metadatos de usuario:** no son función del contenido. Llegarán con
-  XMP como fuente de verdad y se asociarán a `photos.hash`, no a una ruta.
+- **Tags y metadatos de usuario:** no son función del contenido. Llegaron con
+  el [`ADR 0006`](0006-etiquetas.md) (`tags` + `photo_tags`, esquema v4) y se
+  asocian a `photos.hash`, no a una ruta; el catálogo es su fuente de verdad
+  y XMP queda como exportación futurible.
 - **Caras y embeddings:** serán tablas derivadas con `photo_hash` y versión de
   modelo. Se calcularán una vez por contenido y se podrán reconstruir.
 - **Miniaturas:** caché derivada en `.foto/thumbs/`; no forman parte de este ADR.

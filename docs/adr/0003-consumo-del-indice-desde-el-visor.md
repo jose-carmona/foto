@@ -26,7 +26,9 @@ El visualizador **solo** mostrará fotos que existan en el catálogo.
 
 - Si no existe `<fototeca>/.foto/catalog.sqlite`, la aplicación debe mostrar un error claro y **cerrarse**.
 - Si el catálogo existe pero no tiene fotos con ubicaciones `present`, se muestra el estado vacío existente, pero **no** se hace un barrido del filesystem para "rellenarlo".
-- El catálogo debe abrirse en modo **solo lectura** desde la UI.
+- El catálogo debe abrirse en modo **solo lectura** desde la UI. *(Enmendado
+  el 2026-11-10: la escritura de usuario —etiquetas— usa una conexión RW
+  dedicada y acotada; ver Enmiendas.)*
 - El indexador sigue siendo un proceso independiente (`foto-index`), lanzable desde CLI, cron o systemd. La UI no crea ni regenera el índice.
 
 ### 2. Fuente de datos
@@ -126,6 +128,17 @@ Toda la lógica de filtrado, búsqueda y ordenación deberá hacerse **contra lo
 
 ## Enmiendas
 
+- **2026-11-10** — El visor gana una **conexión de escritura dedicada y
+  acotada** para las etiquetas: mantiene la lectura en modo solo lectura
+  para todo lo existente (`photos`, `locations` y el resto del catálogo), y
+  la escritura de usuario queda limitada a `tags`/`photo_tags` a través de
+  una conexión RW propia que **no toma `index.lock`** (`busy_timeout` + WAL
+  serializan con los lotes del indexador). Reconciliar hashes sigue siendo
+  trabajo exclusivo de `foto-index`; la UI nunca escribe en `photos` ni en
+  `locations`. Origen de la enmienda:
+  [`ADR 0006`](0006-etiquetas.md) — las etiquetas y el favorito persistido
+  (etiqueta de sistema `fav`) exigen escritura de usuario desde el visor,
+  decisión de `ADR 0006` que enmienda el modo solo lectura fijado aquí.
 - **2026-11-03** — Se elimina la orden `:rescan` del visor (antes definida en la
   sección 4 como «recarga de los datos desde el catálogo»). La reindexación y
   la sincronización del índice se ejecutan siempre desde la shell, un servicio
