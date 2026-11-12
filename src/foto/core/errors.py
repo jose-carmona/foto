@@ -58,6 +58,10 @@ class TagError(FotoError):
     """Error al normalizar, resolver o escribir etiquetas (ADR 0006)."""
 
 
+class TransferError(FotoError):
+    """Error de exportación o importación JSON de metadatos (ADR 0007)."""
+
+
 class LockError(FotoError):
     """No se pudo usar el lock del indexador."""
 

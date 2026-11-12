@@ -538,6 +538,15 @@ class Catalog:
         row = self._conn.execute("PRAGMA journal_mode").fetchone()
         return str(row[0]) if row is not None else ""
 
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """Conexión SQLite subyacente, para lecturas acotadas (``foto-export``).
+
+        Solo lectura de filas: las herramientas de transferencia nunca
+        ejecutan SQL de escritura con ella (ADR 0007, Decisión 4).
+        """
+        return self._conn
+
     def user_version(self) -> int:
         row = self._conn.execute("PRAGMA user_version").fetchone()
         return int(row[0]) if row is not None else 0
