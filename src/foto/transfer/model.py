@@ -292,3 +292,187 @@ def require_valid_places_file(data: PlacesFile) -> None:
         raise TransferError(
             "El fichero de lugares viola el formato v1: " + "; ".join(problems)
         )
+
+
+# ----------------------------------------------------------------------
+# Lectura: dict del fichero -> modelo, con validación completa
+# ----------------------------------------------------------------------
+def _check_file_header(payload: object, expected_format: str) -> str:
+    """Valida la cabecera (formato y versión conocidos) y devuelve ``generated_at``.
+
+    Un fichero de formato o versión más nuevo que el binario aborta con un
+    mensaje claro, con el mismo criterio que el catálogo (ADR 0007, Decisión 5).
+    """
+    if not isinstance(payload, dict):
+        raise TransferError("El fichero no es un objeto JSON")
+    if payload.get("format") != expected_format:
+        raise TransferError(
+            f"Formato desconocido: {payload.get('format')!r} "
+            f"(se espera {expected_format!r})"
+        )
+    version = payload.get("version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise TransferError("El fichero no declara una 'version' entera")
+    if version > FORMAT_VERSION:
+        raise TransferError(
+            f"El fichero usa {expected_format} versión {version}, más nueva que "
+            f"la soportada ({FORMAT_VERSION}). Actualiza foto antes de importar."
+        )
+    if version != FORMAT_VERSION:
+        raise TransferError(f"Versión de formato desconocida: {version}")
+    generated_at = payload.get("generated_at")
+    if not isinstance(generated_at, str) or not generated_at:
+        raise TransferError("El fichero no declara un 'generated_at' de texto")
+    return generated_at
+
+
+def _required_text(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise TransferError(f"El campo '{key}' debe ser un texto no vacío")
+    return value
+
+
+def _optional_text(payload: dict[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TransferError(f"El campo '{key}' debe ser texto o null")
+    return value
+
+
+def _region_from_value(value: object) -> Region | None:
+    """``region`` del JSON a tupla del modelo, con los problemas del formato."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        raise TransferError(f"Región mal formada: {value!r} (se espera null o [x, y, w, h])")
+    if any(isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)) for coordinate in value):
+        raise TransferError(f"Región con coordenadas no numéricas: {value!r}")
+    region: Region = (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
+    message = validate_region(region)
+    if message is not None:
+        raise TransferError(message)
+    return region
+
+
+def tags_file_from_dict(payload: object) -> TagsFile:
+    """Construye y valida un ``TagsFile`` desde el dict del fichero.
+
+    Valida el fichero completo antes de devolverlo (formato y versión
+    conocidos, hashes bien formados, ``kind``/``source``/``status``/``region``
+    en rango y referencias ``tag`` presentes en la sección ``tags`` del
+    propio fichero): un fichero inválido aborta sin escribir nada.
+    """
+    generated_at = _check_file_header(payload, TAGS_FORMAT)
+    assert isinstance(payload, dict)  # garantizado por _check_file_header
+    raw_tags = payload.get("tags")
+    if not isinstance(raw_tags, list):
+        raise TransferError("La sección 'tags' no es una lista")
+    tags: list[TagEntry] = []
+    for raw in raw_tags:
+        if not isinstance(raw, dict):
+            raise TransferError("Una entrada de 'tags' no es un objeto")
+        kind = _required_text(raw, "kind")
+        message = validate_tag_kind(kind)
+        if message is not None:
+            raise TransferError(message)
+        tags.append(
+            TagEntry(
+                name=_required_text(raw, "name"),
+                normalized=_required_text(raw, "normalized"),
+                kind=kind,
+                created_at=_required_text(raw, "created_at"),
+                updated_at=_required_text(raw, "updated_at"),
+            )
+        )
+
+    raw_assignments = payload.get("assignments")
+    if not isinstance(raw_assignments, list):
+        raise TransferError("La sección 'assignments' no es una lista")
+    assignments: list[AssignmentEntry] = []
+    for raw in raw_assignments:
+        if not isinstance(raw, dict):
+            raise TransferError("Una entrada de 'assignments' no es un objeto")
+        source = _required_text(raw, "source")
+        status = _required_text(raw, "status")
+        confidence = raw.get("confidence")
+        message = validate_confidence(confidence)
+        if message is not None:
+            raise TransferError(message)
+        assignments.append(
+            AssignmentEntry(
+                photo=_required_text(raw, "photo"),
+                tag=_required_text(raw, "tag"),
+                source=source,
+                status=status,
+                confidence=None if confidence is None else float(confidence),
+                region=_region_from_value(raw.get("region")),
+                created_at=_required_text(raw, "created_at"),
+                updated_at=_required_text(raw, "updated_at"),
+            )
+        )
+
+    data = TagsFile(
+        generated_at=generated_at, tags=tuple(tags), assignments=tuple(assignments)
+    )
+    require_valid_tags_file(data)
+    problems = validate_tags_references(data)
+    if problems:
+        raise TransferError(
+            "El fichero de etiquetas viola el formato v1: " + "; ".join(problems)
+        )
+    return data
+
+
+def validate_tags_references(data: TagsFile) -> list[str]:
+    """Cada asignación debe referenciar una etiqueta de la sección ``tags``."""
+    known = {tag.normalized for tag in data.tags}
+    return [
+        f"la asignación referencia una etiqueta ausente de la sección 'tags': {assignment.tag!r}"
+        for assignment in data.assignments
+        if assignment.tag not in known
+    ]
+
+
+def places_file_from_dict(payload: object) -> PlacesFile:
+    """Construye y valida un ``PlacesFile`` desde el dict del fichero."""
+    generated_at = _check_file_header(payload, PLACES_FORMAT)
+    assert isinstance(payload, dict)  # garantizado por _check_file_header
+    raw_places = payload.get("places")
+    if not isinstance(raw_places, list):
+        raise TransferError("La sección 'places' no es una lista")
+    places: list[PlaceEntry] = []
+    problems: list[str] = []
+    for raw in raw_places:
+        if not isinstance(raw, dict):
+            raise TransferError("Una entrada de 'places' no es un objeto")
+        photo = _required_text(raw, "photo")
+        message = validate_photo_hash(photo)
+        if message is not None:
+            problems.append(message)
+            continue
+        address = raw.get("address")
+        if address is not None and not isinstance(address, dict):
+            raise TransferError("El campo 'address' debe ser un objeto o null")
+        places.append(
+            PlaceEntry(
+                photo=photo,
+                country=_optional_text(raw, "country"),
+                country_code=_optional_text(raw, "country_code"),
+                state=_optional_text(raw, "state"),
+                city=_optional_text(raw, "city"),
+                municipality=_optional_text(raw, "municipality"),
+                display_name=_optional_text(raw, "display_name"),
+                address=address,
+                resolved_at=_optional_text(raw, "resolved_at"),
+            )
+        )
+    data = PlacesFile(generated_at=generated_at, places=tuple(places))
+    require_valid_places_file(data)
+    if problems:
+        raise TransferError(
+            "El fichero de lugares viola el formato v1: " + "; ".join(problems)
+        )
+    return data

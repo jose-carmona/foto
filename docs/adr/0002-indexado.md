@@ -15,6 +15,14 @@ visualizador actual recorre la carpeta y genera miniaturas con Qt, pero no tiene
 un índice estable ni incremental. Este ADR fija el proceso que llena
 `<fototeca>/.foto/catalog.sqlite` sin acoplarse a Qt.
 
+> **Nota de revisión 2026-11-12:** las columnas `place_*` ya no las llena
+> solo la fase `geocode` del indexador: `foto-import` también las rellena con
+> el paquete de lugares exportado, siempre aditivamente (solo estados
+> `pending`/`none`, y `error` con `--force`; jamás un `ok`), según el
+> [`ADR 0007`](0007-exportar-importar-metadatos.md). Por escribir en
+> `photos` es escritor único y firma `index.lock` como `foto-index`. El resto
+> de la decisión no cambia.
+>
 > **Nota de revisión 2026-11-10:** las tablas de tags han llegado con
 > [`ADR 0006`](0006-etiquetas.md) (`tags` + `photo_tags`, esquema v4) ligadas
 > por `photo_hash`, tal como se anticipaba en las notas de implementación y en

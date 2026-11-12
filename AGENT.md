@@ -42,8 +42,14 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   correr los tests, el servicio es inyectable (`core/geocoding.py`) y sin red.
 - El catálogo vive en `<fototeca>/.foto/catalog.sqlite`. Es reconstruible en lo
   que deriva del contenido (fotos, ubicaciones, metadatos, lugares); las
-  etiquetas y los favoritos no se regeneran y exigen copia de seguridad. El
-  indexador no importa Qt.
+  etiquetas y los favoritos no se regeneran y exigen copia de seguridad: la vía
+  de respaldo y de migración entre bibliotecas es `foto-export`/`foto-import`
+  ([ADR 0007](docs/adr/0007-exportar-importar-metadatos.md), en
+  `src/foto/transfer/`, sin Qt: dos ficheros JSON, `tags.json` y
+  `places.json`). `foto-export` es solo lectura (no toma lock, WAL) y
+  `foto-import` es escritor único: toma `index.lock` como `foto-index` y
+  aplica merge aditivo idempotente (nunca borra; las filas que crea nacen
+  `source='import'`). El indexador no importa Qt.
 - El visor **consume el catálogo** (`ADR 0003`): lee solo desde
   `<fototeca>/.foto/catalog.sqlite` (ubicaciones `present`). Si no existe el
   catálogo, la app avisa y se cierra. Las búsquedas y ordenaciones se hacen
@@ -78,9 +84,13 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 2. **El catálogo es la fuente de verdad de etiquetas y favoritos**
    ([ADR 0006](docs/adr/0006-etiquetas.md)). Los metadatos de usuario
    (etiquetas, favoritos) viven solo en `catalog.sqlite`: XMP deja de ser su
-   fuente de verdad, la exportación es futurible y la importación no existe.
+   fuente de verdad; el respaldo y la migración entre bibliotecas se hacen con
+   `foto-export`/`foto-import` (JSON en `src/foto/transfer/`,
+   [ADR 0007](docs/adr/0007-exportar-importar-metadatos.md)); la exportación
+   XMP sigue siendo futurible y la importación XMP sigue sin existir.
    Los originales siguen intactos y todo lo escrito por `foto` vive en
-   `.foto/` (regla 1). El resto de los datos del catálogo —fotos, ubicaciones,
+   `.foto/` (regla 1), más el fichero de exportación que el usuario pida con
+   `--out`. El resto de los datos del catálogo —fotos, ubicaciones,
    metadatos intrínsecos, lugares— sigue siendo derivable del contenido.
 3. **Sin red por defecto.** Las únicas salidas a la red son la copia de
    seguridad a S3 (cuando exista, optativa) y la geocodificación inversa de
@@ -125,6 +135,8 @@ foto/
 ├── src/foto/
 │   ├── core/         # hashing, scanner, metadatos, geocoding, indexado
 │   ├── indexer/      # CLI foto-index, cliente Nominatim y __main__
+│   ├── transfer/     # exportación e importación JSON de metadatos
+│   │                 # (foto-export / foto-import, ADR 0007, sin Qt)
 │   ├── storage/      # catálogo SQLite, exiftool, lock y config TOML
 │   └── ui/           # ventana orquestadora, widgets (rejilla, visor,
 │                     # paneles, ayuda), tokens y QSS de widgets, comandos,
@@ -141,6 +153,9 @@ uv run foto
 uv run foto-index --library ~/Fotos
 uv run foto-index --library ~/Fotos --dry-run --json
 uv run python -m foto.indexer --library ~/Fotos --help
+uv run foto-export --library ~/Fotos --dry-run
+uv run foto-export --library ~/Fotos --out ~/backups
+uv run foto-import --library ~/Fotos --tags ~/backups/tags.json
 PYTHONPATH=src .venv/bin/python -m foto.ui.prototype
 uv run pytest
 uv run ruff check .
@@ -203,6 +218,10 @@ Resumen operativo:
   detiene sin marcar error, reanudando en la siguiente pasada.
 - **Concurrencia:** WAL, `foreign_keys=ON`, `busy_timeout` y lock exclusivo en
   `.foto/index.lock`. Un solo escritor; el futuro lector no debe bloquearse.
+- **Transferencia:** `foto-export` (solo lectura del catálogo, sin lock) y
+  `foto-import` (escritor único: toma `index.lock` porque rellena `place_*`)
+  viven en `src/foto/transfer/`, sin Qt
+  ([ADR 0007](docs/adr/0007-exportar-importar-metadatos.md)).
 - **Sin Qt:** `core/`, `storage/` e `indexer/` no importan `foto.ui` ni PySide6.
 
 ## Tests

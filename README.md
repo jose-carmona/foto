@@ -34,8 +34,10 @@ inspeccionarla y migrarla con herramientas estándar.
   originales; los cambios se guardan como metadatos.
 - **Metadatos de usuario en el catálogo.** Las etiquetas y los favoritos viven
   en el catálogo SQLite, que es su fuente de verdad
-  ([ADR 0006](docs/adr/0006-etiquetas.md)); la exportación a XMP queda como
-  futurible y la importación no existe.
+  ([ADR 0006](docs/adr/0006-etiquetas.md)); el respaldo y la migración entre
+  bibliotecas se hacen con `foto-export`/`foto-import` (JSON,
+  [ADR 0007](docs/adr/0007-exportar-importar-metadatos.md)); la exportación a
+  XMP queda como futurible y la importación XMP sigue sin existir.
 - **Multiplataforma real.** Desarrollo y uso diario en Omarchy (Arch Linux +
   Hyprland/Wayland), con soporte de primera clase en macOS.
 - **Sin telemetría.** No sale del equipo nada que no sea explícito: las copias
@@ -43,8 +45,8 @@ inspeccionarla y migrarla con herramientas estándar.
   (Nominatim), limitadas a las fotos con GPS y desactivables.
 - **Componentes reemplazables.** El catálogo es reconstruible en lo que deriva
   del contenido (fotos, ubicaciones, metadatos, lugares); las etiquetas y los
-  favoritos no se regeneran desde disco, así que exigen copia de seguridad
-  (Fase 3).
+  favoritos no se regeneran desde disco, así que se respaldan con `foto-export`
+  (y la copia de la Fase 3 los cubrirá).
 
 ## Alcance del MVP
 
@@ -108,6 +110,9 @@ forma de publicación o compartición.
   - Copia de seguridad a disco local
   - Copia de seguridad a S3 (opcional y configurable)
   - Verificación de integridad de la biblioteca
+  - [x] Exportación e importación JSON de etiquetas y lugares
+    (`foto-export`/`foto-import`,
+    [ADR 0007](docs/adr/0007-exportar-importar-metadatos.md))
 - [ ] **Fase 4 — Edición no destructiva**
   - Recorte, rotación, exposición, color
 - [ ] **Fase 5 — Migración e IA local**
@@ -174,6 +179,8 @@ foto/
 ├── src/foto/
 │   ├── core/       # hashing, recorrido, metadatos, geocodificación e indexado
 │   ├── indexer/    # CLI foto-index, python -m foto.indexer y Nominatim
+│   ├── transfer/   # exportación e importación JSON de metadatos
+│   │               # (foto-export / foto-import, ADR 0007)
 │   ├── storage/    # SQLite, exiftool, lock, biblioteca y configuración TOML
 │   ├── ui/         # ventana orquestadora, widgets, teclas, comandos, temas,
 │   │               # ayuda, demo y miniaturas
@@ -198,6 +205,8 @@ foto/
     geocodificación inversa con Nominatim, con caché por celda y reanudación.
   - `0006-etiquetas.md` — etiquetas y favoritos en el catálogo: esquema
     `tags`/`photo_tags`, escritura RW del visor sin `index.lock`.
+  - `0007-exportar-importar-metadatos.md` — exportación e importación JSON de
+    tags y lugares: dos ficheros, merge aditivo idempotente y migración v5.
 
 ## UI
 
@@ -340,6 +349,62 @@ systemctl --user enable --now foto-index.timer
 uv run pytest
 uv run ruff check .
 ```
+
+## Exportar e importar
+
+Las etiquetas, los favoritos y los lugares resueltos no viven en los
+originales: las etiquetas no son reconstruibles (son metadatos de usuario) y
+los lugares exigen peticiones a Nominatim a 1/segundo
+([ADR 0007](docs/adr/0007-exportar-importar-metadatos.md)). `foto-export` los
+vuelca a **dos ficheros JSON separados** —`tags.json` (imprescindible) y
+`places.json` (descartable, dato de terceros)— y `foto-import` los aplica con
+**merge aditivo idempotente**: añade lo que falta, no toca lo existente y
+nunca borra. La identidad es el hash de contenido, así que los ficheros son
+portables entre bibliotecas. Exportar nunca escribe en el catálogo; los
+metadatos EXIF incrustados no se exportan (su fuente de verdad sigue siendo la
+foto) y XMP no se exporta ni se importa.
+
+```sh
+uv run foto-export --library ~/Fotos                       # ambos, a .foto/exports/
+uv run foto-export --library ~/Fotos --tags --out ~/backups
+uv run foto-export --library ~/Fotos --places --out ~/backups
+uv run foto-export --library ~/Fotos --dry-run --json
+
+uv run foto-import --library ~/Fotos --tags ~/backups/tags.json
+uv run foto-import --library ~/Fotos --tags a.json --places b.json
+uv run foto-import --library ~/Fotos --tags a.json --dry-run --verbose
+```
+
+| Opción (export) | Comportamiento |
+| --- | --- |
+| `--tags` / `--places` | Selección; por defecto se exportan ambos, a ficheros separados. |
+| `--out DIR` | Directorio de destino; por defecto `<fototeca>/.foto/exports/`. |
+| `--dry-run` | Calcula y valida todo, no escribe ficheros. |
+| `--json` | Resumen JSON en stdout; los logs a stderr. |
+| `--quiet` / `--verbose` | Menos o más detalle. |
+
+| Opción (import) | Comportamiento |
+| --- | --- |
+| `--tags FILE` / `--places FILE` | Ficheros a importar; al menos uno. |
+| `--force` | Rellena lugares de fotos con `place_status='error'` (nunca `ok`). |
+| `--dry-run` | Valida y calcula lo que cambiaría sin escribir; no toma el lock. |
+| `--json` | Resumen JSON en stdout; los logs a stderr. |
+| `--quiet` / `--verbose` | Menos o más detalle. |
+
+Los ficheros son UTF-8 con `indent=2` y orden determinista: dos exportaciones
+seguidas sin cambios producen el mismo cuerpo (aptos para `diff` y para
+versionar). La escritura es atómica. `foto-export` solo lee el catálogo (WAL:
+funciona con `foto-index` o la app corriendo); `foto-import` es escritor único
+y toma `index.lock` como `foto-index` porque rellena `place_*`. Tras un
+import, el catálogo queda en v5 y la app puede abrirlo directamente.
+
+Los resúmenes solo traen conteos: nunca nombres de etiquetas ni direcciones.
+Los hashes ausentes (fotos del fichero que no están en el catálogo) se
+informan y se conservan en el fichero para futuros imports.
+
+Códigos de salida: `0` éxito, `1` error no fatal (avisos incluidos), `2`
+configuración/biblioteca/catálogo/fichero inválido, `3` otro proceso tiene el
+lock (solo import), `130` interrupción con `SIGINT`.
 
 ## Requisitos
 

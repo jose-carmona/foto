@@ -14,6 +14,7 @@ dependencies = [
 foto = "foto.ui.app:main"
 foto-index = "foto.indexer.cli:main"
 foto-export = "foto.transfer.cli_export:main"
+foto-import = "foto.transfer.cli_import:main"
 
 [build-system]
 requires = ["hatchling"]
