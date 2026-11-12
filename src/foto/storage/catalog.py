@@ -16,7 +16,7 @@ from foto.storage.tags import Tag, TagAssignment, assignments_by_hash, list_tags
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 CATALOG_FILE_NAME = "catalog.sqlite"
 
 SCHEMA_V1 = """
@@ -206,6 +206,62 @@ CREATE INDEX IF NOT EXISTS photo_tags_photo_idx ON photo_tags(photo_hash);
 CREATE INDEX IF NOT EXISTS photo_tags_tag_idx   ON photo_tags(tag_id);
 """
 
+# Ampliación del ``CHECK`` de ``photo_tags.source`` con ``'import'`` (ADR 0007,
+# enmienda del ADR 0006): ampliar un ``CHECK`` cerrado exige reconstruir la
+# tabla en SQLite. La migración renombra la original a un nombre temporal,
+# crea la tabla nueva con su nombre definitivo (texto idéntico al del
+# ADR 0006 salvo el ``CHECK`` de ``source``), copia las filas tal cual, suelta
+# la vieja y recrea los tres índices byte a byte iguales a los del ADR 0006.
+# Todo en una única transacción: o la reconstrucción entera o nada.
+SCHEMA_V5_PHOTO_TAGS_REBUILD = """
+DROP TABLE IF EXISTS photo_tags_v5_old;
+
+BEGIN;
+ALTER TABLE photo_tags RENAME TO photo_tags_v5_old;
+
+CREATE TABLE photo_tags (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    photo_hash  TEXT NOT NULL REFERENCES photos(hash) ON DELETE CASCADE,
+    tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    source      TEXT NOT NULL DEFAULT 'manual'
+                CHECK (source IN ('manual', 'ml', 'import')),
+    status      TEXT NOT NULL DEFAULT 'confirmed'
+                CHECK (status IN ('confirmed', 'suggested', 'rejected')),
+    confidence  REAL CHECK (confidence IS NULL
+                        OR (confidence >= 0.0 AND confidence <= 1.0)),
+    region_x    REAL,
+    region_y    REAL,
+    region_w    REAL,
+    region_h    REAL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    CHECK ((region_x IS NULL AND region_y IS NULL
+            AND region_w IS NULL AND region_h IS NULL)
+        OR (region_x >= 0.0 AND region_x <= 1.0
+            AND region_y >= 0.0 AND region_y <= 1.0
+            AND region_w > 0.0 AND region_w <= 1.0
+            AND region_h > 0.0 AND region_h <= 1.0))
+);
+
+INSERT INTO photo_tags
+    (photo_hash, tag_id, source, status, confidence,
+     region_x, region_y, region_w, region_h, created_at, updated_at)
+SELECT photo_hash, tag_id, source, status, confidence,
+       region_x, region_y, region_w, region_h, created_at, updated_at
+FROM photo_tags_v5_old;
+
+DROP TABLE photo_tags_v5_old;
+
+CREATE UNIQUE INDEX IF NOT EXISTS photo_tags_assign_unique_idx
+    ON photo_tags (photo_hash, tag_id,
+                   COALESCE(region_x, -1.0), COALESCE(region_y, -1.0),
+                   COALESCE(region_w, -1.0), COALESCE(region_h, -1.0));
+
+CREATE INDEX IF NOT EXISTS photo_tags_photo_idx ON photo_tags(photo_hash);
+CREATE INDEX IF NOT EXISTS photo_tags_tag_idx   ON photo_tags(tag_id);
+COMMIT;
+"""
+
 
 @dataclass(frozen=True)
 class LocationRow:
@@ -379,6 +435,8 @@ class Catalog:
                 self._migrate_to_v3()
             if version < 4:
                 self._migrate_to_v4()
+            if version < 5:
+                self._migrate_to_v5()
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._conn.commit()
         except sqlite3.Error as exc:
@@ -431,6 +489,19 @@ class Catalog:
             "created_at, updated_at) VALUES ('fav', 'fav', 'system', :now, :now)",
             {"now": now},
         )
+
+    def _migrate_to_v5(self) -> None:
+        """Aplica la migración a v5: ``photo_tags.source`` admite ``'import'``.
+
+        Enmienda del ADR 0006 por el ADR 0007: toda fila creada por
+        ``foto-import`` nace con ``source='import'``. Ampliar el ``CHECK``
+        cerrado exige reconstruir la tabla en SQLite: crea
+        ``photo_tags_v5_new``, copia las filas tal cual (sin conversión de
+        datos), suelta la original, renombra y recrea los tres índices
+        byte a byte iguales a los del ADR 0006. Idempotente y sin datos que
+        convertir.
+        """
+        self._conn.executescript(SCHEMA_V5_PHOTO_TAGS_REBUILD)
 
     def _ensure_columns(self, table: str, columns: tuple[tuple[str, str], ...]) -> None:
         """Añade a la tabla las columnas que le falten (idempotente)."""

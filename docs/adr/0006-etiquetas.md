@@ -12,6 +12,14 @@
   conexión entre la geolocalización del ADR 0005 y las etiquetas. El pipeline
   de fases del indexador no cambia.
 
+> **Nota de revisión 2026-11-12.** El `CHECK` de `photo_tags.source` se
+> amplió con el valor `'import'` (reconstrucción de la tabla, migración a
+> esquema v5) por el [`ADR 0007`](0007-exportar-importar-metadatos.md), para
+> que las filas creadas por `foto-import` declaren su procedencia. `fav`
+> sigue siendo la única etiqueta de sistema, la unicidad de asignaciones no
+> cambia y el valor `xmp_import` sigue sin existir. El resto de la decisión
+> no cambia.
+
 ## Contexto
 
 El visor tiene un favorito que solo vive en memoria (`favorite: bool` en el

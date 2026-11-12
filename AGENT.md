@@ -26,8 +26,10 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   las acciones con un único dispatcher (`_dispatch`) con registro acción →
   handler. Todos son módulos sin Qt que la ventana consume.
 - Indexador `foto-index` completo en `src/foto/indexer/` + `core/` + `storage/`:
-  catálogo SQLite incremental (esquema v4, con las tablas `tags` y
-  `photo_tags` de [ADR 0006](docs/adr/0006-etiquetas.md) y la etiqueta de
+  catálogo SQLite incremental (esquema v5, con las tablas `tags` y
+  `photo_tags` de [ADR 0006](docs/adr/0006-etiquetas.md) —`photo_tags.source`
+  ampliado con `'import'` por el
+  [ADR 0007](docs/adr/0007-exportar-importar-metadatos.md)— y la etiqueta de
   sistema `fav` sembrada por `kind='system'`), hashes SHA-256 de contenido,
   rutas relativas, reconciliación de ausencias, `exiftool` opcional y lock de
   escritor único. Es
