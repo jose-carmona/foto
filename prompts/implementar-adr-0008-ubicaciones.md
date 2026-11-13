@@ -108,7 +108,8 @@ verificación disponible.
 
 # Paso 1 — Estado actual: auditoría y normalización
 
-- [ ] **T1.1 — Auditoría documentada de resolución de rutas.** Recorrer
+- [x] **T1.1 — Auditoría documentada de resolución de rutas.** (2026-11-13)
+  Recorrer
   `src/foto/` y enumerar **cada punto** donde se resuelve una ubicación
   (lecturas de entorno, `resolve_*`, `foto_dir`/`library_file`/`thumbs_dir`,
   rutas `.foto` literales, rutas de catálogo/miniaturas/lock). Entregar el
@@ -116,30 +117,76 @@ verificación disponible.
   función / qué resuelve / mecanismo), que servirá de lista de comprobación
   del resto de tareas. La auditoría se muestra al proyectista antes de
   pasar a T1.2.
-- [ ] **T1.2 — Normalización interna de la UI (sin cambio de comportamiento).**
+- [x] **T1.2 — Normalización interna de la UI (sin cambio de comportamiento).**
+  (2026-11-13)
   `src/foto/ui/app.py` construye `library_path / ".foto" / "catalog.sqlite"`
   a mano en `load_photos`, `load_tags` y `MainWindow`: sustituirlo por los
   helpers de `storage/library.py` (`foto_dir()`, `library_file()`,
   `thumbs_dir()`) para que el paso 2 solo tenga que cambiar el valor
   resuelto, no tres literales dispersos. Ni `--metadata` ni nada nuevo.
-- [ ] **T1.3 — Tests que fijan el estado actual.** Cubrir huecos de las
+  > Nota (2026-11-13): el nombre de fichero se dejó en la constante
+  > `CATALOG_FILE_NAME` de `storage/catalog.py` (`foto_dir(p) /
+  > CATALOG_FILE_NAME`), el mismo patrón que ya usan los tres CLIs; así el
+  > paso 2 cambia un solo valor por punto de entrada.
+- [x] **T1.3 — Tests que fijan el estado actual.** (2026-11-13) Cubrir huecos de las
   cadenas vigentes: `resolve_config_path` (`--config` → `FOTO_CONFIG` →
   `platformdirs`) y `resolve_library_path` (los tres orígenes) si el código
   de `tests/` actual no los cubre ya; y un test de coherencia que demuestre
   que los cuatro puntos de entrada (tres CLIs + UI vía helpers) derivan las
   mismas rutas de metainformación a partir de la misma raíz. Aprovechar el
   patrón de `environment` inyectable de `tests/test_library_resolution.py`.
-- [ ] **T1.4 — Verificación y cierre del paso 1.** `uv sync`, `uv run
+  > Nota (2026-11-13): `resolve_library_path` ya estaba cubierta por
+  > `tests/test_library_resolution.py` (siete casos, con entorno inyectable);
+  > se añadieron `tests/test_config_resolution.py` (cadena de config) y
+  > `tests/test_metadata_coherence.py` (coherencia end-to-end de los cuatro
+  > puntos de entrada sobre la misma `.foto/`). `resolve_config_path` lee
+  > `os.environ` directamente (no inyectable hoy): los tests usan
+  > `monkeypatch`, patrón del propio módulo; inyectarlo queda como mejora
+  > opcional, no como requisito del paso 1.
+- [x] **T1.4 — Verificación y cierre del paso 1.** (2026-11-13) `uv sync`, `uv run
   pytest`, `uv run ruff check .` en verde; smoke test manual:
   `uv run foto-index --library <biblioteca de prueba> --dry-run` y
   `uv run foto` sobre una biblioteca ya indexada. Confirmar que nada cambió
   de sitio en disco (misma `.foto/`, mismo `config.toml`). Marcar las cuatro
   tareas y resumir en una línea el estado final del paso.
+  > Nota (2026-11-13): 793 tests en verde (786 previos + 7 nuevos), ruff
+  > limpio. Smoke: `--dry-run` no creó nada; indexado real y `foto`
+  > (offscreen, con `FOTO_CONFIG`/`FOTO_LIBRARY` sobre biblioteca indexada)
+  > abrieron la misma `.foto/` sin escribir fuera de ella y sin crear
+  > `config.toml`. La UI ya está afectada por `FOTO_LIBRARY` hoy porque
+  > `resolve_library_path()` lee el entorno.
+
+### Auditoría de resolución de rutas (T1.1, 2026-11-13)
+
+| Fichero | Función / punto | Qué resuelve | Mecanismo |
+| --- | --- | --- | --- |
+| `storage/config.py` | `get_default_config_path` | Nivel 3 de la cadena de configuración | `platformdirs.user_config_dir("foto") / config.toml` |
+| `storage/config.py` | `resolve_config_path` | Cadena 1 completa: `--config` → `FOTO_CONFIG` → por defecto | Parámetro; `os.environ` (única lectura de entorno de `storage/`); sin inyección de entorno hoy |
+| `storage/config.py` | `_expand_path` | `[library].path` | `expanduser`; relativas contra el directorio del `config.toml` |
+| `storage/config.py` | `_render_canonical` / `_update_library_path` / `_write_text_atomic` | Escritura de `config.toml` | Conservadora (solo `[library].path`), temp + `os.replace` |
+| `storage/resolver.py` | `resolve_library_path` | Cadena 2: `--library` → `FOTO_LIBRARY` → `[library].path` | Parámetro; `os.environ` o mapping inyectable; `load_config`. Único sitio de precedencia |
+| `storage/library.py` | `foto_dir` / `library_file` / `thumbs_dir` | `.foto/`, `library.toml`, `thumbs/` | Literal `FOTO_DIR_NAME = ".foto"` derivado de la raíz (nivel 4 actual) |
+| `storage/library.py` | `ensure_library` / `load_library` | Bootstrap atómico del descriptor y su lectura | `foto_dir(root)` + lock de creación (`.library.toml.creating`) |
+| `storage/lock.py` | `LOCK_FILE_NAME` | `index.lock` | Constante; la ruta la componen los llamadores con `foto_dir(root)` |
+| `storage/catalog.py` | `CATALOG_FILE_NAME` | `catalog.sqlite` | Constante; la componen los llamadores con `foto_dir(root)` |
+| `indexer/cli.py` | `main` | Catálogo y lock del indexador | `foto_dir(root) / CATALOG_FILE_NAME`, `IndexerLock(foto_dir(root) / LOCK_FILE_NAME)` |
+| `transfer/cli_export.py` | `main` | Catálogo (solo lectura) y destino por defecto de `--out` | `foto_dir(root) / CATALOG_FILE_NAME`; literal `foto_dir(root) / "exports"` |
+| `transfer/cli_import.py` | `main` | Catálogo y lock del importador | `foto_dir(root) / CATALOG_FILE_NAME`, `IndexerLock(foto_dir(root) / LOCK_FILE_NAME)` |
+| `ui/app.py` | `main` | Biblioteca (sin flag hoy) y primera ejecución | `resolve_library_path()` (lee el entorno); el diálogo persiste `[library].path` vía `save_config` |
+| `ui/app.py` | `load_photos` / `load_tags` / `MainWindow.__init__` | Catálogo lector y conexión RW de la UI | Helper `foto_dir(library_path) / CATALOG_FILE_NAME` (antes literal `.foto` + `catalog.sqlite`; normalizado en T1.2) |
+| `ui/app.py` | `_validated_library` | Descriptor | Helper `library_file(library_path)` |
+| `ui/app.py` | `MainWindow.__init__` | Caché de miniaturas | Helper `thumbs_dir(library_path)` |
+| `core/scanner.py` | recorrido del `scan` | Ignora `.foto/` al indexar | Comparación de `entry.name` (sin cambio pedido en el ADR 0008) |
+| `core/library.py` | `list_images` (obsoleto) | Ignora `.foto` al listar | `".foto" in Path(root).parts` |
 
 **Criterio de fin del paso 1:** el comportamiento observable es byte a byte
 el de antes; todo pasa por los helpers/resolutores existentes; la auditoría
 de T1.1 está registrada en este fichero. **No continuar al paso 2 sin
 cerrar esto.**
+
+> Estado final del paso 1 (2026-11-13): T1.1–T1.4 cerradas; 793 tests y
+> ruff en verde, cero cambios de comportamiento, auditoría registrada
+> arriba.
 
 ---
 

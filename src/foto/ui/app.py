@@ -14,9 +14,9 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from foto.core.errors import CatalogError, LibraryError
 from foto.core.library import CatalogPhoto, load_from_catalog
-from foto.storage.catalog import Catalog
+from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import AppConfig, ConfigError, load_config, save_config
-from foto.storage.library import LibraryConfig, library_file, load_library, thumbs_dir
+from foto.storage.library import LibraryConfig, foto_dir, library_file, load_library, thumbs_dir
 from foto.storage.resolver import resolve_library_path
 from foto.storage.tags import Tag, connect_read_write
 from foto.ui.grid import THUMB_H, THUMB_W
@@ -145,7 +145,7 @@ def load_photos(library_path: Path) -> list[Photo]:
     """Carga las fotos de una biblioteca validada y con índice existente."""
     _validated_library(library_path)
 
-    catalog_path = library_path / ".foto" / "catalog.sqlite"
+    catalog_path = foto_dir(library_path) / CATALOG_FILE_NAME
     if not catalog_path.exists():
         raise FileNotFoundError(
             "No se encontró el índice de la fototeca. Ejecuta 'foto-index' "
@@ -171,7 +171,7 @@ def load_tags(library_path: Path) -> list[Tag]:
     Solo lectura, igual que ``load_photos``: el visor exige un catálogo ya
     creado y migrado por ``foto-index``.
     """
-    catalog_path = library_path / ".foto" / "catalog.sqlite"
+    catalog_path = foto_dir(library_path) / CATALOG_FILE_NAME
     if not catalog_path.exists():
         raise FileNotFoundError(
             "No se encontró el índice de la fototeca. Ejecuta 'foto-index' "
@@ -208,7 +208,7 @@ class MainWindow(PhotoWindow):
             # indexador. Sin ella los favoritos no persisten, así que un
             # fallo al abrirla es un error de arranque, no un aviso.
             tag_connection = connect_read_write(
-                library_path / ".foto" / "catalog.sqlite"
+                foto_dir(library_path) / CATALOG_FILE_NAME
             )
         except (CatalogError, OSError) as exc:
             QMessageBox.critical(None, "foto", str(exc))
