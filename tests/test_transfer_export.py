@@ -494,3 +494,96 @@ def test_cli_dry_run_writes_nothing(tmp_path):
 
     assert code == 0
     assert not (tmp_path / "nada").exists()
+
+
+# ----------------------------------------------------------------------
+# --metadata (ADR 0008, § 3.4): foto-export es solo lectura
+# ----------------------------------------------------------------------
+def test_cli_metadata_reads_the_catalog_in_the_external_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("FOTO_METADATA", raising=False)
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    external = tmp_path / "metainfo-externa"
+    external.mkdir()
+    catalog = Catalog.open(external / "catalog.sqlite")
+    try:
+        _seed_photos(catalog.connection)
+        _seed_tags(catalog.connection)
+        _seed_assignments(catalog.connection)
+        _seed_places(catalog.connection)
+        catalog.commit()
+    finally:
+        catalog.close()
+
+    code = main(
+        ["--library", str(root), "--metadata", str(external),
+         "--out", str(tmp_path / "salida")]
+    )
+
+    assert code == 0
+    assert _read_json(tmp_path / "salida" / "tags.json")["counts"]["tags"] == 3
+
+
+def test_cli_metadata_default_out_is_the_metadata_exports_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("FOTO_METADATA", raising=False)
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    external = tmp_path / "metainfo-externa"
+    external.mkdir()
+    catalog = Catalog.open(external / "catalog.sqlite")
+    try:
+        _seed_photos(catalog.connection)
+        catalog.commit()
+    finally:
+        catalog.close()
+
+    code = main(["--library", str(root), "--metadata", str(external)])
+
+    assert code == 0
+    assert (external / "exports" / "tags.json").exists()
+    assert not (root / ".foto").exists()
+
+
+def test_cli_metadata_missing_dir_returns_2_and_creates_nothing(tmp_path, capsys):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    external = tmp_path / "no-existe"
+
+    code = main(["--library", str(root), "--metadata", str(external)])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "No hay metainformación" in captured.err
+    assert not external.exists()
+
+
+def test_cli_metadata_environment_is_respected(tmp_path, monkeypatch):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    external = tmp_path / "metainfo-entorno"
+    external.mkdir()
+    catalog = Catalog.open(external / "catalog.sqlite")
+    try:
+        _seed_photos(catalog.connection)
+        catalog.commit()
+    finally:
+        catalog.close()
+    monkeypatch.setenv("FOTO_METADATA", str(external))
+
+    code = main(
+        ["--library", str(root), "--out", str(tmp_path / "salida"), "--quiet"]
+    )
+
+    assert code == 0
+    assert (tmp_path / "salida" / "places.json").exists()
+
+
+def test_cli_export_help_documents_the_metadata_chain(capsys):
+    with pytest.raises(SystemExit) as raised:
+        main(["--help"])
+
+    assert raised.value.code == 0
+    output = capsys.readouterr().out
+    assert "--metadata" in output
+    assert "FOTO_METADATA" in output
+    assert "[metadata].path" in output

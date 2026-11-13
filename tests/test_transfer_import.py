@@ -754,3 +754,78 @@ def test_cli_summary_has_no_names_or_addresses(tmp_path, capsys):
 
     for private in ("Lisboa", "Marta", "Rua", "Portugal"):
         assert private not in dumped
+
+
+# ----------------------------------------------------------------------
+# --metadata (ADR 0008, § 3.4): bootstrap y lock en el directorio resuelto
+# ----------------------------------------------------------------------
+def test_cli_metadata_imports_into_the_external_dir(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("FOTO_METADATA", raising=False)
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    external = tmp_path / "metainfo-externa"
+    external.mkdir()
+    catalog = Catalog.open(external / "catalog.sqlite")
+    try:
+        _seed_photos(catalog)
+        _set_place(catalog, PHOTO_A, status="pending")
+        catalog.commit()
+    finally:
+        catalog.close()
+    tags_path, _ = _write_files(tmp_path)
+
+    code = main(
+        ["--library", str(root), "--metadata", str(external),
+         "--tags", str(tags_path), "--json"]
+    )
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+
+    assert code == 0
+    assert summary["totals"]["tags_created"] == 2
+    # El bootstrap adoptó el descriptor externo y le añadió el root.
+    assert f'root = "{root}"' in (external / "library.toml").read_text(
+        encoding="utf-8"
+    )
+    # La fototeca no recibe escrituras.
+    assert not (root / ".foto").exists()
+
+
+def test_cli_metadata_lock_is_taken_in_the_resolved_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("FOTO_METADATA", raising=False)
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    external = tmp_path / "metainfo-externa"
+    external.mkdir()
+    catalog = Catalog.open(external / "catalog.sqlite")
+    try:
+        _seed_photos(catalog)
+        catalog.commit()
+    finally:
+        catalog.close()
+    tags_path, _ = _write_files(tmp_path)
+
+    lock = IndexerLock(external / "index.lock")
+    lock.acquire()
+    try:
+        code = main(["--library", str(root), "--metadata", str(external),
+                     "--tags", str(tags_path)])
+        assert code == 3
+        # Con --dry-run no toma el lock: funciona igual.
+        assert main(
+            ["--library", str(root), "--metadata", str(external),
+             "--tags", str(tags_path), "--dry-run", "--quiet"]
+        ) == 0
+    finally:
+        lock.release()
+
+
+def test_cli_import_help_documents_the_metadata_chain(capsys):
+    with pytest.raises(SystemExit) as raised:
+        main(["--help"])
+
+    assert raised.value.code == 0
+    output = capsys.readouterr().out
+    assert "--metadata" in output
+    assert "FOTO_METADATA" in output
+    assert "[metadata].path" in output

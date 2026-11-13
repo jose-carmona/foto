@@ -25,9 +25,9 @@ from foto.core.errors import (
 )
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import ConfigError
-from foto.storage.library import ensure_library, foto_dir
+from foto.storage.library import ensure_library
 from foto.storage.lock import LOCK_FILE_NAME, IndexerLock
-from foto.storage.resolver import resolve_library_path
+from foto.storage.resolver import resolve_library_path, resolve_metadata_dir
 from foto.transfer.importer import (
     AppliedFile,
     ImportCounters,
@@ -45,6 +45,11 @@ precedencia de la biblioteca:
   1. --library PATH
   2. FOTO_LIBRARY
   3. [library].path de config.toml
+precedencia de la metainformación (.foto, ADR 0008):
+  1. --metadata PATH
+  2. FOTO_METADATA
+  3. [metadata].path de config.toml
+  4. <fototeca>/.foto (por defecto)
 
 códigos de salida:
   0  éxito
@@ -55,6 +60,7 @@ códigos de salida:
 
 ejemplos:
   uv run foto-import --library ~/Fotos --tags ~/backups/tags.json
+  uv run foto-import --library ~/Fotos --metadata ~/Fotos.foto --tags a.json
   uv run foto-import --library ~/Fotos --tags a.json --places b.json
   uv run foto-import --library ~/Fotos --tags a.json --dry-run --verbose
 """
@@ -71,6 +77,12 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--library", metavar="PATH", type=Path, help="raíz de la biblioteca")
+    parser.add_argument(
+        "--metadata",
+        metavar="PATH",
+        type=Path,
+        help="directorio de metainformación; por defecto: <fototeca>/.foto",
+    )
     parser.add_argument("--config", metavar="PATH", type=Path, help="configuración global")
     parser.add_argument(
         "--tags", metavar="FILE", type=Path, help="fichero tags.json a importar"
@@ -183,6 +195,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    # ADR 0008: la metainformación se resuelve solo por el resolvedor
+    # compartido, nunca leyendo FOTO_METADATA ni config.toml por su cuenta.
+    try:
+        metadata_dir = resolve_metadata_dir(
+            root, args.metadata, config_path=args.config
+        ).metadata_dir
+    except (ConfigError, LibraryError) as exc:
+        logger.error("Metainformación inválida: %s", exc)
+        return 2
+    assert metadata_dir is not None
+
     # Los ficheros se validan completos antes de escribir nada: ni siquiera
     # se toma el lock si el fichero es inválido (ADR 0007, Decisión 5).
     tags_data = None
@@ -197,7 +220,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
-        ensure_library(root, dry_run=args.dry_run)
+        ensure_library(root, metadata_dir, dry_run=args.dry_run)
     except LibraryError as exc:
         logger.error("%s", exc)
         return 2
@@ -209,7 +232,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # activar WAL y crear o migrar el esquema, y son escrituras que deben
         # quedarse dentro de la garantía de escritor único.
         if not args.dry_run:
-            lock = IndexerLock(foto_dir(root) / LOCK_FILE_NAME)
+            lock = IndexerLock(metadata_dir / LOCK_FILE_NAME)
             try:
                 lock.acquire()
             except LockBusyError as exc:
@@ -219,7 +242,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 logger.error("%s", exc)
                 return 2
 
-        catalog_path = foto_dir(root) / CATALOG_FILE_NAME
+        catalog_path = metadata_dir / CATALOG_FILE_NAME
         try:
             if args.dry_run:
                 catalog = Catalog.open_dry_run(catalog_path)

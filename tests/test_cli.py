@@ -429,3 +429,154 @@ class _StubGeocoder:
 
     def reverse(self, latitude, longitude):
         return self._record
+
+
+# ----------------------------------------------------------------------
+# --metadata (ADR 0008, § 3.4)
+# ----------------------------------------------------------------------
+def test_cli_metadata_creates_descriptor_and_catalog_in_the_external_dir(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.delenv("FOTO_METADATA", raising=False)
+    root = tmp_path / "biblioteca"
+    write_image(root / "foto.jpg", b"externa")
+    external = tmp_path / "metainfo-externa"
+
+    code = main(
+        [
+            "--library",
+            str(root),
+            "--config",
+            str(tmp_path / "config-inexistente.toml"),
+            "--metadata",
+            str(external),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert json.loads(captured.out)["status"] == "ok"
+    assert (external / "library.toml").is_file()
+    assert (external / "catalog.sqlite").is_file()
+    assert (external / "index.lock").is_file()
+    assert not (root / ".foto").exists()
+    # El descriptor creado registra la fototeca a la que pertenece.
+    text = (external / "library.toml").read_text(encoding="utf-8")
+    assert f'root = "{root}"' in text
+
+
+def test_cli_metadata_adopts_a_legacy_descriptor_in_the_external_dir(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.delenv("FOTO_METADATA", raising=False)
+    root = tmp_path / "biblioteca"
+    write_image(root / "foto.jpg", b"adopcion")
+    external = tmp_path / "metainfo-externa"
+    external.mkdir()
+    (external / "library.toml").write_text(
+        'version = 1\nid = "3f9c1b62-8a44-4f0e-9d1a-2c7b5e0f4a11"\n',
+        encoding="utf-8",
+    )
+
+    code = main(
+        ["--library", str(root), "--metadata", str(external), "--json"]
+    )
+
+    assert code == 0
+    text = (external / "library.toml").read_text(encoding="utf-8")
+    assert f'root = "{root}"' in text
+    assert "3f9c1b62" in text
+    assert (external / "catalog.sqlite").is_file()
+
+
+def test_cli_metadata_precedence_option_over_environment(tmp_path, monkeypatch):
+    root = tmp_path / "biblioteca"
+    write_image(root / "foto.jpg", b"precedencia")
+    from_option = tmp_path / "metainfo-opcion"
+    from_env = tmp_path / "metainfo-entorno"
+    monkeypatch.setenv("FOTO_METADATA", str(from_env))
+
+    code = main(
+        ["--library", str(root), "--metadata", str(from_option), "--json"]
+    )
+
+    assert code == 0
+    assert (from_option / "catalog.sqlite").is_file()
+    assert not from_env.exists()
+
+
+def test_cli_metadata_environment_beats_config(tmp_path, monkeypatch):
+    root = tmp_path / "biblioteca"
+    write_image(root / "foto.jpg", b"entorno")
+    from_env = tmp_path / "metainfo-entorno"
+    from_config = tmp_path / "metainfo-config"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'version = 1\n\n[metadata]\npath = "{from_config}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FOTO_CONFIG", str(config))
+    monkeypatch.setenv("FOTO_METADATA", str(from_env))
+
+    code = main(["--library", str(root), "--json"])
+
+    assert code == 0
+    assert (from_env / "catalog.sqlite").is_file()
+    assert not from_config.exists()
+
+
+def test_cli_metadata_from_config_section(tmp_path, monkeypatch):
+    monkeypatch.delenv("FOTO_METADATA", raising=False)
+    root = tmp_path / "biblioteca"
+    write_image(root / "foto.jpg", b"config")
+    from_config = tmp_path / "metainfo-config"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'version = 1\n\n[metadata]\npath = "{from_config}"\n',
+        encoding="utf-8",
+    )
+
+    code = main(["--library", str(root), "--config", str(config), "--json"])
+
+    assert code == 0
+    assert (from_config / "catalog.sqlite").is_file()
+    assert not (root / ".foto").exists()
+
+
+def test_cli_metadata_default_is_derived_from_the_library(tmp_path, monkeypatch):
+    monkeypatch.delenv("FOTO_METADATA", raising=False)
+    root = tmp_path / "biblioteca"
+    write_image(root / "foto.jpg", b"default")
+
+    code = main(["--library", str(root), "--json"])
+
+    assert code == 0
+    assert (root / ".foto" / "catalog.sqlite").is_file()
+
+
+def test_cli_metadata_existing_file_exits_2_with_explicit_error(tmp_path, capsys):
+    root = tmp_path / "biblioteca"
+    write_image(root / "foto.jpg", b"fichero")
+    not_a_dir = tmp_path / "no-es-directorio"
+    not_a_dir.write_text("", encoding="utf-8")
+
+    code = main(["--library", str(root), "--metadata", str(not_a_dir)])
+
+    assert code == 2
+    error = capsys.readouterr().err
+    assert "no es un directorio" in error
+    assert "origen option" in error
+    assert not (root / ".foto").exists()
+
+
+def test_cli_help_documents_the_three_location_chains(capsys):
+    with pytest.raises(SystemExit) as raised:
+        main(["--help"])
+
+    assert raised.value.code == 0
+    output = capsys.readouterr().out
+    assert "--metadata" in output
+    assert "FOTO_METADATA" in output
+    assert "[metadata].path" in output
+    assert "<fototeca>/.foto" in output

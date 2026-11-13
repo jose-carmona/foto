@@ -177,16 +177,31 @@ uv run ruff check .
 
 ## Configuración
 
-Decisión completa en `docs/adr/0001-configuracion.md`. Resumen operativo:
+Decisión completa en `docs/adr/0001-configuracion.md`; las tres cadenas de
+resolución (configuración, fototeca y metainformación), en
+`docs/adr/0008-resolucion-de-ubicaciones.md`. Resumen operativo:
 
 - **Global del usuario:** `config.toml` en `platformdirs.user_config_dir("foto")`.
-  Formato TOML, legible y editable a mano.
-- **De la biblioteca:** `<fototeca>/.foto/library.toml`, junto al catálogo SQLite
-  y la caché de miniaturas. La biblioteca se describe a sí misma.
+  Formato TOML, legible y editable a mano. Sección opcional `[metadata]` con
+  `path` (opt-in; `save_config` nunca la escribe ni la reordena).
+- **De la biblioteca:** `library.toml` en el directorio de metainformación,
+  junto al catálogo SQLite y la caché de miniaturas. La biblioteca se describe
+  a sí misma y lleva el campo opcional `root` con la fototeca a la que
+  pertenece; su no coincidencia con la raíz resuelta es un error explícito
+  (relocalizar o regenerar), y los descriptores sin `root` (legado) se aceptan.
+- **Metainformación:** `library.toml`, `catalog.sqlite`, `thumbs/`,
+  `index.lock` y `exports/` viven juntos en el directorio resuelto, que por
+  defecto es `<fototeca>/.foto` y puede vivir fuera de la fototeca (p. ej.
+  la fototeca de Apple Photos, con *Full Disk Access* como requisito del
+  entorno).
 - **Secretos:** llavero del sistema o variables de entorno. Nunca en `config.toml`.
-- **Precedencia:** `--library` → `FOTO_LIBRARY` → `config.toml` → diálogo de
-  primera ejecución. Para el fichero de config: `--config` → `FOTO_CONFIG` →
-  `platformdirs`.
+- **Precedencia (override CLI → entorno → `config.toml` → por defecto):**
+  fototeca: `--library` → `FOTO_LIBRARY` → `[library].path` → diálogo de
+  primera ejecución. Metainformación: `--metadata` → `FOTO_METADATA` →
+  `[metadata].path` → `<fototeca>/.foto`. Config: `--config` → `FOTO_CONFIG`
+  → `platformdirs`. Los cuatro binarios comparten los resolutores de
+  `storage/resolver.py`; la UI acepta los tres flags y nunca escribe
+  `[metadata].path`.
 - **Requisitos:** lectura con `tomllib`, escritura atómica, campo `version` con
   migración, errores explícitos y `pathlib`.
 - **Prohibido:** `.env` como fuente de verdad y `QSettings`. La carga y la

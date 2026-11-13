@@ -21,6 +21,7 @@ import platformdirs
 
 VERSION_KEY = "version"
 LIBRARY_SECTION = "library"
+METADATA_SECTION = "metadata"
 PATH_KEY = "path"
 LATEST_CONFIG_VERSION = 1
 
@@ -74,6 +75,7 @@ class AppConfig:
 
     config_path: Path
     library_path: Path | None = None
+    metadata_path: Path | None = None
     version: int = 1
     geocoding: GeocodingSettings = field(default_factory=GeocodingSettings)
 
@@ -149,6 +151,34 @@ def _validate_library_section(data: dict[str, object], base_dir: Path) -> Path |
     return _expand_path(path_value, base_dir)
 
 
+def _validate_metadata_section(data: dict[str, object], base_dir: Path) -> Path | None:
+    """Valida ``[metadata]`` (ADR 0008) y devuelve la ruta expandida o ``None``.
+
+    La sección es opt-in: si no existe, la metainformación se deriva de la
+    fototeca. ``path`` admite ``~`` y rutas relativas al directorio del
+    fichero de configuración, igual que ``[library].path``.
+    """
+    if METADATA_SECTION not in data:
+        return None
+
+    section = data[METADATA_SECTION]
+    if not isinstance(section, dict):
+        raise ConfigError(f"La sección '[{METADATA_SECTION}]' debe ser una tabla TOML")
+
+    if PATH_KEY not in section:
+        return None
+
+    path_value = section[PATH_KEY]
+    if not isinstance(path_value, str):
+        raise ConfigError(f"El campo '[{METADATA_SECTION}].{PATH_KEY}' debe ser texto")
+    if not path_value.strip():
+        raise ConfigError(
+            f"El campo '[{METADATA_SECTION}].{PATH_KEY}' no puede estar vacío"
+        )
+
+    return _expand_path(path_value, base_dir)
+
+
 def _validate_geocoding_section(data: dict[str, object]) -> GeocodingSettings:
     """Valida ``[geocoding]`` y devuelve la configuración efectiva."""
     section = data.get(GEOCODING_SECTION)
@@ -204,11 +234,13 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     data = _read_toml_file(resolved)
     version = _validate_version(data)
     library_path = _validate_library_section(data, resolved.parent)
+    metadata_path = _validate_metadata_section(data, resolved.parent)
     geocoding = _validate_geocoding_section(data)
 
     return AppConfig(
         config_path=resolved,
         library_path=library_path,
+        metadata_path=metadata_path,
         version=version,
         geocoding=geocoding,
     )
@@ -406,8 +438,9 @@ def save_config(config: AppConfig) -> None:
     """Guarda la configuración global de forma atómica y conservadora.
 
     Si el fichero ya existe, solo se actualiza ``[library].path``: comentarios,
-    claves y secciones desconocidas se conservan tal cual (C01). Un fichero
-    existente inválido o con versión incompatible produce ``ConfigError``
+    claves y secciones desconocidas se conservan tal cual (C01). ``[metadata]``
+    (ADR 0008) nunca se escribe ni reordena: es opt-in y se edita a mano. Un
+    fichero existente inválido o con versión incompatible produce ``ConfigError``
     en lugar de sobrescribirse silenciosamente (C02).
     """
     path = config.config_path
@@ -427,6 +460,7 @@ def save_config(config: AppConfig) -> None:
         data = _read_toml_file(path)
         _validate_version(data)
         _validate_library_section(data, path.parent)
+        _validate_metadata_section(data, path.parent)
 
         content = _update_library_path(text, config.library_path)
 

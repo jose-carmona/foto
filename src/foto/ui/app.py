@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import subprocess
@@ -16,8 +17,14 @@ from foto.core.errors import CatalogError, LibraryError
 from foto.core.library import CatalogPhoto, load_from_catalog
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import AppConfig, ConfigError, load_config, save_config
-from foto.storage.library import LibraryConfig, foto_dir, library_file, load_library, thumbs_dir
-from foto.storage.resolver import resolve_library_path
+from foto.storage.library import (
+    LibraryConfig,
+    foto_dir,
+    library_file,
+    load_library,
+    thumbs_dir,
+)
+from foto.storage.resolver import resolve_library_path, resolve_metadata_dir
 from foto.storage.tags import Tag, connect_read_write
 from foto.ui.grid import THUMB_H, THUMB_W
 from foto.ui.models import Photo, PhotoTag
@@ -30,6 +37,65 @@ from foto.ui.window import (
 logger = logging.getLogger(__name__)
 
 _RAW_EXTENSIONS = {".arw", ".cr2", ".dng", ".nef", ".raf"}
+
+# Mismas cadenas que los CLIs (ADR 0008): la UI comparte resolutores, y sus
+# overrides de CLI no se persisten en config.toml.
+UI_EPILOG = """\
+precedencia de la biblioteca:
+  1. --library PATH
+  2. FOTO_LIBRARY
+  3. [library].path de config.toml
+  4. diálogo de primera ejecución (persiste [library].path)
+precedencia de la metainformación (.foto, ADR 0008):
+  1. --metadata PATH
+  2. FOTO_METADATA
+  3. [metadata].path de config.toml
+  4. <fototeca>/.foto (por defecto)
+Para el fichero de configuración: --config PATH, FOTO_CONFIG o platformdirs.
+"""
+
+
+def _build_ui_parser() -> argparse.ArgumentParser:
+    """Parser de ``foto``: se ejecuta antes de construir nada de Qt."""
+    parser = argparse.ArgumentParser(
+        prog="foto",
+        description="Visor de la fototeca local.",
+        epilog=UI_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--config", metavar="PATH", type=Path, help="configuración global")
+    parser.add_argument("--library", metavar="PATH", type=Path, help="raíz de la biblioteca")
+    parser.add_argument(
+        "--metadata",
+        metavar="PATH",
+        type=Path,
+        help="directorio de metainformación; por defecto: <fototeca>/.foto",
+    )
+    return parser
+
+
+def _resolve_before_dialog(
+    args: argparse.Namespace,
+) -> tuple[AppConfig, Path | None]:
+    """Config y biblioteca según la cadena compartida con los CLIs.
+
+    El diálogo de primera ejecución queda como último nivel del llamador,
+    nunca como paso del resolvedor. Los overrides de CLI no se persisten.
+    """
+    config = load_config(args.config)
+    resolution = resolve_library_path(args.library, config_path=args.config)
+    return config, resolution.library_path
+
+
+def _resolve_metadata_dir(
+    library_path: Path, args: argparse.Namespace
+) -> Path:
+    """Directorio de metainformación por la cadena del ADR 0008."""
+    resolution = resolve_metadata_dir(
+        library_path, args.metadata, config_path=args.config
+    )
+    assert resolution.metadata_dir is not None
+    return resolution.metadata_dir
 
 
 def _format_name(path: Path) -> str:
@@ -123,33 +189,41 @@ def _to_ui_photo(photo: CatalogPhoto) -> Photo:
     )
 
 
-def _validated_library(library_path: Path) -> LibraryConfig:
+def _validated_library(library_path: Path, metadata_dir: Path | None = None) -> LibraryConfig:
     """Carga y valida el descriptor de la biblioteca sin crearlo (C04).
 
     El catálogo solo se abre una vez validado ``library.toml``: descriptor
-    ausente, TOML corrupto, UUID inválido o versión futura producen un error
-    explícito, nunca la creación del descriptor desde la UI.
+    ausente, TOML corrupto, UUID inválido, versión futura o ``root`` que no
+    coincide producen un error explícito, nunca la creación del descriptor
+    desde la UI (ADR 0008).
     """
-    if not library_file(library_path).exists():
+    resolved_dir = metadata_dir if metadata_dir is not None else foto_dir(library_path)
+    if not library_file(resolved_dir).exists():
         raise RuntimeError(
-            "La biblioteca no tiene descriptor (.foto/library.toml). Ejecuta "
+            "La biblioteca no tiene descriptor (library.toml). Ejecuta "
             "'foto-index' en ella para prepararla."
         )
     try:
-        return load_library(library_path)
+        return load_library(resolved_dir, library_path)
     except LibraryError as exc:
         raise RuntimeError(str(exc)) from exc
 
 
-def load_photos(library_path: Path) -> list[Photo]:
-    """Carga las fotos de una biblioteca validada y con índice existente."""
-    _validated_library(library_path)
+def _metadata_dir_for(library_path: Path, metadata_dir: Path | None) -> Path:
+    """Directorio de metadatos efectivo (ADR 0008)."""
+    return metadata_dir if metadata_dir is not None else foto_dir(library_path)
 
-    catalog_path = foto_dir(library_path) / CATALOG_FILE_NAME
+
+def load_photos(library_path: Path, metadata_dir: Path | None = None) -> list[Photo]:
+    """Carga las fotos de una biblioteca validada y con índice existente."""
+    resolved_dir = _metadata_dir_for(library_path, metadata_dir)
+    _validated_library(library_path, resolved_dir)
+
+    catalog_path = resolved_dir / CATALOG_FILE_NAME
     if not catalog_path.exists():
         raise FileNotFoundError(
             "No se encontró el índice de la fototeca. Ejecuta 'foto-index' "
-            "para crear <fototeca>/.foto/catalog.sqlite."
+            "para crearlo en el directorio de metainformación."
         )
 
     try:
@@ -165,13 +239,13 @@ def load_photos(library_path: Path) -> list[Photo]:
     return [_to_ui_photo(photo) for photo in catalog_photos]
 
 
-def load_tags(library_path: Path) -> list[Tag]:
+def load_tags(library_path: Path, metadata_dir: Path | None = None) -> list[Tag]:
     """Carga el vocabulario de etiquetas del catálogo (ADR 0006).
 
     Solo lectura, igual que ``load_photos``: el visor exige un catálogo ya
     creado y migrado por ``foto-index``.
     """
-    catalog_path = foto_dir(library_path) / CATALOG_FILE_NAME
+    catalog_path = _metadata_dir_for(library_path, metadata_dir) / CATALOG_FILE_NAME
     if not catalog_path.exists():
         raise FileNotFoundError(
             "No se encontró el índice de la fototeca. Ejecuta 'foto-index' "
@@ -190,14 +264,20 @@ def load_tags(library_path: Path) -> list[Tag]:
 
 
 class MainWindow(PhotoWindow):
-    def __init__(self, library_path: Path, config: AppConfig) -> None:
+    def __init__(
+        self,
+        library_path: Path,
+        config: AppConfig,
+        metadata_dir: Path | None = None,
+    ) -> None:
         self.library_path = library_path
         self.config = config
+        resolved_dir = _metadata_dir_for(library_path, metadata_dir)
         try:
-            photos = load_photos(library_path)
-            tags = load_tags(library_path)
+            photos = load_photos(library_path, resolved_dir)
+            tags = load_tags(library_path, resolved_dir)
             # C04: el modelo validado del descriptor se conserva explícitamente.
-            self._library_config = _validated_library(library_path)
+            self._library_config = _validated_library(library_path, resolved_dir)
         except (OSError, RuntimeError) as exc:
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)
@@ -207,16 +287,14 @@ class MainWindow(PhotoWindow):
             # Decisión 10): no toma index.lock y WAL serializa con el
             # indexador. Sin ella los favoritos no persisten, así que un
             # fallo al abrirla es un error de arranque, no un aviso.
-            tag_connection = connect_read_write(
-                foto_dir(library_path) / CATALOG_FILE_NAME
-            )
+            tag_connection = connect_read_write(resolved_dir / CATALOG_FILE_NAME)
         except (CatalogError, OSError) as exc:
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)
 
         service = ThumbnailService(
             QSize(THUMB_W, THUMB_H),
-            cache_dir=thumbs_dir(library_path),
+            cache_dir=thumbs_dir(resolved_dir),
         )
         super().__init__(
             photos,
@@ -251,15 +329,13 @@ class MainWindow(PhotoWindow):
 
 
 def main() -> None:
+    args = _build_ui_parser().parse_args(sys.argv[1:])
     app = QApplication(sys.argv)
     app.setApplicationName("foto")
     apply_theme(app)
 
     try:
-        config = load_config()
-        # C03: misma precedencia que foto-index (--library no se expone aquí,
-        # solo es aplicable a la CLI), con FOTO_LIBRARY y [library].path.
-        library_path = resolve_library_path().library_path
+        config, library_path = _resolve_before_dialog(args)
     except ConfigError as exc:
         QMessageBox.critical(None, "foto", str(exc))
         sys.exit(1)
@@ -290,7 +366,13 @@ def main() -> None:
             sys.exit(1)
 
     try:
-        window = MainWindow(library_path, config)
+        metadata_dir = _resolve_metadata_dir(library_path, args)
+    except (ConfigError, LibraryError) as exc:
+        QMessageBox.critical(None, "foto", f"Metainformación inválida: {exc}")
+        sys.exit(1)
+
+    try:
+        window = MainWindow(library_path, config, metadata_dir)
     except SystemExit:
         raise
     except (OSError, RuntimeError) as exc:

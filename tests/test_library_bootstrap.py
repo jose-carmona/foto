@@ -47,7 +47,7 @@ def test_bootstrap_takes_over_a_stale_creation_lock(tmp_path):
     result = ensure_library(root)
 
     assert result.created is True
-    assert load_library(root).id == result.config.id
+    assert load_library(root / ".foto", root).id == result.config.id
     assert not lock.exists()
 
 
@@ -95,7 +95,7 @@ def test_bootstrap_concurrent_creators_produce_one_id(tmp_path):
     identifiers = {result.config.id for result in results}
     assert len(identifiers) == 1
     assert str(uuid.UUID(next(iter(identifiers)))) == next(iter(identifiers))
-    descriptor = load_library(root)
+    descriptor = load_library(root / ".foto", root)
     assert descriptor.id == next(iter(identifiers))
     assert descriptor.version == LIBRARY_VERSION
 
@@ -112,7 +112,7 @@ def test_bootstrap_creates_uuid_and_version_and_is_idempotent(tmp_path):
     assert second.created is False
     assert (root / ".foto" / "library.toml").is_file()
 
-    config = load_library(root)
+    config = load_library(root / ".foto", root)
     assert config.version == LIBRARY_VERSION
     assert str(uuid.UUID(config.id)) == config.id
     assert config.id == first.config.id == second.config.id
@@ -129,10 +129,10 @@ def test_bootstrap_dry_run_does_not_create_anything(tmp_path):
     assert not (root / ".foto").exists()
 
 
-def test_thumbs_dir_lives_inside_foto_dir(tmp_path):
+def test_thumbs_dir_lives_inside_metadata_dir(tmp_path):
     root = tmp_path / "biblioteca"
 
-    assert thumbs_dir(root) == root / ".foto" / "thumbs"
+    assert thumbs_dir(root / ".foto") == root / ".foto" / "thumbs"
 
 
 def test_bootstrap_rejects_missing_root(tmp_path):
@@ -184,5 +184,157 @@ def test_bootstrap_falls_back_when_hardlinks_are_unsupported(tmp_path, monkeypat
     result = ensure_library(root)
 
     assert result.created is True
-    assert load_library(root).id == result.config.id
+    assert load_library(root / ".foto", root).id == result.config.id
     assert not list((root / ".foto").glob(".library.*.tmp"))
+
+
+# ----------------------------------------------------------------------
+# root y bootstrap paramétrico (ADR 0008, § 3.3)
+# ----------------------------------------------------------------------
+def test_created_descriptor_records_root(tmp_path):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+
+    result = ensure_library(root)
+
+    assert result.config.root == root
+    descriptor = load_library(root / ".foto", root)
+    assert descriptor.root == root
+    text = (root / ".foto" / "library.toml").read_text(encoding="utf-8")
+    assert f'root = "{root}"' in text
+
+
+def test_descriptor_root_supports_home_expansion(tmp_path, monkeypatch):
+    root = tmp_path / "biblioteca"
+    (root / ".foto").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (root / ".foto" / "library.toml").write_text(
+        f'version = 1\nid = "{uuid.uuid4()}"\nroot = "~/biblioteca"\n',
+        encoding="utf-8",
+    )
+
+    config = load_library(root / ".foto", root)
+
+    assert config.root == root
+
+
+def test_descriptor_root_mismatch_is_an_error(tmp_path):
+    root = tmp_path / "biblioteca"
+    other = tmp_path / "otra-fototeca"
+    (root / ".foto").mkdir(parents=True)
+    (root / ".foto" / "library.toml").write_text(
+        f'version = 1\nid = "{uuid.uuid4()}"\nroot = "{other}"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LibraryError, match="relocaliza|regenera"):
+        ensure_library(root)
+
+
+def test_descriptor_root_mismatch_detected_by_load_library(tmp_path):
+    root = tmp_path / "biblioteca"
+    other = tmp_path / "otra-fototeca"
+    (root / ".foto").mkdir(parents=True)
+    (root / ".foto" / "library.toml").write_text(
+        f'version = 1\nid = "{uuid.uuid4()}"\nroot = "{other}"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LibraryError, match="pertenece a la fototeca"):
+        load_library(root / ".foto", root)
+
+
+def test_descriptor_without_root_is_accepted(tmp_path):
+    root = tmp_path / "biblioteca"
+    (root / ".foto").mkdir(parents=True)
+    (root / ".foto" / "library.toml").write_text(
+        f'version = 1\nid = "{uuid.uuid4()}"\n',
+        encoding="utf-8",
+    )
+
+    config = load_library(root / ".foto")
+
+    assert config.root is None
+
+
+def test_bootstrap_adopts_legacy_descriptor_adding_root(tmp_path):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    identifier = uuid.uuid4()
+    (root / ".foto").mkdir()
+    (root / ".foto" / "library.toml").write_text(
+        f'version = 1\nid = "{identifier}"\n',
+        encoding="utf-8",
+    )
+
+    result = ensure_library(root)
+
+    assert result.created is False
+    text = (root / ".foto" / "library.toml").read_text(encoding="utf-8")
+    assert text == f'version = 1\nid = "{identifier}"\nroot = "{root}"\n'
+    config = load_library(root / ".foto", root)
+    assert config.root == root
+    assert config.id == str(identifier)
+
+
+def test_bootstrap_adopted_root_tolerates_trailing_comment_lines(tmp_path):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    identifier = uuid.uuid4()
+    (root / ".foto").mkdir()
+    (root / ".foto" / "library.toml").write_text(
+        f'version = 1\nid = "{identifier}"  # criado a mano\n# nota del dueño\n',
+        encoding="utf-8",
+    )
+
+    ensure_library(root)
+
+    text = (root / ".foto" / "library.toml").read_text(encoding="utf-8")
+    assert text == (
+        f'version = 1\nid = "{identifier}"  # criado a mano\n'
+        f'root = "{root}"\n# nota del dueño\n'
+    )
+
+
+def test_bootstrap_matching_root_is_idempotent(tmp_path):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    identifier = uuid.uuid4()
+    (root / ".foto").mkdir()
+    original = f'version = 1\nid = "{identifier}"\nroot = "{root}"\n'
+    (root / ".foto" / "library.toml").write_text(original, encoding="utf-8")
+
+    result = ensure_library(root)
+
+    assert result.created is False
+    assert (root / ".foto" / "library.toml").read_text(encoding="utf-8") == original
+
+
+def test_bootstrap_writes_to_an_empty_external_metadata_dir(tmp_path):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    external = tmp_path / "metainfo-externa"
+
+    result = ensure_library(root, external)
+
+    assert result.metadata_dir == external
+    assert result.created is True
+    assert (external / "library.toml").is_file()
+    assert not (root / ".foto").exists()
+    config = load_library(external, root)
+    assert config.root == root
+
+
+def test_bootstrap_dry_run_does_not_adopt_root(tmp_path):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    identifier = uuid.uuid4()
+    (root / ".foto").mkdir()
+    original = f'version = 1\nid = "{identifier}"\n'
+    (root / ".foto" / "library.toml").write_text(original, encoding="utf-8")
+
+    result = ensure_library(root, dry_run=True)
+
+    assert result.created is False
+    assert result.config.root is None
+    assert (root / ".foto" / "library.toml").read_text(encoding="utf-8") == original

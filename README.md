@@ -207,6 +207,9 @@ foto/
     `tags`/`photo_tags`, escritura RW del visor sin `index.lock`.
   - `0007-exportar-importar-metadatos.md` — exportación e importación JSON de
     tags y lugares: dos ficheros, merge aditivo idempotente y migración v5.
+  - `0008-resolucion-de-ubicaciones.md` — las tres cadenas de resolución de
+    rutas (configuración, fototeca y metainformación) y la preparación para
+    la fototeca de Apple Photos.
 
 ## UI
 
@@ -215,25 +218,100 @@ catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md)). Si n
 existe `catalog.sqlite`, avisa y se cierra. La rejilla agrupa las miniaturas por
 año y mes, por cámara o por lugar (municipio, país) según la ordenación
 activa. Pide solo las miniaturas visibles a un pool de trabajo y las guarda en
-`<fototeca>/.foto/thumbs/`; el visor decodifica el original en segundo plano.
-La búsqueda `/` y las ordenaciones `:sort` se aplican contra lo cargado del
-índice; `g m` abre la ubicación en el navegador y `?` abre la ayuda integrada.
+el directorio de metainformación (`thumbs/`); el visor decodifica el original
+en segundo plano. La búsqueda `/` y las ordenaciones `:sort` se aplican contra
+lo cargado del índice; `g m` abre la ubicación en el navegador y `?` abre la
+ayuda integrada.
 
 ```sh
 uv sync
 uv run foto
+uv run foto --library ~/Fotos
+uv run foto --library ~/Fotos --metadata ~/Fotos.foto
 ```
+
+La UI acepta `--config PATH`, `--library PATH` y `--metadata PATH` (mismas
+cadenas que los CLIs, [ADR 0008](docs/adr/0008-resolucion-de-ubicaciones.md));
+lanzar sin argumentos sigue funcionando desde el Finder o el lanzador. Los
+overrides de línea de comandos no se persisten: el diálogo de primera
+ejecución sigue escribiendo solo `[library].path`, y la UI nunca escribe
+`[metadata].path` (se edita a mano en `config.toml`).
 
 `PYTHONPATH=src .venv/bin/python -m foto.ui.prototype` abre la demo con fotos
 falsas para revisar la interfaz sin tocar discos.
 
+## Ubicaciones: configuración, fototeca y metainformación
+
+Toda ubicación se resuelve con el mismo patrón: **override CLI → variable de
+entorno → `config.toml` → valor por defecto**
+([ADR 0008](docs/adr/0008-resolucion-de-ubicaciones.md)). Los cuatro
+binarios (`foto`, `foto-index`, `foto-export`, `foto-import`) comparten los
+mismos resolutores en `storage/resolver.py`.
+
+| Ubicación | Cadena | Valor por defecto |
+| --- | --- | --- |
+| Configuración | `--config` → `FOTO_CONFIG` | `platformdirs.user_config_dir("foto")/config.toml` |
+| Fototeca | `--library` → `FOTO_LIBRARY` → `[library].path` | diálogo de primera ejecución |
+| Metainformación | `--metadata` → `FOTO_METADATA` → `[metadata].path` | `<fototeca>/.foto` |
+
+- El override de metadatos redirige el **directorio completo**:
+  `library.toml`, `catalog.sqlite`, `thumbs/`, `index.lock` y `exports/`
+  viven juntos ahí o no viven. Nunca piezas sueltas.
+- No se mueve nada automáticamente: apuntar `--metadata` a un directorio
+  vacío lo inicializa (bootstrap atómico) y apuntar a uno con `library.toml`
+  previo lo adopta (añadiéndole el campo `root` si le falta).
+- `library.toml` lleva un campo opcional `root` con la fototeca a la que
+  pertenece el descriptor; si no coincide con la raíz resuelta, el error es
+  explícito con la acción sugerida (relocalizar o regenerar), nunca se
+  mezclan catálogos en silencio. Los descriptores sin `root` (legado) se
+  siguen aceptando.
+- `[metadata]` es opt-in: un `config.toml` nuevo creado por la app no la
+  incluye y `save_config` nunca la escribe ni la reordena. Se edita a mano:
+
+  ```toml
+  version = 1
+
+  [library]
+  path = "~/Pictures/Photos Library.photoslibrary"
+
+  [metadata]
+  # Solo hace falta si la metainformación no va dentro de la fototeca.
+  # Admite "~" y rutas relativas al directorio de este fichero, como [library].
+  path = "~/Fotos/ApplePhotos.foto"
+  ```
+
+### Fototeca de Apple Photos
+
+`Photos Library.photoslibrary` es un **paquete** protegido por TCC: para leer
+su contenido el proceso necesita *Full Disk Access* (requisito del entorno,
+no del código). Con la metainformación en un directorio externo, `foto` no
+escribe nada dentro del paquete de Apple: los originales quedan intactos y
+sin interferencias con Photos. Queda pendiente un ADR específico de indexado
+de Apple Photos (restringir el escaneo a `originals/`, detalles del paquete).
+
+Para usarla hoy:
+
+```sh
+uv run foto-index --library "~/Pictures/Photos Library.photoslibrary" \
+  --metadata ~/Fotos/ApplePhotos.foto
+uv run foto --metadata ~/Fotos/ApplePhotos.foto
+```
+
+### Migración manual de una `.foto/` existente
+
+La migración es operación del dueño, no automatizada: copia el directorio
+completo a la nueva ubicación, edita la línea `root` de `library.toml` (o
+bórrala) y usa `--metadata`/`FOTO_METADATA`/`[metadata].path` para apuntar
+allí. La app nunca mezcla catálogos en silencio: un `root` que no coincide
+produce un error con la acción sugerida.
+
 ## Indexador
 
 `foto-index` es un proceso de una sola pasada, independiente de Qt, que recorre
-la biblioteca y mantiene `<fototeca>/.foto/catalog.sqlite`. Identifica cada foto
-por el SHA-256 de sus bytes: dos copias idénticas son una foto con dos
-ubicaciones. No modifica, mueve ni borra originales; solo escribe dentro de
-`.foto/`.
+la biblioteca y mantiene el catálogo SQLite en el directorio de
+metainformación. Identifica cada foto por el SHA-256 de sus bytes: dos copias
+idénticas son una foto con dos ubicaciones. No modifica, mueve ni borra
+originales; solo escribe en el directorio de metainformación.
 
 ```sh
 uv sync
@@ -252,6 +330,7 @@ Opciones principales:
 | Opción | Comportamiento |
 | --- | --- |
 | `--library PATH` | Raíz de la biblioteca; máxima precedencia. |
+| `--metadata PATH` | Directorio de metainformación; por defecto `<fototeca>/.foto`. |
 | `--config PATH` | Fichero de configuración global. |
 | `--full` | Rehashea y reextrae todo; reintenta también los lugares en `error`. |
 | `--skip FASE` | Excluye una fase del pipeline (`scan`, `geocode`); repetible. |

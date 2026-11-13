@@ -22,9 +22,9 @@ from foto.indexer.geonames import NominatimGeocoder, ReverseGeocoderConfig
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import ConfigError, load_config
 from foto.storage.exiftool import ExifToolExtractor
-from foto.storage.library import ensure_library, foto_dir
+from foto.storage.library import ensure_library
 from foto.storage.lock import LOCK_FILE_NAME, IndexerLock
-from foto.storage.resolver import resolve_library_path
+from foto.storage.resolver import resolve_library_path, resolve_metadata_dir
 
 logger = logging.getLogger("foto.indexer")
 
@@ -33,6 +33,11 @@ precedencia de la biblioteca:
   1. --library PATH
   2. FOTO_LIBRARY
   3. [library].path de config.toml
+precedencia de la metainformación (.foto, ADR 0008):
+  1. --metadata PATH
+  2. FOTO_METADATA
+  3. [metadata].path de config.toml
+  4. <fototeca>/.foto (por defecto)
 Para el fichero de configuración: --config PATH, FOTO_CONFIG o platformdirs.
 
 fases del pipeline (todas por defecto); --skip FASE las excluye:
@@ -47,6 +52,7 @@ códigos de salida:
 
 ejemplos:
   uv run foto-index --library ~/Fotos
+  uv run foto-index --library ~/Fotos --metadata ~/Fotos.foto
   uv run foto-index --library ~/Fotos --json
   uv run foto-index --library ~/Fotos --skip geocode
   uv run foto-index --library ~/Fotos --prune --prune-after 30
@@ -76,6 +82,12 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--library", metavar="PATH", type=Path, help="raíz de la biblioteca")
+    parser.add_argument(
+        "--metadata",
+        metavar="PATH",
+        type=Path,
+        help="directorio de metainformación; por defecto: <fototeca>/.foto",
+    )
     parser.add_argument("--config", metavar="PATH", type=Path, help="configuración global")
     parser.add_argument("--full", action="store_true", help="rehashea y reextrae todo")
     parser.add_argument(
@@ -210,18 +222,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    # ADR 0008: la metainformación se resuelve solo por el resolvedor
+    # compartido, nunca leyendo FOTO_METADATA ni config.toml por su cuenta.
     try:
-        bootstrap = ensure_library(root, dry_run=args.dry_run)
+        metadata_dir = resolve_metadata_dir(
+            root, args.metadata, config_path=args.config
+        ).metadata_dir
+    except (ConfigError, LibraryError) as exc:
+        logger.error("Metainformación inválida: %s", exc)
+        return 2
+    assert metadata_dir is not None
+
+    try:
+        bootstrap = ensure_library(root, metadata_dir, dry_run=args.dry_run)
     except LibraryError as exc:
         logger.error("%s", exc)
         return 2
 
     if bootstrap.would_create:
-        logger.info("Se crearía .foto/library.toml: la biblioteca aún no existe")
+        logger.info("Se crearía library.toml en %s: la biblioteca aún no existe", metadata_dir)
     elif bootstrap.created:
-        logger.info("Biblioteca preparada con un nuevo .foto/library.toml")
+        logger.info("Biblioteca preparada con un nuevo library.toml en %s", metadata_dir)
 
-    catalog_path = foto_dir(root) / CATALOG_FILE_NAME
+    catalog_path = metadata_dir / CATALOG_FILE_NAME
 
     lock: IndexerLock | None = None
     catalog: Catalog | None = None
@@ -230,7 +253,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # activar WAL y crear o migrar el esquema, y son escrituras que deben
         # quedarse dentro de la garantía de escritor único.
         if not args.dry_run:
-            lock = IndexerLock(foto_dir(root) / LOCK_FILE_NAME)
+            lock = IndexerLock(metadata_dir / LOCK_FILE_NAME)
             try:
                 lock.acquire()
             except LockBusyError as exc:

@@ -46,9 +46,9 @@ def test_the_four_entry_points_derive_the_same_metadata_dir(tmp_path, capsys):
     assert sorted(path.name for path in root.iterdir()) == [".foto", "2026"]
     assert (derived / CATALOG_FILE_NAME).is_file()
     assert (derived / LOCK_FILE_NAME).is_file()
-    assert library_file(root) == derived / "library.toml"
-    assert library_file(root).is_file()
-    assert thumbs_dir(root) == derived / "thumbs"
+    assert library_file(derived) == derived / "library.toml"
+    assert library_file(derived).is_file()
+    assert thumbs_dir(derived) == derived / "thumbs"
 
     # foto-export lee el catálogo de esa misma .foto.
     out_dir = tmp_path / "salida"

@@ -289,58 +289,124 @@ cerrar esto.**
 
 ## 4. Desglose de tareas del paso 2
 
-- [ ] **T2.1 — `[metadata]` en `storage/config.py`** (§ 3.1): validación,
+- [x] **T2.1 — `[metadata]` en `storage/config.py`** (§ 3.1): validación,
   `AppConfig.metadata_path`, conservación en `save_config`, canonical sin
   la sección. Tests en `tests/test_config_persistence.py`: carga de la
   sección (absoluta, relativa al fichero de config, con `~`), error si no
   es texto, conservación byte a byte de `[metadata]` al reescribir
-  `[library].path`, y fichero nuevo sin la sección.
-- [ ] **T2.2 — Resolutor de metadatos en `storage/resolver.py`** (§ 3.2):
+  `[library].path`, y fichero nuevo sin la sección. (2026-11-13)
+- [x] **T2.2 — Resolutor de metadatos en `storage/resolver.py`** (§ 3.2):
   `MetadataResolution`, `resolve_metadata_dir`, validación de «existe y no
   es directorio». Tests (patrón de `test_library_resolution.py`): los
   cuatro orígenes con `environment` inyectable, precedencia completa,
   override que corta la lectura de config, y error de ruta-fichero.
-- [ ] **T2.3 — `root` y bootstrap paramétrico en `storage/library.py`**
+  (2026-11-13)
+- [x] **T2.3 — `root` y bootstrap paramétrico en `storage/library.py`**
   (§ 3.3): `LibraryConfig.root`, validación de coincidencia, escritura al
   crear y al adoptar (conservadora), helpers sobre el directorio resuelto.
   Tests en `tests/test_library_bootstrap.py`: creación con `root`,
   adopción legacy (se añade `root` preservando el resto), coincidencia,
   no coincidencia (`LibraryError`), y bootstrap sobre directorio externo
   vacío (crea `.foto`-equivalente donde se le mande). Actualizar las
-  llamadas internas que usen los helpers cambiados.
-- [ ] **T2.4 — `foto-index` con `--metadata`** (§ 3.4): flag, resolución por
+  llamadas internas que usen los helpers cambiados. (2026-11-13)
+  > Nota (2026-11-13): `library_file`/`thumbs_dir`/`load_library` pasan a
+  > recibir el directorio de metadatos resuelto; `load_library(dir, root)`
+  > valida la coherencia del campo. `LibraryBootstrap.foto_dir` pasa a
+  > llamarse `metadata_dir`. La adopción inserta `root` tras la línea `id`.
+  > El test `test_move_library_preserves_relative_paths_and_photos` se
+  > adapta al ADR 0008: al relocalizar la fototeca, el dueño actualiza el
+  > `root` del descriptor; las rutas relativas siguen sobreviviendo al
+  > traslado.
+- [x] **T2.4 — `foto-index` con `--metadata`** (§ 3.4): flag, resolución por
   el resolutor, epílogo de `--help` con las tres cadenas, bootstrap y lock
   en el directorio resuelto. Tests en `tests/test_cli.py`: `--metadata`
   crea/adopta en el sitio indicado, precedencia `--metadata` >
   `FOTO_METADATA` > config > default, y el mensaje de error sugiere las
-  tres fuentes.
-- [ ] **T2.5 — `foto-export` y `foto-import` con `--metadata`** (§ 3.4):
+  tres fuentes. (2026-11-13)
+  > Nota (2026-11-13): los mensajes de error de metainformación inválida
+  > incluyen la ruta y el origen de la cadena (option/environment/config);
+  > no existe el estado «no hay metainformación» porque el nivel 4 siempre
+  > deriva de la fototeca. El epílogo documenta las tres cadenas y el
+  > ejemplo con `--metadata`.
+- [x] **T2.5 — `foto-export` y `foto-import` con `--metadata`** (§ 3.4):
   igual que T2.4, con la salvedad de solo-lectura de export (error si no
   existe el directorio de metainformación, sin crearlo) y lock del import
   en el directorio resuelto. Tests en `tests/test_transfer_export.py` y
-  `tests/test_transfer_import.py`.
-- [ ] **T2.6 — `foto` con `--config --library --metadata`** (§ 3.5):
+  `tests/test_transfer_import.py`. (2026-11-13)
+- [x] **T2.6 — `foto` con `--config --library --metadata`** (§ 3.5):
   argparse en `main()`, mismos resolutores, diálogo de primera ejecución
   intacto (persiste solo `[library].path`), la UI no escribe
   `[metadata].path`. Tests con `QT_QPA_PLATFORM=offscreen` donde proceda
   (parseo de argumentos y resolución pueden cubrirse sin Qt; los
   existentes de `tests/test_ui_load_photos.py` marcan el patrón).
-- [ ] **T2.7 — Documentación** (§ 3.6): `AGENT.md`, `README.md`,
+  (2026-11-13)
+  > Nota (2026-11-13): el parseo se factoriza en `_build_ui_parser`,
+  > `_resolve_before_dialog` y `_resolve_metadata_dir` (sin Qt), cubiertos
+  > por `tests/test_ui_arguments.py`; la resolución de metadatos ocurre
+  > tras el diálogo, cuando la raíz ya es definitiva. El entry point de
+  > `pyproject.toml` no cambia y lanzar sin argumentos sigue funcionando.
+- [x] **T2.7 — Documentación** (§ 3.6): `AGENT.md`, `README.md`,
   epílogos de los cuatro binarios y, si procede, corrección menor del ADR
-  0008 con nota de origen.
-- [ ] **T2.8 — Verificación y cierre del paso 2.** Suite completa en verde;
+  0008 con nota de origen. (2026-11-13)
+  > Nota (2026-11-13): corrección menor registrada en el ADR 0008 (§ «Nota
+  > de corrección»): la UI pasa a admitir los tres flags y nunca escribe
+  > `[metadata].path`, en línea con la decisión ya tomada del prompt (§ 2.4),
+  > que corrige el texto original del ADR; el «Pendiente» del ADR queda
+  > actualizado con lo decidido y lo documentado.
+- [x] **T2.8 — Verificación y cierre del paso 2.** Suite completa en verde;
   smoke manual end-to-end: biblioteca de prueba con `--metadata` a un
   directorio externo → `foto-index` crea ahí `library.toml` (con `root`) +
   `catalog.sqlite` + `thumbs/` → `foto-export` lee → `foto-import` importa
   → `foto` abre con los tres flags y sin ellos. Confirmar que la fototeca
   no recibe escrituras (comparar mtime del árbol de fotos). Cerrar la
   entrega con un resumen de tareas y desviaciones en este fichero.
+  (2026-11-13)
+  > Nota (2026-11-13): 848 tests en verde (793 del paso 1 + 55 nuevos) y
+  > ruff limpio. Smoke con biblioteca de prueba y metainformación externa:
+  > `foto-index` creó en el directorio externo `library.toml` (con `root`),
+  > `catalog.sqlite` e `index.lock`; `foto-export` leyó de ahí y
+  > `foto-import` importó con el lock en el directorio resuelto; `foto`
+  > (offscreen) abrió tanto con `--config --library --metadata` como sin
+  > flags (`FOTO_CONFIG`/`FOTO_LIBRARY`/`FOTO_METADATA`), sin errores. La
+  > fototeca no recibió ninguna escritura (mtimes idénticos antes y
+  > después) y no se creó `.foto/` dentro de ella. `thumbs/` lo crea el
+  > servicio de miniaturas de la UI, no el indexador (igual que antes).
 
 **Criterio de fin del paso 2:** las tres cadenas resueltas en un único
 sitio, los cuatro binarios exponen `--metadata` (y la UI además
 `--config`/`--library`), `library.toml` lleva `root` con validación, y una
 fototeca de Apple Photos es operable con metainformación externa sin
 escribir dentro del paquete.
+
+> Estado final del paso 2 (2026-11-13): T2.1–T2.8 cerradas. Las tres
+> cadenas (configuración, fototeca, metainformación) viven en
+> `storage/resolver.py` con el patrón override CLI → entorno →
+> `config.toml` → por defecto; los cuatro binarios exponen `--metadata` y
+> la UI además `--config`/`--library` (argparse antes de construir Qt,
+> sin persistir overrides); `config.toml` admite `[metadata].path`
+> (opt-in, conservada por `save_config`, nunca escrita por la app);
+> `library.toml` lleva `root` (escrito al crear, añadido al adoptar
+> descriptores legacy, validado con error explícito de
+> relocalizar/regenerar) y el bootstrap opera sobre el directorio de
+> metainformación resuelto (`None` = `<fototeca>/.foto`). 848 tests y
+> ruff en verde; smoke end-to-end con metainformación externa sin
+> escribir en la fototeca.
+>
+> Desviaciones respecto al enunciado literal:
+> - `library_file`, `thumbs_dir` y `load_library` pasan a recibir el
+>   directorio de metainformación resuelto (como prevé § 3.3);
+>   `LibraryBootstrap.foto_dir` pasa a llamarse `metadata_dir`.
+> - `ensure_library(root, metadata_dir=None, *, dry_run=False)`: la firma
+>   previa era posicional en `dry_run`; ningún llamador interno la usaba
+>   posicional.
+> - El test `test_move_library_preserves_relative_paths_and_photos` se
+>   adapta: relocalizar la fototeca exige actualizar el `root` del
+>   descriptor (el ADR 0008 lo convierte en error explícito); las rutas
+>   relativas siguen sobreviviendo al traslado.
+> - El mensaje «no hay metainformación» de `foto-export` se da cuando el
+>   directorio resuelto no existe (solo lectura, no lo crea); en
+>   `foto-index`/`foto-import` no existe tal estado porque el nivel 4
+>   siempre deriva de la fototeca.
 
 ---
 

@@ -22,8 +22,7 @@ from foto.core.errors import (
 )
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import ConfigError
-from foto.storage.library import foto_dir
-from foto.storage.resolver import resolve_library_path
+from foto.storage.resolver import resolve_library_path, resolve_metadata_dir
 from foto.transfer import exporter
 from foto.transfer.exporter import export_library
 
@@ -34,6 +33,11 @@ precedencia de la biblioteca:
   1. --library PATH
   2. FOTO_LIBRARY
   3. [library].path de config.toml
+precedencia de la metainformación (.foto, ADR 0008):
+  1. --metadata PATH
+  2. FOTO_METADATA
+  3. [metadata].path de config.toml
+  4. <fototeca>/.foto (por defecto)
 
 códigos de salida:
   0  éxito, sin avisos
@@ -43,6 +47,7 @@ códigos de salida:
 
 ejemplos:
   uv run foto-export --library ~/Fotos
+  uv run foto-export --library ~/Fotos --metadata ~/Fotos.foto
   uv run foto-export --library ~/Fotos --tags --out ~/backups
   uv run foto-export --library ~/Fotos --dry-run --json
 """
@@ -59,6 +64,12 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--library", metavar="PATH", type=Path, help="raíz de la biblioteca")
+    parser.add_argument(
+        "--metadata",
+        metavar="PATH",
+        type=Path,
+        help="directorio de metainformación; por defecto: <fototeca>/.foto",
+    )
     parser.add_argument("--config", metavar="PATH", type=Path, help="configuración global")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
@@ -144,14 +155,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    catalog_path = foto_dir(root) / CATALOG_FILE_NAME
+    # ADR 0008: la metainformación se resuelve solo por el resolvedor
+    # compartido, nunca leyendo FOTO_METADATA ni config.toml por su cuenta.
+    try:
+        metadata_dir = resolve_metadata_dir(
+            root, args.metadata, config_path=args.config
+        ).metadata_dir
+    except (ConfigError, LibraryError) as exc:
+        logger.error("Metainformación inválida: %s", exc)
+        return 2
+    assert metadata_dir is not None
+
+    # Solo lectura: no se crea nada. Un directorio de metainformación
+    # ausente es un error explícito con la acción sugerida.
+    if not metadata_dir.is_dir():
+        logger.error(
+            "No hay metainformación en %s: ejecuta 'foto-index' en la "
+            "biblioteca o corrige --metadata/FOTO_METADATA/[metadata].path",
+            metadata_dir,
+        )
+        return 2
+
+    catalog_path = metadata_dir / CATALOG_FILE_NAME
     if not catalog_path.exists():
         logger.error(
             "No hay catálogo en %s: ejecuta 'foto-index' antes de exportar", catalog_path
         )
         return 2
 
-    out_dir = args.out if args.out is not None else foto_dir(root) / "exports"
+    out_dir = args.out if args.out is not None else metadata_dir / "exports"
 
     export_tags = not args.places
     export_places = not args.tags

@@ -112,9 +112,10 @@ path = "~/Pictures/Photos Library.photoslibrary"
   niveles 1–3 son rutas absolutas del dueño. Una vez fijadas, la relación
   «fototeca → metainformación» es explícita, no implícita.
 - Todos los puntos de entrada (`foto-index`, `foto-export`, `foto-import` y
-  la UI) resuelven la metainformación por la misma cadena. En la UI no hay
-  flag: lee `[metadata].path` y, si se redirige desde el diálogo de
-  fototeca, lo escribe.
+  la UI) resuelven la metainformación por la misma cadena. La UI expone los
+  mismos overrides que los CLIs (`--metadata`, más `--config` y `--library`)
+  y sus overrides de CLI no se persisten: nunca escribe `[metadata].path`
+  (ver nota de corrección al final).
 
 ### Coherencia: el descriptor sabe de dónde viene
 
@@ -211,8 +212,21 @@ Para recuperar la coherencia lógica:
 
 - ADR de indexado sobre la fototeca de Apple Photos (escaneo restringido a
   `originals/`, manejo de paquetes, notas de TCC/*Full Disk Access*).
-- Decidir si el diálogo de primera ejecución de la UI pregunta también por
-  la metainformación o solo la fototeca (con `[metadata].path` como única
-  vía persistente).
-- Documentar en `README.md` la migración manual de una `.foto/` existente a
-  una ubicación externa.
+- Decidido durante la implementación (paso 2 del prompt): el diálogo de
+  primera ejecución solo pregunta por la fototeca; `[metadata].path` es la
+  única vía persistente para la metainformación.
+- Documentada durante la implementación (paso 2 del prompt): la migración
+  manual de una `.foto/` existente a una ubicación externa está en
+  `README.md` (§ «Migración manual de una `.foto/` existente»).
+
+### Nota de corrección (2026-11-13)
+
+La implementación del paso 2 (prompt
+`prompts/implementar-adr-0008-ubicaciones.md`) cambió el comportamiento de
+la UI respecto al texto original de este ADR: `foto` pasa a admitir
+`--config`, `--library` y `--metadata` (mismas cadenas que los CLIs) y la
+UI **nunca escribe** `[metadata].path`; el diálogo de primera ejecución
+sigue persistiendo solo `[library].path`. La frase original «En la UI no
+hay flag: lee `[metadata].path` y, si se redirige desde el diálogo de
+fototeca, lo escribe» queda sustituida por la del apartado «Semántica del
+override». No hay otros cambios de diseño.

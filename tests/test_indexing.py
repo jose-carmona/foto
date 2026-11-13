@@ -343,6 +343,15 @@ def test_move_library_preserves_relative_paths_and_photos(tmp_path):
 
     moved = tmp_path / "biblioteca-movida"
     original.rename(moved)
+    # ADR 0008: el descriptor lleva el campo root. Al relocalizar la
+    # fototeca el dueño actualiza esa línea (o borra el campo, que es
+    # opcional); la app nunca mezcla catálogos en silencio.
+    descriptor = moved / ".foto" / "library.toml"
+    descriptor.write_text(
+        descriptor.read_text(encoding="utf-8")
+        .replace(f'root = "{original}"', f'root = "{moved}"'),
+        encoding="utf-8",
+    )
     summary = run_index(moved)
 
     after = read_locations(moved)
