@@ -210,8 +210,9 @@ Para recuperar la coherencia lógica:
 
 ## Pendiente
 
-- ADR de indexado sobre la fototeca de Apple Photos (escaneo restringido a
-  `originals/`, manejo de paquetes, notas de TCC/*Full Disk Access*).
+- ~~ADR de indexado sobre la fototeca de Apple Photos (escaneo restringido a
+  `originals/`, manejo de paquetes, notas de TCC/*Full Disk Access*).~~
+  Redactado: [ADR 0009](0009-indexado-apple-photos.md).
 - Decidido durante la implementación (paso 2 del prompt): el diálogo de
   primera ejecución solo pregunta por la fototeca; `[metadata].path` es la
   única vía persistente para la metainformación.

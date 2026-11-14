@@ -116,8 +116,18 @@ forma de publicación o compartición.
 - [ ] **Fase 4 — Edición no destructiva**
   - Recorte, rotación, exposición, color
 - [ ] **Fase 5 — Migración e IA local**
-  - Importación de una biblioteca existente de Apple Photos sin perder metadatos
+  - Importación de una biblioteca existente de Apple Photos sin perder
+    metadatos (primera fase: favoritos y caras; los originales de
+    `originals/`, sin tocar el paquete)
+    - Importar más metadatos de Apple Photos (álbumes, títulos,
+      descripciones, fecha de importación…) una vez la primera fase
+      importe favoritos y caras
+    - Visualización de caras (personas) en la UI, a partir de las
+      etiquetas `person` importadas al catálogo
   - Caras, escenas y OCR ejecutados en local
+- [ ] **Fase 6 — De fototeca a fotovideoteca**
+  - Soporte de vídeo de extremo a extremo: tipos de archivo y metadatos en
+    el indexador, esquema del catálogo y reproducción en el visor
 
 ## Arquitectura
 
@@ -286,8 +296,14 @@ mismos resolutores en `storage/resolver.py`.
 su contenido el proceso necesita *Full Disk Access* (requisito del entorno,
 no del código). Con la metainformación en un directorio externo, `foto` no
 escribe nada dentro del paquete de Apple: los originales quedan intactos y
-sin interferencias con Photos. Queda pendiente un ADR específico de indexado
-de Apple Photos (restringir el escaneo a `originals/`, detalles del paquete).
+sin interferencias con Photos. El comportamiento de indexado sobre Apple está
+decidido en el [ADR 0009](docs/adr/0009-indexado-apple-photos.md): solo se
+escanea `originals/` (el nombre del fichero es el identificador del asset),
+la metainformación **debe** vivir fuera del paquete (sin `--metadata` o
+`[metadata].path` externo, el arranque falla con un error explícito) y una
+fase `apple-import` del indexador, opt-in con `[apple_photos] enabled = true`,
+importará favoritos y personas de `Photos.sqlite` (pendiente de implementar,
+paso 3 de su prompt).
 
 Para usarla hoy:
 
