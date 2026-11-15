@@ -550,6 +550,11 @@ class Indexer:
                 break
 
             paths = [self.root / target.rel_path for target in targets]
+            logger.info(
+                "Extrayendo metadatos de %d ficheros (desde %s)",
+                len(targets),
+                targets[0].rel_path,
+            )
             outcomes = self.extractor.extract_batch(paths)
             now = _iso(self._now())
 
@@ -663,7 +668,16 @@ class Indexer:
                 )
                 if record is not None:
                     geocode.cache_hits += 1
+                    logger.debug(
+                        "Lugar en caché para la coordenada %s,%s (celda %s,%s)",
+                        target.latitude, target.longitude,
+                        cell.latitude, cell.longitude,
+                    )
                 else:
+                    logger.info(
+                        "Pidiendo metadatos de localización para la coordenada %s,%s",
+                        target.latitude, target.longitude,
+                    )
                     try:
                         record = geocoder.reverse(cell.latitude, cell.longitude)
                     except GeocodingResponseError as exc:
