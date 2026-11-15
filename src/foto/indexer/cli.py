@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from foto.core.errors import (
@@ -18,6 +18,11 @@ from foto.core.errors import (
     LockError,
 )
 from foto.core.indexing import INDEXING_PHASES, Indexer, IndexingOptions, IndexingSummary
+from foto.core.scanner import (
+    LibraryScanner,
+    apple_photos_scan_policy,
+    is_apple_photos_library,
+)
 from foto.indexer.geonames import NominatimGeocoder, ReverseGeocoderConfig
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import ConfigError, load_config
@@ -39,6 +44,12 @@ precedencia de la metainformación (.foto, ADR 0008):
   3. [metadata].path de config.toml
   4. <fototeca>/.foto (por defecto)
 Para el fichero de configuración: --config PATH, FOTO_CONFIG o platformdirs.
+
+fototeca de Apple Photos (.photoslibrary, ADR 0009):
+  solo se escanea originals/ (variantes editadas y derivados quedan fuera);
+  la metainformación debe vivir fuera del paquete (--metadata, FOTO_METADATA
+  o [metadata].path): sin ella el arranque falla con un error explícito.
+  Sin «Acceso total al disco» (Full Disk Access) el paquete no se puede leer.
 
 fases del pipeline (todas por defecto); --skip FASE las excluye:
   scan    recorrido del filesystem, hashing, metadatos y ausencias
@@ -86,7 +97,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--metadata",
         metavar="PATH",
         type=Path,
-        help="directorio de metainformación; por defecto: <fototeca>/.foto",
+        help="directorio de metainformación; por defecto: <fototeca>/.foto "
+        "(nunca dentro de un paquete .photoslibrary)",
     )
     parser.add_argument("--config", metavar="PATH", type=Path, help="configuración global")
     parser.add_argument("--full", action="store_true", help="rehashea y reextrae todo")
@@ -135,6 +147,33 @@ def _configure_logging(args: argparse.Namespace) -> None:
 
 def _resolve_library(args: argparse.Namespace) -> Path | None:
     return resolve_library_path(args.library, config_path=args.config).library_path
+
+
+def _check_apple_package(root: Path) -> None:
+    """Paquete Apple anómalo: ``originals/`` ausente es un error temprano.
+
+    Si el acceso falla (p. ej. TCC sin *Full Disk Access*) no se puede saber:
+    el recorrido lo reportará como parcial con la causa explícita
+    (ADR 0009, § 3), no aquí.
+    """
+    try:
+        present = (root / "originals").is_dir()
+    except OSError as exc:
+        logger.debug(
+            "No se pudo comprobar originals/ del paquete Apple: %s",
+            exc.strerror or type(exc).__name__,
+        )
+        return
+    if not present:
+        raise LibraryError(
+            "La raíz parece un paquete de Apple Photos pero no contiene "
+            "originals/: paquete anómalo o no es una fototeca de Photos"
+        )
+
+
+def _apple_scanner_factory(root: Path) -> LibraryScanner:
+    """Scanner con la política de Apple del ADR 0009 (solo ``originals/``)."""
+    return LibraryScanner(root, policy=apple_photos_scan_policy())
 
 
 def _emit_summary(summary: IndexingSummary, args: argparse.Namespace) -> None:
@@ -221,6 +260,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             "[library].path en config.toml"
         )
         return 2
+
+    # ADR 0009: si la raíz es un paquete de Apple Photos, el escaneo se
+    # restringe a originals/ y la metainformación, resuelta más abajo por el
+    # resolvedor compartido, tendrá que vivir fuera del paquete.
+    scanner: LibraryScanner | Callable[..., LibraryScanner] | None = None
+    if is_apple_photos_library(root):
+        try:
+            _check_apple_package(root)
+        except LibraryError as exc:
+            logger.error("%s", exc)
+            return 2
+        scanner = _apple_scanner_factory
+        logger.info(
+            "Raíz de Apple Photos detectada: política de escaneo aplicada "
+            "(solo originals/; variantes editadas y derivados quedan fuera)"
+        )
 
     # ADR 0008: la metainformación se resuelve solo por el resolvedor
     # compartido, nunca leyendo FOTO_METADATA ni config.toml por su cuenta.
@@ -316,6 +371,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             extractor=extractor,
             geocoder=geocoder,
+            scanner=scanner,
         )
         summary = indexer.run()
         _emit_summary(summary, args)

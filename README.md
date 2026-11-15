@@ -220,6 +220,9 @@ foto/
   - `0008-resolucion-de-ubicaciones.md` — las tres cadenas de resolución de
     rutas (configuración, fototeca y metainformación) y la preparación para
     la fototeca de Apple Photos.
+  - `0009-indexado-apple-photos.md` — política de escaneo de un paquete
+    `.photoslibrary` (solo `originals/`), metainformación obligatoriamente
+    externa y la fase `apple-import` de favoritos y personas.
 
 ## UI
 
@@ -290,20 +293,40 @@ mismos resolutores en `storage/resolver.py`.
   path = "~/Fotos/ApplePhotos.foto"
   ```
 
+- Si la fototeca es un paquete de Apple Photos (`.photoslibrary`), la
+  metainformación no puede caer dentro del paquete por ninguna vía de la
+  cadena ([ADR 0009](docs/adr/0009-indexado-apple-photos.md)): el nivel por
+  defecto `<fototeca>/.foto` y cualquier override que apunte dentro fallan
+  con un error explícito que pide una ruta externa.
+
 ### Fototeca de Apple Photos
 
 `Photos Library.photoslibrary` es un **paquete** protegido por TCC: para leer
 su contenido el proceso necesita *Full Disk Access* (requisito del entorno,
 no del código). Con la metainformación en un directorio externo, `foto` no
 escribe nada dentro del paquete de Apple: los originales quedan intactos y
-sin interferencias con Photos. El comportamiento de indexado sobre Apple está
-decidido en el [ADR 0009](docs/adr/0009-indexado-apple-photos.md): solo se
-escanea `originals/` (el nombre del fichero es el identificador del asset),
-la metainformación **debe** vivir fuera del paquete (sin `--metadata` o
-`[metadata].path` externo, el arranque falla con un error explícito) y una
-fase `apple-import` del indexador, opt-in con `[apple_photos] enabled = true`,
-importará favoritos y personas de `Photos.sqlite` (pendiente de implementar,
-paso 3 de su prompt).
+sin interferencias con Photos. El comportamiento está decidido en el
+[ADR 0009](docs/adr/0009-indexado-apple-photos.md) y es automático:
+
+- **Solo se escanea `originals/`**: al detectar el sufijo `.photoslibrary`
+  el indexador aplica la política de escaneo del ADR 0009 (sin flags): una
+  entrada por asset fotográfico original, sin variantes editadas ni
+  derivados de `resources/` o `database/`. El vídeo queda fuera hasta la
+  Fase 6 del roadmap.
+- **La metainformación debe vivir fuera del paquete**: sin `--metadata`,
+  `FOTO_METADATA` o `[metadata].path` externo el arranque falla con un
+  error explícito (también si el override apunta dentro del paquete); no
+  hay fallback automático.
+- **Sin *Full Disk Access*** el recorrido acaba `partial` con la causa
+  explícita y la acción sugerida de conceder *Full Disk Access*; no se
+  marcan ausencias para no confundir un permiso denegado con fotos borradas.
+- **Ausencias por iCloud** («Optimizar almacenamiento de Mac»): son estado
+  normal, no errores; los originales ausentes se comportan como cualquier
+  ubicación ausente del catálogo.
+- La importación de favoritos y personas desde `Photos.sqlite` (fase
+  `apple-import` del indexador, opt-in con `[apple_photos] enabled = true`)
+  está decidida en el ADR 0009 y pendiente de implementar (paso 3 de su
+  prompt).
 
 Para usarla hoy:
 

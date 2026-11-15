@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 from foto.core.errors import (
     GeocodingRejectedError,
@@ -197,6 +198,7 @@ class Indexer:
         hasher: Hasher | None = None,
         extractor: MetadataExtractor | None = None,
         geocoder: Geocoder | None = None,
+        scanner: LibraryScanner | Callable[..., LibraryScanner] | None = None,
         now: Callable[[], datetime] = _utcnow,
         batch_size: int = DEFAULT_BATCH_SIZE,
         metadata_batch_size: int = DEFAULT_METADATA_BATCH_SIZE,
@@ -211,6 +213,9 @@ class Indexer:
         self.hasher = hasher or Sha256Hasher()
         self.extractor = extractor
         self.geocoder = geocoder
+        # ADR 0009: scanner o factoría inyectable (misma pieza que Hasher,
+        # MetadataExtractor y Geocoder). Sin él, el scanner de siempre.
+        self.scanner = scanner
         self._now = now
         self.batch_size = max(1, batch_size)
         self.metadata_batch_size = max(1, metadata_batch_size)
@@ -367,7 +372,7 @@ class Indexer:
         return self._scan_complete and summary.errors == 0
 
     def _scan(self, summary: IndexingSummary) -> None:
-        scanner = LibraryScanner(self.root)
+        scanner = self._make_scanner()
         seen_buffer: list[str] = []
 
         for event in scanner.scan():
@@ -401,6 +406,30 @@ class Indexer:
         self.catalog.add_seen(buffer)
         self.catalog.commit()
         return []
+
+    def _make_scanner(self) -> LibraryScanner:
+        """El scanner de la pasada: inyectado o el de siempre (ADR 0009).
+
+        Una instancia inyectada se reinicia para ser reutilizable entre
+        pasadas; una factoría se construye contra la raíz del Indexer. Si la
+        política del scanner es incompatible con la raíz (raíz relativa
+        incluida ausente), ``LibraryScanner.scan`` lo eleva como
+        ``LibraryError`` antes de procesar ningún fichero.
+        """
+        source = self.scanner
+        if source is None:
+            return LibraryScanner(self.root)
+        if isinstance(source, LibraryScanner):
+            if Path(source.root) != Path(self.root):
+                raise IndexingError(
+                    "El scanner inyectado está construido sobre otra raíz"
+                )
+            source.complete = True
+            source.directory_errors = 0
+            source.file_errors = 0
+            return source
+        return source(self.root)
+
 
     def _process_file(self, scanned, summary: IndexingSummary) -> None:
         now = _iso(self._now())

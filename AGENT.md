@@ -192,8 +192,8 @@ resolución (configuración, fototeca y metainformación), en
 - **Metainformación:** `library.toml`, `catalog.sqlite`, `thumbs/`,
   `index.lock` y `exports/` viven juntos en el directorio resuelto, que por
   defecto es `<fototeca>/.foto` y puede vivir fuera de la fototeca (p. ej.
-  la fototeca de Apple Photos, con *Full Disk Access* como requisito del
-  entorno).
+  la fototeca de Apple Photos: allí es obligatorio, ADR 0009, y *Full Disk
+  Access* es requisito del entorno).
 - **Secretos:** llavero del sistema o variables de entorno. Nunca en `config.toml`.
 - **Precedencia (override CLI → entorno → `config.toml` → por defecto):**
   fototeca: `--library` → `FOTO_LIBRARY` → `[library].path` → diálogo de
@@ -224,6 +224,15 @@ Resumen operativo:
 - **Ausencias:** se marcan `missing` por reconciliación con la tabla temporal
   `seen`; un recorrido parcial o una raíz ausente no marcan nada. `--prune` solo
   borra filas del catálogo.
+- **Fototeca de Apple Photos** ([ADR 0009](docs/adr/0009-indexado-apple-photos.md)):
+  si la raíz es un paquete `.photoslibrary`, el escaneo se restringe a
+  `originals/` con una `ScanPolicy` declarativa (`core/scanner.py`), inyectada
+  en el `Indexer` como el resto de dependencias; la metainformación no puede
+  resolverse dentro del paquete por ninguna vía (`storage/resolver.py` lo
+  exige con un error explícito) y un permiso denegado por TCC se reporta como
+  recorrido `partial` sugiriendo *Full Disk Access*, sin marcar ausencias.
+  Sin *Full Disk Access* el paquete ni siquiera se puede leer: requisito del
+  entorno.
 - **Metadatos:** EXIF de la imagen, normalizados; `exiftool` es opcional, de solo
   lectura, sin shell y por lotes. Sin él quedan `pending`.
 - **Fases:** una pasada ejecuta `scan` y después `geocode`; `--skip`

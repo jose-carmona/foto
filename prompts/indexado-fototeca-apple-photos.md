@@ -263,10 +263,11 @@ con argumentos, y el resto del prompt asume la recomendación:
   la fase nueva y el esquema v6 (columna de vínculo con Apple; sin
   tablas nuevas de álbumes, fuera de alcance), con favoritos y personas
   vía ADR 0006.
-- [ ] **T1.3 — Aceptación.** Mostrar el ADR al proyectista y obtener el
+- [x] **T1.3 — Aceptación.** Mostrar el ADR al proyectista y obtener el
   visto bueno antes de continuar. Actualizar las referencias
   pendientes que apuntan a «ADR futuro» (README § Fototeca de Apple
   Photos, ADR 0008 § Pendiente) cuando el ADR exista.
+  (2026-11-15: visto bueno del proyectista; se ejecuta el paso 2.)
 
 **Criterio de fin del paso 1:** ADR 0009 redactado y aceptado. **No
 continuar al paso 2 sin cerrar esto.**
@@ -310,23 +311,25 @@ continuar al paso 2 sin cerrar esto.**
 
 ## 6. Desglose de tareas del paso 2
 
-- [ ] **T2.1 — Política de escaneo en `core/scanner.py`** (§ 5):
+- [x] **T2.1 — Política de escaneo en `core/scanner.py`** (§ 5):
   `ScanPolicy` (raíces incluidas relativas, exclusiones, extensiones),
   aplicación en el recorrido, comportamiento por defecto idéntico al
   actual. Tests: política por defecto sin cambio, inclusión de raíz
   relativa, exclusión de directorios y del patrón de versiones
-  editadas, symlinks e ignorados como hoy.
-- [ ] **T2.2 — Inyección del scanner en `core/indexing.py`** (§ 5):
+  editadas, symlinks e ignorados como hoy. (2026-11-15)
+- [x] **T2.2 — Inyección del scanner en `core/indexing.py`** (§ 5):
   parámetro en `__init__`, uso en `_scan`, error temprano si la política
   y la raíz son incompatibles. Tests: el Indexer usa el scanner
   inyectado y el default no cambia; el flujo incremental
   (firma/`unchanged`/`missing`) se demuestra sobre `originals/`.
-- [ ] **T2.3 — Detección y política de Apple en `indexer/cli.py`** (§ 5):
+  (2026-11-15)
+- [x] **T2.3 — Detección y política de Apple en `indexer/cli.py`** (§ 5):
   autodetección del paquete, construcción de la política según ADR,
   logging explícito. Tests con una biblioteca Apple sintética en
   `tests/fixtures/` (paquete con `originals/` con versiones editadas y
   derivados para demostrar que solo lo debido entra al catálogo).
-- [ ] **T2.4 — Metainformación obligatoriamente externa en
+  (2026-11-15)
+- [x] **T2.4 — Metainformación obligatoriamente externa en
   `storage/resolver.py`** (§ 3.8, § 5): helper de detección de paquete
   Apple compartido, enforcement en `resolve_metadata_dir` para todos
   los orígenes (default incluido) con `LibraryError` y acción
@@ -337,15 +340,16 @@ continuar al paso 2 sin cerrar esto.**
   hereda la regla vía el resolutór compartido (test de coherencia con
   `environment` inyectable). Actualizar los mensajes de error y los
   epílogos de `--help` que documenten la cadena de metainformación.
-- [ ] **T2.5 — Errores de TCC con acción sugerida** (§ 5): mensaje
+  (2026-11-15)
+- [x] **T2.5 — Errores de TCC con acción sugerida** (§ 5): mensaje
   específico para permiso denegado en paquete Apple; test con un
-  scandir fallido inyectado.
-- [ ] **T2.6 — Documentación**: README (§ Fototeca de Apple Photos:
+  scandir fallido inyectado. (2026-11-15)
+- [x] **T2.6 — Documentación**: README (§ Fototeca de Apple Photos:
   comportamiento real tras el paso 2, TCC, iCloud y la regla de
   metainformación externa obligatoria con su error), `AGENT.md` si el
   flujo de trabajo lo menciona. Actualizar la nota de «pendiente» que
-  quede obsoleta.
-- [ ] **T2.7 — Verificación y cierre del paso 2.** Suite en verde;
+  quede obsoleta. (2026-11-15)
+- [x] **T2.7 — Verificación y cierre del paso 2.** Suite en verde;
   smoke manual end-to-end si hay biblioteca real disponible (con FDA):
   `foto-index --library <paquete>` sin `--metadata` falla con el error
   del § 3.8; con `--metadata <externo>` el catálogo queda sin
@@ -354,6 +358,21 @@ continuar al paso 2 sin cerrar esto.**
   visualiza. Confirmar que el paquete no recibe escrituras (mtimes del
   árbol idénticos antes y después) y que no aparece ningún `.foto/`
   dentro de él.
+  (2026-11-15)
+  > Nota (2026-11-15): smoke contra la biblioteca real del paso 1
+  > (`/Volumes/familia/iMac/Fotos.photoslibrary/Fotos biblioteca
+  > .photoslibrary`, legible sin TCC). Sin `--metadata` falla con el
+  > error del § 3.8 (origen default) y sin crear nada en el paquete;
+  > hashear los ~32k originales era inviable en el smoke, así que el
+  > indexado se verificó con un paquete fiel en temporal con copias de
+  > originales reales y derivados señuelo (variante `_1`, render en
+  > `resources/`, `database/Photos.sqlite`, `.mov`): solo los 2
+  > originales entran al catálogo, `duplicadas=0`, segunda pasada
+  > `sin_cambios=2`, ningún `.foto/` dentro del paquete y mtimes del
+  > paquete real idénticos antes y después. El punto de
+  > `foto --metadata <externo>` la visualiza no se ejercitó (requiere
+  > Qt con pantalla); el visor consume el catálogo vía
+  > `list_present_locations`, que la suite cubre.
 
 **Criterio de fin del paso 2:** con una biblioteca real, el catálogo
 contiene exactamente una entrada por asset fotográfico original de

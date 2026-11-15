@@ -147,3 +147,113 @@ def test_missing_metadata_dir_is_not_created_by_the_resolver(tmp_path):
 
     assert resolution.metadata_dir == external.resolve()
     assert not external.exists()
+
+
+# ----------------------------------------------------------------------
+# ADR 0009 (§ 3.8): metainformación obligatoriamente externa
+# ----------------------------------------------------------------------
+def _apple_root(tmp_path: Path) -> Path:
+    root = tmp_path / "Fotos.photoslibrary"
+    root.mkdir()
+    return root
+
+
+def test_apple_default_metadata_inside_the_package_raises(tmp_path):
+    root = _apple_root(tmp_path)
+
+    with pytest.raises(LibraryError, match="no puede vivir dentro"):
+        resolve_metadata_dir(root, config_path=tmp_path / "config.toml")
+
+
+def test_apple_option_inside_the_package_raises(tmp_path):
+    root = _apple_root(tmp_path)
+
+    with pytest.raises(LibraryError, match="origen option"):
+        resolve_metadata_dir(root, root / ".foto")
+
+
+def test_apple_option_equal_to_the_package_root_raises(tmp_path):
+    root = _apple_root(tmp_path)
+
+    with pytest.raises(LibraryError, match="origen option"):
+        resolve_metadata_dir(root, root)
+
+
+def test_apple_environment_inside_the_package_raises(tmp_path):
+    root = _apple_root(tmp_path)
+
+    with pytest.raises(LibraryError, match="origen environment"):
+        resolve_metadata_dir(
+            root,
+            environment={"FOTO_METADATA": str(root / "metainfo")},
+        )
+
+
+def test_apple_config_inside_the_package_raises(tmp_path):
+    root = _apple_root(tmp_path)
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'version = 1\n[metadata]\npath = "{root / "metainfo"}"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LibraryError, match="origen config"):
+        resolve_metadata_dir(root, config_path=config)
+
+
+def test_apple_error_suggests_the_three_external_sources(tmp_path):
+    root = _apple_root(tmp_path)
+
+    with pytest.raises(LibraryError) as raised:
+        resolve_metadata_dir(root, config_path=tmp_path / "config.toml")
+
+    message = str(raised.value)
+    assert "--metadata" in message
+    assert "FOTO_METADATA" in message
+    assert "[metadata].path" in message
+
+
+def test_apple_option_outside_the_package_resolves(tmp_path):
+    root = _apple_root(tmp_path)
+    external = tmp_path / "metainfo-externa"
+
+    resolution = resolve_metadata_dir(root, external)
+
+    assert resolution.metadata_dir == external.resolve()
+    assert resolution.origin == ORIGIN_OPTION
+    assert not external.exists()
+
+
+def test_apple_environment_outside_the_package_resolves(tmp_path):
+    root = _apple_root(tmp_path)
+    external = tmp_path / "metainfo-entorno"
+
+    resolution = resolve_metadata_dir(
+        root,
+        environment={"FOTO_METADATA": str(external)},
+        config_path=tmp_path / "no-leído.toml",
+    )
+
+    assert resolution.metadata_dir == external.resolve()
+    assert resolution.origin == ORIGIN_ENVIRONMENT
+
+
+def test_sibling_directory_of_the_package_is_outside(tmp_path):
+    root = _apple_root(tmp_path)
+    sibling = tmp_path / "ApplePhotos.foto"
+
+    resolution = resolve_metadata_dir(root, sibling)
+
+    assert resolution.metadata_dir == sibling.resolve()
+
+
+def test_ui_inherits_the_rule_through_the_shared_resolver(tmp_path):
+    """Coherencia con la UI: ``ui/app.py`` llama a este resolvedor con el
+    entorno del proceso; con ``environment`` inyectable la regla es la misma."""
+    root = _apple_root(tmp_path)
+
+    with pytest.raises(LibraryError, match="origen environment"):
+        resolve_metadata_dir(
+            root,
+            environment={"FOTO_METADATA": str(root / ".foto")},
+        )
