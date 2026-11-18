@@ -243,7 +243,10 @@ Casos límite con tests obligatorios:
 - Ubicación canónica por foto: **el `tier` es el criterio primario**
   (`fast` gana a `archive`) y el menor `rel_path` solo desempata dentro del
   mismo tier. Consecuencia del esquema: si una foto está en los dos discos,
-  la UI lee del SSD.
+  la UI lee del SSD. Con la ubicación canónica ausente (Decisión 6), la UI
+  sirve la foto desde una copia en una ubicación disponible si la hay;
+  solo se degrada a *placeholder* quien no tenga ninguna (nota de
+  implementación del paso 4, 2026-11-18).
 - El escáner registra `(location_id, rel_path)`; el estado `present` es por
   ubicación, no global. `photos` no cambia de clave; `--prune` sigue
   limpiando fotos huérfanas (cero filas en `files`) como hoy.

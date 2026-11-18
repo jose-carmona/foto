@@ -945,27 +945,100 @@ registrado como decisión del ADR.
 
 # Paso 4 — Disponibilidad y tolerancia en la UI (§ 3.6, § 3.7)
 
-- [ ] **T4.1 — Evaluación de estados** (`available`/`unavailable`) como
+- [x] **T4.1 — Evaluación de estados** (`available`/`unavailable`) como
   función pura inyectable compartida en `storage/`.
   > Nota (2026-11-17): enunciado ajustado (§ 7.2): solo dos estados; no
   > existe `mismatch` ni marcador de volumen.
-- [ ] **T4.2 — Banner de estado y panel de ubicaciones** en `ui/`
+  > Nota (2026-11-18): **completada**. La función pura ya nació en T3.10
+  > (`storage/availability.py`, `availability_state(path, *, checker)`,
+  > dos estados e inyectable para el futuro backend remoto). El paso 4 la
+  > consume desde la UI: `load_locations` (`ui/app.py`) la evalúa **al
+  > cargar**, una vez por ubicación, nunca en cada acceso a fichero
+  > (§ 3.6). Tests: `tests/test_multi_location.py` (función) y
+  > `tests/test_ui_tolerancia.py` (consumo desde la carga).
+- [x] **T4.2 — Banner de estado y panel de ubicaciones** en `ui/`
   (presentación pura en `presentation.py`, sin Qt en la lógica; los datos
   salen del catálogo).
-- [ ] **T4.3 — Placeholders fantasma** con fecha y etiquetas del catálogo;
+  > Nota (2026-11-18): **completada**. Presentación pura en
+  > `presentation.py` (`location_banner_text`, `location_rows`,
+  > `location_state_label`, `unavailable_locations`) sobre el modelo
+  > `LocationStatus` (`ui/models.py`); los datos salen del catálogo
+  > (`load_locations` en `ui/app.py` + `Catalog.present_counts_by_location`).
+  > Widget: `LocationBanner` (`ui/window.py`), franja superior de la zona
+  > de rejilla (su altura se descuenta de rejilla y visor, nunca del panel
+  > de metadatos), con el texto del ADR («Ubicación «usb» no disponible:
+  > /Volumes/FotoVault. 1 234 fotos no visibles»). Panel de ubicaciones:
+  > `LocationsOverlay` (`ui/locations.py`), accesible por clic en el banner
+  > y por el comando nuevo `:locations`. Matiz del enunciado («accesible
+  > desde el banner y `:help`»): `:help` no abre el panel — la ayuda
+  > integrada lo documenta (sección «Ubicaciones» en `ayuda.md` y entrada
+  > `:locations` en Comandos), coherente con «solo puede haber un overlay
+  > abierto a la vez». Documentado también en `diseno-ui.md` (vocabulario
+  > de comandos y feedback) y `AGENT.md`. Tests en
+  > `tests/test_presentation.py` (puro), `tests/test_ui_locations.py` y
+  > smoke offscreen de la ventana real (banner, panel, fantasma, fav
+  > offline).
+- [x] **T4.3 — Placeholders fantasma** con fecha y etiquetas del catálogo;
   acciones que exigen fichero desactivadas con mensaje; miniatura desde
   caché si existe.
-- [ ] **T4.4 — Favoritas y etiquetas offline**: tests de que `fav`/tags
+  > Nota (2026-11-18): **completada**. `load_from_catalog` evalúa la
+  > disponibilidad por ubicación y añade `canonical_location`/`available`
+  > (`CatalogPhoto`/`Photo`): si la ubicación canónica no está a mano, la
+  > foto se sirve desde una copia disponible si la hay (matiz registrado
+  > en el ADR 0010, Decisión 4); sin ninguna, viaja como fantasma con
+  > fecha, tamaño (del catálogo), etiquetas y favorito intactos. El visor
+  > queda desactivado con mensaje claro («el fichero no está disponible ·
+  > ubicación «usb»») al abrir o al caer el cursor en una fantasma; la
+  > ficha del panel gana la fila «Disponibilidad». La miniatura sale de la
+  > caché (`thumbs/`, indexada por hash) sin tocar la ruta ausente. El
+  > catálogo no cambia: los placeholders solo existen en la vista (§ 3.7).
+  > Tests: `tests/test_ui_tolerancia.py` y `tests/test_ui_locations.py`.
+- [x] **T4.4 — Favoritas y etiquetas offline**: tests de que `fav`/tags
   funcionan con la ubicación ausente.
-- [ ] **T4.5 — Error duro solo si falta la metainformación**; tests de la
+  > Nota (2026-11-18): **completada**. `tests/test_ui_locations.py`:
+  > conmutar `f` sobre una foto fantasma escribe en el catálogo con la
+  > conexión RW del visor (persiste tras recargar) y `:tag fav` la muestra
+  > en la rejilla; en nivel de carga, el fantasma conserva `favorite` y
+  > filtra por etiqueta (`tests/test_ui_tolerancia.py`). Todo son
+  > metadatos (ADR 0006).
+- [x] **T4.5 — Error duro solo si falta la metainformación**; tests de la
   distinción.
-- [ ] **T4.6 — Documentación de usuario** (README: qué se ve cuando el USB
+  > Nota (2026-11-18): **completada**. `load_photos`/`load_locations`
+  > fallan duro solo sin catálogo (mensaje pidiendo `foto-index`, sin
+  > crear nada) o si el catálogo no puede abrirse; una ubicación declarada
+  > ausente nunca bloquea: carga normal con degradación y aviso. Tests de
+  > la distinción en `tests/test_ui_tolerancia.py` (casos emparejados).
+- [x] **T4.6 — Documentación de usuario** (README: qué se ve cuando el USB
   no está; qué pasa al quitar una ubicación de la config; ayuda integrada
   `?`/`:help`).
-- [ ] **T4.7 — Ubicación reactivada con filas `deleted` (D16).** Definir
+  > Nota (2026-11-18): **completada**. README: sección nueva «Tolerancia:
+  > qué se ve cuando el USB no está» (banner, placeholders, miniaturas
+  > desde caché, favoritas/etiquetas offline, visor desactivado, refresco
+  > manual, metainformación como único error duro) y la baja por config
+  > con `--prune`/reactivación; referencia desde «## UI». Ayuda integrada
+  > (`ayuda.md`): sección «Ubicaciones» y `:locations` en Comandos.
+  > `docs/diseno-ui.md` (comandos y feedback) y `AGENT.md` actualizados.
+- [x] **T4.7 — Ubicación reactivada con filas `deleted` (D16).** Definir
   y testear qué muestra la UI de una ubicación reactivada cuyo escaneo
   aún no ha corrido (filas `deleted`), en coherencia con § 3.3
   («reactivación») y § 3.7.
+  > Nota (2026-11-18): **completada** (ADR 0010, Decisión 7): la ubicación
+  > reactivada se muestra **vacía** —sus filas siguen `deleted` y no
+  > aparecen en `load_from_catalog`— hasta que el escaneo las repuebla. El
+  > panel la lista activa con 0 fotos y, si nunca se escaneó
+  > (`last_scanned_at` vacío), estado «pendiente de escaneo»; tras un
+  > escaneo previo, «disponible» con 0 fotos (verdad de la BD). Test:
+  > `tests/test_ui_tolerancia.py::test_reactivated_location_shows_empty_until_its_scan_runs`
+  > (baja por sync + reactivación sin escaneo, con y sin volumen a mano).
+
+> Nota (2026-11-18): **paso 4 cerrado**. `uv sync` ok, `uv run pytest`
+> 953 passed, `uv run ruff check .` sin avisos. Smoke manual offscreen de
+> la ventana real con dos discos y el USB «desmontado» (config v2 +
+> `foto-index`): banner con el formato del ADR, panel `:locations`,
+> fantasma con datos del catálogo, visor bloqueado con mensaje y favorito
+> offline persistido. Sin `git commit` (regla de AGENT.md: se pide permiso
+> explícito). La entrega queda en cuatro pasos; el paso 5 sigue diferido
+> (§ 7.2).
 
 # Paso 5 — Política de emplazamiento y traslado seguro (§ 3.8)
 

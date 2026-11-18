@@ -48,6 +48,7 @@ from PySide6.QtGui import (
     QIcon,
     QImage,
     QKeySequence,
+    QPalette,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -86,12 +87,15 @@ from foto.ui.keybindings import (
     event_modifiers,
     key_action,
 )
-from foto.ui.models import Photo, map_url
+from foto.ui.locations import LocationsOverlay
+from foto.ui.models import LocationStatus, Photo, map_url
 from foto.ui.panels import MetadataPanel, StatusBar
 from foto.ui.presentation import (
     DEFAULT_SORT,
     SORT_KEYS,
     find_tag_in_catalog,
+    location_banner_text,
+    location_rows,
     photo_accessible_name,
     photo_group,
     photo_matches_tag_name,
@@ -122,6 +126,38 @@ class ContentArea(QWidget):
         self.resized.emit()
 
 
+class LocationBanner(QLabel):
+    """Banner de ubicaciones no disponibles (ADR 0010, Decisión 6).
+
+    Franja superior de la zona de rejilla, solo cuando una ubicación activa
+    no está a mano. El texto lo compone ``presentation.location_banner_text``
+    (puro); un clic abre el panel de ubicaciones —y por teclado, ``:locations``.
+    """
+
+    opened = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAccessibleName("banner de ubicaciones no disponibles")
+        self.setWordWrap(True)
+        self.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.setFont(ui_font(12))
+        self.setAutoFillBackground(True)
+        self._apply_palette()
+
+    def _apply_palette(self) -> None:
+        palette = self.palette()
+        palette.setColor(QPalette.Window, palette.color(QPalette.AlternateBase))
+        self.setPalette(palette)
+
+    def retheme(self) -> None:
+        self._apply_palette()
+        self.update()
+
+    def mousePressEvent(self, event) -> None:
+        self.opened.emit()
+
+
 class PhotoWindow(QMainWindow):
     def __init__(
         self,
@@ -137,6 +173,7 @@ class PhotoWindow(QMainWindow):
         grid_row: bool = False,
         tag_connection: sqlite3.Connection | None = None,
         tag_catalog: Sequence[Tag] = (),
+        locations: Sequence[LocationStatus] = (),
     ) -> None:
         super().__init__()
         # True usa la rejilla como fila inferior del visor; False muestra el
@@ -247,6 +284,24 @@ class PhotoWindow(QMainWindow):
         self.help_overlay = HelpOverlay(self)
         self.help_overlay.hide()
 
+        # Panel de ubicaciones (ADR 0010, Decisión 7): los datos salen del
+        # catálogo vía la app real; en demo y pruebas, vacío.
+        self._locations = tuple(locations)
+        self.locations_overlay = LocationsOverlay(self)
+        self.locations_overlay.set_locations(location_rows(self._locations))
+        self.locations_overlay.hide()
+
+        # Banner de ubicaciones no disponibles (T4.2): su texto es puro
+        # (presentation.location_banner_text) y solo aparece si algo falta.
+        self.banner = LocationBanner(self.content)
+        self.banner.opened.connect(self._toggle_locations)
+        self._banner_text = location_banner_text(self._locations, photos)
+        if self._banner_text:
+            self.banner.setText(self._banner_text)
+            self.banner.show()
+        else:
+            self.banner.hide()
+
         self._populate_grid(photos)
         self._update_empty_state()
         self.grid.currentItemChanged.connect(self._on_current_changed)
@@ -304,6 +359,8 @@ class PhotoWindow(QMainWindow):
         self.panel.retheme()
         self.status.retheme()
         self.help_overlay.retheme()
+        self.locations_overlay.retheme()
+        self.banner.retheme()
         for label in self.findChildren(QLabel):
             if label.property("fotoMuted"):
                 set_muted(label)
@@ -468,27 +525,40 @@ class PhotoWindow(QMainWindow):
             content_w = width
             self.panel.hide()
 
+        # El banner de ubicaciones ausentes encabeza la zona de rejilla: su
+        # altura se descuenta de la rejilla y del visor, nunca del panel.
+        top = 0
+        if self.banner.isVisible():
+            banner_h = max(24, self.banner.heightForWidth(max(1, content_w)))
+            self.banner.setGeometry(0, 0, max(1, content_w), banner_h)
+            self.banner.raise_()
+            top = banner_h
+
         if self._viewer_visible:
             if self.grid_row:
                 # Panel de foto, encima la zona de rejilla recortada a un
                 # título de grupo y una única fila de celdas. Es la misma
                 # rejilla de siempre: solo cambia su dimensión.
-                header_h = min(GROUP_HEADER_H, max(0, height))
-                row_h = min(ITEM_H, max(0, height - header_h))
-                viewer_h = max(0, height - header_h - row_h)
-                self.viewer.setGeometry(0, 0, max(0, content_w), viewer_h)
+                header_h = min(GROUP_HEADER_H, max(0, height - top))
+                row_h = min(ITEM_H, max(0, height - top - header_h))
+                viewer_h = max(0, height - top - header_h - row_h)
+                self.viewer.setGeometry(0, top, max(0, content_w), viewer_h)
                 self.viewer.show()
                 self.viewer.raise_()
                 self.grid.show()
                 self.grid.setGeometry(
-                    0, viewer_h + header_h, max(0, content_w), row_h
+                    0, top + viewer_h + header_h, max(0, content_w), row_h
                 )
                 self.grid.raise_()
-                self.row_header.setGeometry(0, viewer_h, max(0, content_w), header_h)
+                self.row_header.setGeometry(
+                    0, top + viewer_h, max(0, content_w), header_h
+                )
                 self.row_header.raise_()
             else:
                 self.grid.hide()
-                self.viewer.setGeometry(0, 0, max(0, content_w), height)
+                self.viewer.setGeometry(
+                    0, top, max(0, content_w), max(0, height - top)
+                )
                 self.viewer.show()
                 self.viewer.raise_()
         else:
@@ -496,9 +566,9 @@ class PhotoWindow(QMainWindow):
             self.grid.show()
             self.grid.setGeometry(
                 GRID_MARGIN,
-                GRID_MARGIN,
+                GRID_MARGIN + top,
                 max(0, content_w - 2 * GRID_MARGIN),
-                max(0, height - 2 * GRID_MARGIN),
+                max(0, height - top - 2 * GRID_MARGIN),
             )
 
         self._position_empty_label()
@@ -521,15 +591,18 @@ class PhotoWindow(QMainWindow):
         self._layout_content()
         self.status.position_popup()
         if self.help_overlay.isVisible():
-            self._center_help()
+            self._center_overlay(self.help_overlay)
+        if self.locations_overlay.isVisible():
+            self._center_overlay(self.locations_overlay)
 
-    def _center_help(self) -> None:
+    def _center_overlay(self, overlay: QWidget) -> None:
+        """Centra un overlay informativo (ayuda, ubicaciones) sobre el contenido."""
         content_rect = self.content.geometry()
         width = min(760, max(320, content_rect.width() - 64))
         height = min(760, max(260, content_rect.height() - 64))
         x = content_rect.x() + (content_rect.width() - width) // 2
         y = content_rect.y() + (content_rect.height() - height) // 2
-        self.help_overlay.setGeometry(x, y, width, height)
+        overlay.setGeometry(x, y, width, height)
 
     def _show_content_blocker(self) -> None:
         self.content_blocker.setGeometry(0, 0, self.content.width(), self.content.height())
@@ -829,6 +902,8 @@ class PhotoWindow(QMainWindow):
         if photo is None:
             self.status.show_message("no hay fotos", 2000)
             return
+        if not self._open_if_available(photo):
+            return
         self._viewer_visible = True
         if self.grid_row:
             self._set_viewer_keys(True)
@@ -836,6 +911,23 @@ class PhotoWindow(QMainWindow):
         self._show_viewer_photo(photo)
         self._focus_current_view()
         self.status.show_message("visor · h/j/k/l mover · q volver", 2500)
+
+    def _open_if_available(self, photo: Photo) -> bool:
+        """Guardia T4.3: las acciones que exigen el fichero no abren nada.
+
+        Las fotos fantasma (ubicación desmontada) se muestran con sus datos
+        del catálogo, pero ampliarlas a tamaño real exige el fichero: mensaje
+        claro en la barra y sin visor.
+        """
+        if photo.available:
+            return True
+        where = (
+            f" · ubicación «{photo.canonical_location}»"
+            if photo.canonical_location
+            else ""
+        )
+        self.status.show_message(f"el fichero no está disponible{where}", 3500)
+        return False
 
     def _close_viewer(self) -> None:
         if not self._viewer_visible:
@@ -867,6 +959,11 @@ class PhotoWindow(QMainWindow):
         if self._viewer_visible:
             if photo is None:
                 self._close_viewer()
+            elif not photo.available:
+                # El cursor cayó en una foto fantasma: el visor exige el
+                # fichero (T4.3); se vuelve a la rejilla con el mensaje claro.
+                self._close_viewer()
+                self._open_if_available(photo)
             else:
                 if self.grid_row:
                     item = self.grid.currentItem()
@@ -909,7 +1006,7 @@ class PhotoWindow(QMainWindow):
         self._ensure_image_loaded(photo)
 
     def _ensure_image_loaded(self, photo: Photo) -> None:
-        if photo.path is None:
+        if photo.path is None or not photo.available:
             return
         key = photo.key
         if (
@@ -1096,6 +1193,10 @@ class PhotoWindow(QMainWindow):
         if command == "help":
             self._toggle_help()
             return
+        if command == "locations":
+            # Estado de las ubicaciones de la fototeca (ADR 0010, Decisión 7).
+            self._toggle_locations()
+            return
         if command == "sort" or command.startswith("sort "):
             key = command[4:].strip()
             if key in SORT_KEYS:
@@ -1262,6 +1363,10 @@ class PhotoWindow(QMainWindow):
             if action in ("escape", "help", "close"):
                 self._toggle_help()
             return
+        if self.locations_overlay.isVisible():
+            if action in ("escape", "help", "close"):
+                self._toggle_locations()
+            return
         if self.status.prompt_active:
             if action == "escape":
                 self._handle_escape()
@@ -1397,12 +1502,30 @@ class PhotoWindow(QMainWindow):
             self.status.set_help_mode(False)
             self._focus_current_view()
         else:
-            self._center_help()
+            # Un solo overlay abierto a la vez (docs/diseno-ui.md).
+            if self.locations_overlay.isVisible():
+                self.locations_overlay.hide()
+            self._center_overlay(self.help_overlay)
             self._show_content_blocker()
             self.help_overlay.show()
             self.help_overlay.raise_()
             self.help_overlay.setFocus()
             self.status.set_help_mode(True)
+
+    def _toggle_locations(self) -> None:
+        """Panel de ubicaciones: clic en el banner o comando ``:locations``."""
+        if self.locations_overlay.isVisible():
+            self.locations_overlay.hide()
+            self._hide_content_blocker()
+            self._focus_current_view()
+        else:
+            if self.help_overlay.isVisible():
+                self._toggle_help()
+            self._center_overlay(self.locations_overlay)
+            self._show_content_blocker()
+            self.locations_overlay.show()
+            self.locations_overlay.raise_()
+            self.locations_overlay.setFocus()
 
     def _toggle_favorite(self) -> None:
         photo = self._current_photo()

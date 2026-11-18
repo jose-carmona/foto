@@ -15,7 +15,7 @@ from dataclasses import replace
 
 from foto.core.geocoding import Place
 from foto.storage.tags import FAVORITE_TAG, Tag, normalize_tag_name
-from foto.ui.models import Photo, PhotoTag
+from foto.ui.models import LocationStatus, Photo, PhotoTag
 
 # ---------------------------------------------------------------------------
 # Etiquetas (ADR 0006)
@@ -110,6 +110,91 @@ def tag_chips(photo: Photo) -> tuple[tuple[str, str, bool], ...]:
     if favorite is not None:
         return (favorite, *chips)
     return tuple(chips)
+
+
+# ---------------------------------------------------------------------------
+# Ubicaciones: banner de estado y panel (ADR 0010, Decisión 6 y 7)
+# ---------------------------------------------------------------------------
+def _format_count(value: int) -> str:
+    """Recuento al estilo del ADR («1 234»): separador de millares con espacio."""
+    return f"{value:,}".replace(",", " ")
+
+
+def unavailable_locations(
+    locations: Sequence[LocationStatus],
+) -> tuple[LocationStatus, ...]:
+    """Las ubicaciones activas cuyo raíz no está a mano en este momento."""
+    return tuple(
+        location
+        for location in locations
+        if location.state == "active" and not location.available
+    )
+
+
+def location_state_label(location: LocationStatus) -> str:
+    """Estado de una ubicación en texto (el estado nunca es solo color)."""
+    if location.state == "deleted":
+        return "dada de baja"
+    if not location.available:
+        return "no disponible"
+    if location.last_scanned_at is None:
+        return "pendiente de escaneo"
+    return "disponible"
+
+
+def location_rows(
+    locations: Sequence[LocationStatus],
+) -> tuple[tuple[str, str, str, str, int], ...]:
+    """Filas del panel de ubicaciones: (nombre, tier, ruta, estado, fotos).
+
+    Las activas primero y las dadas de baja al final; dentro de cada grupo,
+    el orden en que las entregó el catálogo (alfabético por nombre).
+    """
+    ordered = [row for row in locations if row.state != "deleted"]
+    ordered += [row for row in locations if row.state == "deleted"]
+    return tuple(
+        (
+            row.name,
+            row.tier,
+            str(row.path),
+            location_state_label(row),
+            row.photo_count,
+        )
+        for row in ordered
+    )
+
+
+def location_banner_text(
+    locations: Sequence[LocationStatus],
+    photos: Sequence[Photo] | None = None,
+) -> str | None:
+    """Texto del banner de ubicaciones no disponibles (ADR 0010, Decisión 6).
+
+    Una línea por ubicación activa no disponible, con el formato del ADR:
+    «Ubicación «usb» no disponible: /Volumes/FotoVault. 1 234 fotos no
+    visibles». El recuento de fotos degradadas sale de las fotos cargadas
+    (cada una sabe qué ubicación la sirve); sin fotos no hay recuento.
+    ``None`` cuando todo está a mano: sin banner.
+    """
+    ghosts: dict[str, int] = {}
+    if photos is not None:
+        for photo in photos:
+            if not photo.available and photo.canonical_location:
+                ghosts[photo.canonical_location] = (
+                    ghosts.get(photo.canonical_location, 0) + 1
+                )
+    lines: list[str] = []
+    for location in unavailable_locations(locations):
+        line = f"Ubicación «{location.name}» no disponible: {location.path}"
+        count = ghosts.get(location.name, 0)
+        if count:
+            noun = "foto" if count == 1 else "fotos"
+            participle = "no visible" if count == 1 else "no visibles"
+            line = f"{line}. {_format_count(count)} {noun} {participle}"
+        lines.append(line)
+    if not lines:
+        return None
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

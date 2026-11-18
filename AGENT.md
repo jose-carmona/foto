@@ -54,7 +54,13 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 - El visor **consume el catálogo** (`ADR 0003`): lee solo desde
   `<fototeca>/.foto/catalog.sqlite` (apariciones `present` de ubicaciones
   activas; las rutas absolutas salen del join con `locations.path`, ADR
-  0010). Si no existe el catálogo, la app avisa y se cierra. Las búsquedas y
+  0010). Si no existe el catálogo, la app avisa y se cierra. Con una
+  ubicación declarada no disponible (USB desmontado) la ventana se degrada
+  y avisa: banner sobre la rejilla, panel de ubicaciones (`:locations` o
+  clic en el banner) y fotos fantasma con los datos del catálogo; el visor
+  y las acciones que exigen el fichero quedan desactivadas con mensaje
+  (tolerancia del ADR 0010, Decisión 6; la evaluación de disponibilidad
+  vive en `storage/availability.py` y se ejecuta solo al cargar). Las búsquedas y
   ordenaciones se hacen contra el índice, incluida la búsqueda por lugar y
   el orden `:sort date`/`camera`/`location` con grupos por `Municipio, País`
   (`country` + `municipality`); el lugar llega de las columnas de `place_*`

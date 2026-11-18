@@ -31,6 +31,25 @@ class PhotoTag:
     source: str
 
 
+@dataclass(frozen=True)
+class LocationStatus:
+    """Estado de una ubicación de la fototeca para la presentación (ADR 0010).
+
+    Los datos lógicos (nombre, ``tier``, ruta, estado, nº de fotos) salen de
+    la tabla ``locations`` del catálogo —la única referencia de ubicaciones—;
+    ``available`` es el estado físico evaluado con la función pura de
+    ``storage/availability`` al cargar la ventana, no en cada acceso.
+    """
+
+    name: str
+    tier: str
+    path: Path
+    state: str
+    available: bool
+    photo_count: int
+    last_scanned_at: str | None = None
+
+
 def map_url(latitude: float, longitude: float) -> str:
     """URL de Google Maps para unas coordenadas decimales (grados).
 
@@ -67,6 +86,11 @@ class Photo:
     tags: tuple[PhotoTag, ...] = ()
     path: Path | None = None
     canonical_rel_path: str | None = None
+    #: Nombre de la ubicación cuya aparición sirve la foto (ADR 0010).
+    canonical_location: str | None = None
+    #: ``False`` cuando el fichero que sirve la foto no está a mano (USB
+    #: desmontado): *placeholder* fantasma con los datos del catálogo.
+    available: bool = True
     other_locations: tuple[str, ...] = ()
     photo_hash: str | None = None
 

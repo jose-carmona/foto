@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from foto.storage.availability import AVAILABLE, UNAVAILABLE, availability_state
 from foto.storage.catalog import TIER_RANK, Catalog
 from foto.storage.tags import TagAssignment
 
@@ -42,6 +43,11 @@ class CatalogPhoto:
     tags: tuple[TagAssignment, ...] = ()
     path: Path | None = None
     canonical_rel_path: str | None = None
+    #: Nombre de la ubicación de la aparición que sirve la foto.
+    canonical_location: str | None = None
+    #: ``False`` cuando la raíz de esa ubicación no está a mano (USB
+    #: desmontado): la foto se degrada a *placeholder* (ADR 0010, Decisión 6).
+    available: bool = True
     other_locations: tuple[str, ...] = ()
     photo_hash: str | None = None
 
@@ -171,6 +177,14 @@ def load_from_catalog(catalog: Catalog) -> list[CatalogPhoto]:
     ``rel_path`` dentro del mismo ``tier``; las rutas absolutas salen del
     join ``files.location_id`` → ``locations.path``. Las apariciones de
     ubicaciones ``deleted`` no se muestran (pendientes de ``--prune``).
+
+    Tolerancia (ADR 0010, Decisión 6): la disponibilidad se evalúa **por
+    ubicación** al cargar —nunca por fichero— con la función pura de
+    ``storage/availability``. Entre apariciones disponibles manda el
+    ``tier``; si la ubicación canónica no está a mano y hay una copia en
+    una ubicación disponible, la foto se sirve desde ella; si no hay
+    ninguna, la foto viaja como *placeholder* (``available=False``) con sus
+    metadatos, fecha y etiquetas del catálogo.
     """
     rows = catalog.list_present_files()
     grouped: dict[str, list] = {}
@@ -179,11 +193,18 @@ def load_from_catalog(catalog: Catalog) -> list[CatalogPhoto]:
 
     assignments = catalog.tag_assignments()
 
+    # Disponibilidad por ubicación, evaluada una vez por raíz distinta.
+    states: dict[str, str] = {}
+    for row in rows:
+        location_path = str(row["location_path"])
+        states.setdefault(location_path, availability_state(Path(location_path)))
+
     photos: list[CatalogPhoto] = []
     for photo_hash, items in grouped.items():
         items_sorted = sorted(
             items,
             key=lambda r: (
+                states[str(r["location_path"])] == UNAVAILABLE,
                 _tier_rank(r["location_tier"]),
                 str(r["rel_path"]),
             ),
@@ -238,6 +259,8 @@ def load_from_catalog(catalog: Catalog) -> list[CatalogPhoto]:
             tags=assignments.get(photo_hash, ()),
             path=full_path,
             canonical_rel_path=str(canonical["rel_path"]),
+            canonical_location=str(canonical["location_name"]),
+            available=states[str(canonical["location_path"])] == AVAILABLE,
             other_locations=tuple(
                 f"{row['location_name']}:{row['rel_path']}" for row in others
             ),

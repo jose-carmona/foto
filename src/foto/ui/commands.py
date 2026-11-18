@@ -22,5 +22,6 @@ COMMANDS = (
     Command("sort camera", "ordenar por cámara"),
     Command("sort location", "ordenar por ubicación"),
     Command("tag", "filtrar por etiqueta (:tag <nombre>)"),
+    Command("locations", "estado de las ubicaciones de la fototeca"),
     Command("help", "mostrar la ayuda"),
 )

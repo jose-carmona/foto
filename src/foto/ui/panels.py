@@ -160,6 +160,15 @@ class MetadataPanel(QFrame):
             return
 
         file_rows: list[tuple[str, str]] = []
+        if not photo.available:
+            # T4.3: el fichero que sirve la foto no está a mano (USB
+            # desmontado). La ficha sigue mostrando los datos del catálogo.
+            where = (
+                f" · ubicación «{photo.canonical_location}»"
+                if photo.canonical_location
+                else ""
+            )
+            file_rows.append(("Disponibilidad", f"no disponible{where}"))
         if photo.fmt:
             file_rows.append(("Formato", photo.fmt))
         if photo.dimensions:

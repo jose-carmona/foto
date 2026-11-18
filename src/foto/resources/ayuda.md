@@ -51,6 +51,22 @@ Se abre con `Enter` sobre cualquier foto. La rejilla queda debajo como una
 
 El paneo solo tiene efecto con zoom.
 
+## Ubicaciones
+
+La fototeca puede repartirse en varios discos (`[[library.locations]]` en
+`config.toml`, ADR 0010). Si uno no está conectado —por ejemplo un USB
+desmontado— la ventana lo avisa con un banner sobre la rejilla y esas fotos
+se muestran con sus datos del catálogo (fecha, cámara, etiquetas, favorito)
+aunque el fichero no esté a mano; la miniatura sale de la caché si existe.
+Favoritar y filtrar por etiqueta siguen funcionando: todo son metadatos.
+Abrir la foto en el visor, que exige el fichero, queda desactivado con un
+mensaje claro. Al volver a montar el disco, reabre `foto` para refrescar el
+estado.
+
+| Comando | Acción |
+| --- | --- |
+| `:locations` | Estado de las ubicaciones (también con un clic en el banner) |
+
 ## Panel de metadatos
 
 Muestra los datos de la foto seleccionada. Las etiquetas se muestran como
@@ -76,4 +92,5 @@ historial, `Enter` ejecuta y `Esc` cancela.
 | `:q` / `:quit` | Salir de la aplicación |
 | `:sort` date / camera / location | Ordenar por fecha / cámara / ubicación |
 | `:tag` | Filtrar por etiqueta (`:tag <nombre>`, repita o deje vacío para quitar el filtro) |
+| `:locations` | Estado de las ubicaciones de la fototeca |
 | `:help` | Abrir esta ayuda |

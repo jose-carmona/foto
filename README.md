@@ -238,7 +238,9 @@ activa. Pide solo las miniaturas visibles a un pool de trabajo y las guarda en
 el directorio de metainformación (`thumbs/`); el visor decodifica el original
 en segundo plano. La búsqueda `/` y las ordenaciones `:sort` se aplican contra
 lo cargado del índice; `g m` abre la ubicación en el navegador y `?` abre la
-ayuda integrada.
+ayuda integrada. Con una ubicación ausente (USB desmontado) la ventana se
+degrada y avisa —banner, `:locations` y fotos fantasma—; ver «Tolerancia» más
+abajo ([ADR 0010](docs/adr/0010-fototeca-distribuida.md)).
 
 ```sh
 uv sync
@@ -334,6 +336,37 @@ mismos resolutores en `storage/resolver.py`.
 - La metainformación tampoco puede caer dentro de una ubicación
   `tier = "archive"` (error duro, ADR 0010): el catálogo debe vivir en un
   disco siempre disponible.
+
+### Tolerancia: qué se ve cuando el USB no está
+
+Al abrir `foto` con una ubicación declarada ausente (USB desmontado), la
+ventana no se bloquea: se degrada y avisa (ADR 0010, Decisión 6).
+
+- **Banner sobre la rejilla** con el formato del ADR: «Ubicación «usb» no
+  disponible: /Volumes/FotoVault. 1 234 fotos no visibles». Un clic en el
+  banner, o el comando `:locations`, abre el panel con el estado de cada
+  ubicación (nombre, tier, ruta, estado y nº de fotos). La ayuda integrada
+  (`?`) lo documenta.
+- **Las fotos de esa ubicación se muestran como *placeholders*** con fecha,
+  cámara, etiquetas y favorito del catálogo; la miniatura sale de la caché
+  (`thumbs/`) si existe. Solo existen en la vista: el catálogo no cambia.
+- **Favoritos y etiquetas siguen funcionando** (todo son metadatos del
+  catálogo, ADR 0006); filtrar con `:tag` y buscar también.
+- **Las acciones que exigen el fichero se desactivan con mensaje claro**:
+  abrir la foto en el visor muestra «el fichero no está disponible ·
+  ubicación «usb»».
+- **El refresco de disponibilidad es manual** (Decisión 6, sin watcher en
+  `/Volumes`): monta el volumen y reabre `foto`.
+- **La metainformación es el único error duro**: sin catálogo no hay sesión
+  (la UI pide ejecutar `foto-index`); cualquier otra ubicación ausente no
+  bloquea nunca.
+
+Quitar una ubicación de la config y ejecutar `foto-index` la da de baja
+(estado `deleted`) junto a sus filas: no se borra nada —ni filas ni
+ficheros—; `--prune` limpia solo filas del catálogo transcurrida la ventana
+`--prune-after`, y re-declararla y escanear la restaura. Una ubicación
+reactivada cuyo escaneo aún no ha corrido se muestra vacía (sus filas siguen
+`deleted` hasta que el escaneo las repuebla).
 
 ### Fototeca de Apple Photos
 

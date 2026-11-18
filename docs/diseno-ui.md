@@ -273,6 +273,7 @@ Vocabulario mínimo:
 | `:q`, `:quit` | Salir de la aplicación |
 | `:sort date`, `:sort camera`, `:sort location` | Cambiar el orden de la rejilla (por defecto, fecha) |
 | `:tag` | Filtrar por etiqueta (`:tag <nombre>`; sin argumento o repetido, quita el filtro) |
+| `:locations` | Estado de las ubicaciones de la fototeca (nombre, tier, ruta, estado y nº de fotos) |
 | `:help` | Abrir la ayuda |
 
 No existe `:rescan`: según ADR 0003 (enmendado), la reindexación y la
@@ -525,6 +526,14 @@ Requisitos:
   en el catálogo (conexión RW del visor, ADR 0006). Si la escritura falla, se
   revierte el cambio y se muestra un error
   persistente. Nunca se falla en silencio.
+- **Ubicaciones ausentes (ADR 0010):** si una ubicación declarada no está
+  disponible al abrir la ventana (USB desmontado), una franja banner sobre la
+  zona de rejilla lo avisa con el recuento de fotos no visibles; un clic en
+  el banner, o `:locations`, abre el panel con el estado de cada ubicación
+  (nombre, tier, ruta, estado, nº de fotos). Las fotos de esa ubicación se
+  muestran con sus datos del catálogo; las acciones que exigen el fichero
+  (abrir el visor) se desactivan con mensaje claro. El refresco es manual:
+  reabrir la aplicación.
 - **Mensajes:** los éxitos y las acciones habituales aparecen en la barra de
   estado durante unos 3 s. Los errores permanecen hasta que el usuario los
   descarta con `Esc`.

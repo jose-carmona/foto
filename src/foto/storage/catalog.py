@@ -882,6 +882,18 @@ class Catalog:
             "UPDATE locations SET last_scanned_at = ? WHERE id = ?", (now, location_id)
         )
 
+    def present_counts_by_location(self) -> dict[int, int]:
+        """Nº de filas ``present`` por ubicación (fuente de verdad, ADR 0010).
+
+        Lo consume la UI para el panel de ubicaciones: el recuento sale de la
+        BD, no del disco. Las filas ``missing`` y ``deleted`` no cuentan.
+        """
+        rows = self._conn.execute(
+            "SELECT location_id, COUNT(*) AS total FROM files "
+            "WHERE status = 'present' GROUP BY location_id"
+        ).fetchall()
+        return {int(row["location_id"]): int(row["total"]) for row in rows}
+
     # ------------------------------------------------------------------
     # Apariciones de fichero (tabla ``files``, v6)
     # ------------------------------------------------------------------

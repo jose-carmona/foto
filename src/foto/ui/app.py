@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from foto.core.errors import CatalogError, LibraryError
 from foto.core.library import CatalogPhoto, load_from_catalog
+from foto.storage.availability import AVAILABLE, availability_state
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import (
     DEFAULT_LOCATION_NAME,
@@ -29,7 +30,7 @@ from foto.storage.library import foto_dir, thumbs_dir
 from foto.storage.resolver import resolve_locations, resolve_metadata_dir
 from foto.storage.tags import Tag, connect_read_write
 from foto.ui.grid import THUMB_H, THUMB_W
-from foto.ui.models import Photo, PhotoTag
+from foto.ui.models import LocationStatus, Photo, PhotoTag
 from foto.ui.theme import apply_theme, ui_font
 from foto.ui.thumbnails import ThumbnailService
 from foto.ui.window import (
@@ -187,6 +188,8 @@ def _to_ui_photo(photo: CatalogPhoto) -> Photo:
         ),
         path=photo.path,
         canonical_rel_path=photo.canonical_rel_path,
+        canonical_location=photo.canonical_location,
+        available=photo.available,
         other_locations=photo.other_locations,
         photo_hash=photo.photo_hash,
     )
@@ -227,6 +230,56 @@ def load_photos(library_path: Path, metadata_dir: Path | None = None) -> list[Ph
     return [_to_ui_photo(photo) for photo in catalog_photos]
 
 
+def load_locations(metadata_dir: Path) -> tuple[LocationStatus, ...]:
+    """Estado de las ubicaciones desde el catálogo (fuente de verdad, ADR 0010).
+
+    La UI no lee la declaración de la config ni la lista: la tabla
+    ``locations`` de la BD da nombre, ``tier``, ruta y estado; el nº de
+    fotos sale de ``files`` y la disponibilidad la evalúa la función pura
+    compartida de ``storage/`` al cargar —no en cada acceso a fichero.
+    Activas primero, dadas de baja al final; alfabético dentro de cada grupo.
+    """
+    catalog_path = metadata_dir / CATALOG_FILE_NAME
+    if not catalog_path.exists():
+        raise FileNotFoundError(
+            "No hay catálogo en la metainformación de la fototeca. Ejecuta "
+            "'foto-index' para crearlo."
+        )
+
+    try:
+        catalog = Catalog.open_read_only(catalog_path)
+    except CatalogError as exc:
+        raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
+
+    try:
+        counts = catalog.present_counts_by_location()
+        named = catalog.list_named_locations()
+    finally:
+        catalog.close()
+
+    statuses = [
+        LocationStatus(
+            name=row.name,
+            tier=row.tier,
+            path=row.path,
+            state=row.state,
+            available=availability_state(row.path) == AVAILABLE,
+            photo_count=counts.get(row.id, 0),
+            last_scanned_at=row.last_scanned_at,
+        )
+        for row in named
+    ]
+    active = sorted(
+        (status for status in statuses if status.state != "deleted"),
+        key=lambda status: status.name,
+    )
+    deleted = sorted(
+        (status for status in statuses if status.state == "deleted"),
+        key=lambda status: status.name,
+    )
+    return (*active, *deleted)
+
+
 def load_tags(library_path: Path, metadata_dir: Path | None = None) -> list[Tag]:
     """Carga el vocabulario de etiquetas del catálogo (ADR 0006).
 
@@ -264,6 +317,10 @@ class MainWindow(PhotoWindow):
         try:
             photos = load_photos(library_path, resolved_dir)
             tags = load_tags(library_path, resolved_dir)
+            # El estado de las ubicaciones también sale del catálogo (T4.2):
+            # la disponibilidad se evalúa aquí, al cargar, con la función
+            # pura de storage/ y nunca en cada acceso a fichero.
+            locations = load_locations(resolved_dir)
         except (OSError, RuntimeError) as exc:
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)
@@ -292,6 +349,7 @@ class MainWindow(PhotoWindow):
             grid_row=True,
             tag_connection=tag_connection,
             tag_catalog=tags,
+            locations=locations,
         )
         self._thumbnail_service = service
         service.setParent(self)

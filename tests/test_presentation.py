@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from foto.ui.models import Photo, PhotoTag
+from foto.ui.models import LocationStatus, Photo, PhotoTag
 from foto.ui.presentation import (
     KEY_0,
     KEY_4,
@@ -28,6 +28,9 @@ from foto.ui.presentation import (
     SORT_KEYS,
     is_group_end,
     is_group_start,
+    location_banner_text,
+    location_rows,
+    location_state_label,
     muted_rgb,
     photo_accessible_name,
     photo_group,
@@ -37,6 +40,7 @@ from foto.ui.presentation import (
     photo_search_text,
     photo_sort_value,
     sorted_photos,
+    unavailable_locations,
     vertical_row_target,
 )
 
@@ -49,6 +53,8 @@ def _photo(
     camera: str = "Nikon Z 6",
     tags: tuple[PhotoTag, ...] = (),
     canonical_rel_path: str | None = None,
+    canonical_location: str | None = None,
+    available: bool = True,
     other_locations: tuple[str, ...] = (),
     place_country: str | None = None,
     place_country_code: str | None = None,
@@ -76,6 +82,8 @@ def _photo(
         canonical_rel_path=(
             canonical_rel_path if canonical_rel_path is not None else f"{folder}/{name}"
         ),
+        canonical_location=canonical_location,
+        available=available,
         other_locations=other_locations,
         photo_hash=f"sha256:{abs(hash(name)) % 100000:08d}",
         place_country=place_country,
@@ -689,3 +697,126 @@ def test_pure_modules_import_without_pyside6():
     )
 
     assert result.returncode == 0, result.stderr
+
+
+# ----------------------------------------------------------------------
+# Ubicaciones: banner y panel (T4.2, T4.7; ADR 0010, Decisión 6 y 7)
+# ----------------------------------------------------------------------
+def _location(
+    name: str,
+    *,
+    tier: str = "archive",
+    state: str = "active",
+    available: bool = True,
+    count: int = 0,
+    scanned: str | None = "2026-11-18T09:00:00+00:00",
+) -> LocationStatus:
+    return LocationStatus(
+        name=name,
+        tier=tier,
+        path=Path("/Volumes") / name,
+        state=state,
+        available=available,
+        photo_count=count,
+        last_scanned_at=scanned,
+    )
+
+
+def _ghost(name: str, location: str) -> Photo:
+    return _photo(name, canonical_location=location, available=False)
+
+
+def test_banner_is_none_when_every_location_is_available():
+    locations = (_location("ssd", tier="fast"), _location("usb"))
+
+    assert location_banner_text(locations, []) is None
+
+
+def test_banner_uses_the_adr_format_with_the_degraded_count():
+    locations = (_location("usb", available=False),)
+    photos = (_ghost("a.jpg", "usb"), _ghost("b.jpg", "usb"))
+
+    text = location_banner_text(locations, photos)
+
+    assert text == (
+        "Ubicación «usb» no disponible: /Volumes/usb. 2 fotos no visibles"
+    )
+
+
+def test_banner_counts_in_singular_and_formats_thousands():
+    locations = (_location("usb", available=False),)
+    photos = tuple(_ghost(f"{index}.jpg", "usb") for index in range(1234))
+
+    text = location_banner_text(locations, photos)
+
+    assert text.endswith(". 1 234 fotos no visibles")
+    one = location_banner_text(locations, (_ghost("a.jpg", "usb"),))
+    assert one.endswith(". 1 foto no visible")
+
+
+def test_banner_skips_deleted_locations_and_zero_counts():
+    locations = (
+        _location("usb", available=False),
+        _location("vieja", state="deleted", available=False),
+    )
+
+    text = location_banner_text(locations, [])
+
+    assert text == "Ubicación «usb» no disponible: /Volumes/usb"
+
+
+def test_banner_joins_one_line_per_unavailable_location():
+    locations = (
+        _location("usb", available=False),
+        _location("nas", available=False),
+    )
+
+    text = location_banner_text(locations, [])
+
+    assert text.splitlines() == [
+        "Ubicación «usb» no disponible: /Volumes/usb",
+        "Ubicación «nas» no disponible: /Volumes/nas",
+    ]
+
+
+def test_unavailable_locations_only_lists_active_missing_roots():
+    locations = (
+        _location("ssd", tier="fast"),
+        _location("usb", available=False),
+        _location("vieja", state="deleted", available=False),
+    )
+
+    assert [row.name for row in unavailable_locations(locations)] == ["usb"]
+
+
+def test_location_rows_orders_active_first_and_labels_states():
+    locations = (
+        _location("vieja", state="deleted", available=False, count=3),
+        _location("usb", available=False),
+        _location(
+            "nueva", available=True, scanned=None
+        ),  # reactivada sin escaneo
+        _location("ssd", tier="fast", count=2),
+    )
+
+    rows = location_rows(locations)
+
+    assert rows == (
+        ("usb", "archive", "/Volumes/usb", "no disponible", 0),
+        ("nueva", "archive", "/Volumes/nueva", "pendiente de escaneo", 0),
+        ("ssd", "fast", "/Volumes/ssd", "disponible", 2),
+        ("vieja", "archive", "/Volumes/vieja", "dada de baja", 3),
+    )
+
+
+def test_location_state_label_covers_the_four_states():
+    assert location_state_label(_location("ssd")) == "disponible"
+    assert location_state_label(_location("usb", available=False)) == (
+        "no disponible"
+    )
+    assert location_state_label(_location("nueva", scanned=None)) == (
+        "pendiente de escaneo"
+    )
+    assert location_state_label(_location("vieja", state="deleted")) == (
+        "dada de baja"
+    )
