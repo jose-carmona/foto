@@ -22,22 +22,22 @@ from foto.core.errors import (
 )
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import ConfigError
-from foto.storage.resolver import resolve_library_path, resolve_metadata_dir
+from foto.storage.resolver import resolve_locations, resolve_metadata_dir
 from foto.transfer import exporter
 from foto.transfer.exporter import export_library
 
 logger = logging.getLogger("foto.transfer")
 
 EPILOG = """\
-precedencia de la biblioteca:
-  1. --library PATH
-  2. FOTO_LIBRARY
-  3. [library].path de config.toml
+ubicaciones de la fototeca (ADR 0010): se declaran solo en config.toml
+  [[library.locations]] (version = 2) o [library].path (version = 1).
+  No existe --library: si FOTO_LIBRARY está definida, error explícito.
 precedencia de la metainformación (.foto, ADR 0008):
   1. --metadata PATH
   2. FOTO_METADATA
   3. [metadata].path de config.toml
-  4. <fototeca>/.foto (por defecto)
+  4. <única ubicación declarada>/.foto (por defecto; con varias ubicaciones
+     hay que concretarla: --metadata, FOTO_METADATA o [metadata].path)
 
 códigos de salida:
   0  éxito, sin avisos
@@ -46,10 +46,10 @@ códigos de salida:
   130  interrumpido (SIGINT)
 
 ejemplos:
-  uv run foto-export --library ~/Fotos
-  uv run foto-export --library ~/Fotos --metadata ~/Fotos.foto
-  uv run foto-export --library ~/Fotos --tags --out ~/backups
-  uv run foto-export --library ~/Fotos --dry-run --json
+  uv run foto-export
+  uv run foto-export --metadata ~/Fotos.foto
+  uv run foto-export --tags --out ~/backups
+  uv run foto-export --dry-run --json
 """
 
 
@@ -63,12 +63,12 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--library", metavar="PATH", type=Path, help="raíz de la biblioteca")
     parser.add_argument(
         "--metadata",
         metavar="PATH",
         type=Path,
-        help="directorio de metainformación; por defecto: <fototeca>/.foto",
+        help="directorio de metainformación; por defecto: <única ubicación "
+        "declarada>/.foto",
     )
     parser.add_argument("--config", metavar="PATH", type=Path, help="configuración global")
     selection = parser.add_mutually_exclusive_group()
@@ -143,23 +143,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_logging(args)
 
     try:
-        root = resolve_library_path(args.library, config_path=args.config).library_path
+        locations = resolve_locations(config_path=args.config)
     except ConfigError as exc:
         logger.error("Configuración inválida: %s", exc)
         return 2
 
-    if root is None:
+    if not locations:
         logger.error(
-            "No hay biblioteca configurada: usa --library, FOTO_LIBRARY o "
-            "[library].path en config.toml"
+            "No hay ubicaciones declaradas: decláralas en "
+            "'[[library.locations]]' de config.toml ('[library].path' en un "
+            "fichero 'version = 1')"
         )
         return 2
 
     # ADR 0008: la metainformación se resuelve solo por el resolvedor
     # compartido, nunca leyendo FOTO_METADATA ni config.toml por su cuenta.
+    # Con varias ubicaciones declaradas, sin override es un error explícito.
     try:
         metadata_dir = resolve_metadata_dir(
-            root, args.metadata, config_path=args.config
+            locations, args.metadata, config_path=args.config
         ).metadata_dir
     except (ConfigError, LibraryError) as exc:
         logger.error("Metainformación inválida: %s", exc)

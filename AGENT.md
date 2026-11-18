@@ -150,12 +150,12 @@ Comandos disponibles:
 ```sh
 uv sync
 uv run foto
-uv run foto-index --library ~/Fotos
-uv run foto-index --library ~/Fotos --dry-run --json
-uv run python -m foto.indexer --library ~/Fotos --help
-uv run foto-export --library ~/Fotos --dry-run
-uv run foto-export --library ~/Fotos --out ~/backups
-uv run foto-import --library ~/Fotos --tags ~/backups/tags.json
+uv run foto-index
+uv run foto-index --dry-run --json
+uv run python -m foto.indexer --help
+uv run foto-export --dry-run
+uv run foto-export --out ~/backups
+uv run foto-import --tags ~/backups/tags.json
 PYTHONPATH=src .venv/bin/python -m foto.ui.prototype
 uv run pytest
 uv run ruff check .
@@ -183,25 +183,36 @@ resolución (configuración, fototeca y metainformación), en
 
 - **Global del usuario:** `config.toml` en `platformdirs.user_config_dir("foto")`.
   Formato TOML, legible y editable a mano. Sección opcional `[metadata]` con
-  `path` (opt-in; `save_config` nunca la escribe ni la reordena).
+  `path` (opt-in; `save_config` nunca la escribe ni la reordena). La
+  fototeca se declara aquí —y solo aquí—: `[[library.locations]]` en
+  `version = 2`, `[library].path` en `version = 1` (una única ubicación
+  `default`); las ubicaciones de la lista se editan a mano
+  ([ADR 0010](docs/adr/0010-fototeca-distribuida.md)).
 - **De la biblioteca:** `library.toml` en el directorio de metainformación,
   junto al catálogo SQLite y la caché de miniaturas. La biblioteca se describe
   a sí misma y lleva el campo opcional `root` con la fototeca a la que
   pertenece; su no coincidencia con la raíz resuelta es un error explícito
   (relocalizar o regenerar), y los descriptores sin `root` (legado) se aceptan.
+  (Su retirada está decidida en el ADR 0010, paso 3.)
 - **Metainformación:** `library.toml`, `catalog.sqlite`, `thumbs/`,
   `index.lock` y `exports/` viven juntos en el directorio resuelto, que por
-  defecto es `<fototeca>/.foto` y puede vivir fuera de la fototeca (p. ej.
-  la fototeca de Apple Photos: allí es obligatorio, ADR 0009, y *Full Disk
-  Access* es requisito del entorno).
+  defecto es `<fototeca>/.foto` (con una sola ubicación declarada,
+  `<única ubicación>/.foto`; con varias, obligatorio concretarla con
+  `--metadata`/`FOTO_METADATA`/`[metadata].path`) y puede vivir fuera de la
+  fototeca (p. ej. la fototeca de Apple Photos: allí es obligatorio, ADR 0009,
+  y *Full Disk Access* es requisito del entorno). Nunca dentro de una
+  ubicación `archive` ni de un paquete Apple (ADR 0010).
 - **Secretos:** llavero del sistema o variables de entorno. Nunca en `config.toml`.
 - **Precedencia (override CLI → entorno → `config.toml` → por defecto):**
-  fototeca: `--library` → `FOTO_LIBRARY` → `[library].path` → diálogo de
-  primera ejecución. Metainformación: `--metadata` → `FOTO_METADATA` →
-  `[metadata].path` → `<fototeca>/.foto`. Config: `--config` → `FOTO_CONFIG`
-  → `platformdirs`. Los cuatro binarios comparten los resolutores de
-  `storage/resolver.py`; la UI acepta los tres flags y nunca escribe
-  `[metadata].path`.
+  fototeca: sin CLI ni entorno: `[[library.locations]]` / `[library].path` de
+  `config.toml` es la única fuente; `FOTO_LIBRARY` definida es error explícito
+  y `--library` ya no existe (ADR 0010). Sin declaración, el diálogo de
+  primera ejecución (solo UI, solo ficheros v1) persiste `[library].path`.
+  Metainformación: `--metadata` → `FOTO_METADATA` → `[metadata].path` →
+  `<única ubicación>/.foto`. Config: `--config` → `FOTO_CONFIG` →
+  `platformdirs`. Los cuatro binarios comparten los resolutores de
+  `storage/resolver.py`; la UI acepta `--config` y `--metadata` y nunca
+  escribe `[metadata].path` ni `[[library.locations]]`.
 - **Requisitos:** lectura con `tomllib`, escritura atómica, campo `version` con
   migración, errores explícitos y `pathlib`.
 - **Prohibido:** `.env` como fuente de verdad y `QSettings`. La carga y la

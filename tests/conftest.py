@@ -43,6 +43,20 @@ def write_image(path: Path, data: bytes = b"foto-de-prueba") -> Path:
     return path
 
 
+def write_v1_config(path: Path, library: Path) -> Path:
+    """Escribe un ``config.toml`` v1 que declara ``library`` como fototeca.
+
+    Con el ADR 0010 la fototeca se declara solo en la configuración (sin
+    ``--library`` ni ``FOTO_LIBRARY``): los tests de CLI usan este helper y
+    pasan ``--config``.
+    """
+    path.write_text(
+        f'version = 1\n\n[library]\npath = "{library.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
 class CountingHasher:
     """Hasher real que registra cada fichero leído."""
 

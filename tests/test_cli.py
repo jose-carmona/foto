@@ -15,41 +15,35 @@ import pytest
 from foto.indexer.cli import main
 from foto.storage.library import ensure_library
 from foto.storage.lock import IndexerLock
-from tests.conftest import read_photos, write_image
+from tests.conftest import read_photos, write_image, write_v1_config
 
 
-def _write_config(path: Path, library: Path) -> Path:
-    path.write_text(
-        f'version = 1\n\n[library]\npath = "{library.as_posix()}"\n',
-        encoding="utf-8",
-    )
-    return path
-
-
-def test_help_documents_precedence_and_exit_codes(capsys):
+def test_help_documents_the_declaration_and_exit_codes(capsys):
     with pytest.raises(SystemExit) as raised:
         main(["--help"])
 
     assert raised.value.code == 0
     output = capsys.readouterr().out
+    assert "[[library.locations]]" in output
     assert "FOTO_LIBRARY" in output
     assert "códigos de salida" in output
     assert "--prune-after" in output
 
 
+def test_cli_rejects_the_retired_library_flag(capsys):
+    with pytest.raises(SystemExit) as raised:
+        main(["--library", "/no-importa"])
+
+    assert raised.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
 def test_cli_indexes_and_emits_valid_json(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     write_image(root / "foto.jpg", b"cli")
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(
-        [
-            "--library",
-            str(root),
-            "--config",
-            str(tmp_path / "config-inexistente.toml"),
-            "--json",
-        ]
-    )
+    code = main(["--config", str(config), "--json"])
     captured = capsys.readouterr()
     summary = json.loads(captured.out)
 
@@ -67,11 +61,47 @@ def test_cli_indexes_and_emits_valid_json(tmp_path, capsys):
     assert next(iter(read_photos(root).values()))["metadata_status"] == "pending"
 
 
+def test_cli_indexes_a_v2_single_location(tmp_path, capsys):
+    """Una config v2 con una sola ubicación funciona como la v1."""
+    root = tmp_path / "biblioteca"
+    write_image(root / "foto.jpg", b"v2")
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "version = 2\n\n[[library.locations]]\nname = \"ssd\"\n"
+        f"path = \"{root.as_posix()}\"\ntier = \"fast\"\n",
+        encoding="utf-8",
+    )
+
+    code = main(["--config", str(config), "--json"])
+
+    assert code == 0
+    assert (root / ".foto" / "catalog.sqlite").is_file()
+
+
+def test_cli_multi_location_guard_exits_2(tmp_path, capsys):
+    """Guardia transitoria (paso 2): la indexación multi-ubicación llega en el paso 3."""
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "version = 2\n\n[[library.locations]]\nname = \"ssd\"\n"
+        f"path = \"{(tmp_path / 'ssd').as_posix()}\"\ntier = \"fast\"\n"
+        "\n[[library.locations]]\nname = \"usb\"\n"
+        f"path = \"{(tmp_path / 'usb').as_posix()}\"\ntier = \"archive\"\n",
+        encoding="utf-8",
+    )
+
+    code = main(["--config", str(config), "--json"])
+
+    assert code == 2
+    error = capsys.readouterr().err
+    assert "multi-ubicación llega en el paso 3" in error
+
+
 def test_cli_text_summary_shows_work_done(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     write_image(root / "foto.jpg", b"resumen")
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(["--library", str(root)])
+    code = main(["--config", str(config)])
 
     assert code == 0
     output = capsys.readouterr().out
@@ -81,29 +111,32 @@ def test_cli_text_summary_shows_work_done(tmp_path, capsys):
 
 def test_cli_missing_root_exits_2_and_creates_nothing(tmp_path, capsys):
     root = tmp_path / "no-existe"
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(["--library", str(root), "--json"])
+    code = main(["--config", str(config), "--json"])
 
     assert code == 2
     assert not root.exists()
     assert "no existe" in capsys.readouterr().err
 
 
-def test_cli_without_library_exits_2(tmp_path, monkeypatch, capsys):
+def test_cli_without_declared_locations_exits_2(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("FOTO_LIBRARY", raising=False)
     monkeypatch.delenv("FOTO_CONFIG", raising=False)
 
     code = main(["--config", str(tmp_path / "config.toml"), "--json"])
 
     assert code == 2
-    assert "No hay biblioteca" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "No hay ubicaciones declaradas" in error
+    assert "[[library.locations]]" in error
 
 
 def test_cli_uses_library_from_config(tmp_path, monkeypatch):
     monkeypatch.delenv("FOTO_LIBRARY", raising=False)
     root = tmp_path / "biblioteca-config"
     write_image(root / "foto.jpg", b"config")
-    config = _write_config(tmp_path / "config.toml", root)
+    config = write_v1_config(tmp_path / "config.toml", root)
 
     code = main(["--config", str(config), "--json"])
 
@@ -111,32 +144,20 @@ def test_cli_uses_library_from_config(tmp_path, monkeypatch):
     assert (root / ".foto" / "catalog.sqlite").is_file()
 
 
-def test_cli_uses_library_from_environment_and_foto_config(tmp_path, monkeypatch):
-    monkeypatch.delenv("FOTO_LIBRARY", raising=False)
+def test_cli_foto_library_environment_is_an_explicit_error(tmp_path, monkeypatch, capsys):
+    """FOTO_LIBRARY definida nunca se ignora en silencio (ADR 0010)."""
     root = tmp_path / "biblioteca-entorno"
     write_image(root / "foto.jpg", b"entorno")
-    config = _write_config(tmp_path / "config.toml", tmp_path / "otra")
-    monkeypatch.setenv("FOTO_CONFIG", str(config))
+    config = write_v1_config(tmp_path / "config.toml", root)
     monkeypatch.setenv("FOTO_LIBRARY", str(root))
 
-    code = main(["--json"])
+    code = main(["--config", str(config), "--json"])
 
-    assert code == 0
-    assert (root / ".foto" / "catalog.sqlite").is_file()
-
-
-def test_cli_library_option_beats_environment(tmp_path, monkeypatch):
-    from_cli = tmp_path / "biblioteca-cli"
-    from_env = tmp_path / "biblioteca-env"
-    write_image(from_cli / "foto.jpg", b"cli")
-    write_image(from_env / "foto.jpg", b"env")
-    monkeypatch.setenv("FOTO_LIBRARY", str(from_env))
-
-    code = main(["--library", str(from_cli), "--json"])
-
-    assert code == 0
-    assert (from_cli / ".foto" / "catalog.sqlite").is_file()
-    assert not (from_env / ".foto").exists()
+    assert code == 2
+    error = capsys.readouterr().err
+    assert "FOTO_LIBRARY" in error
+    assert "[[library.locations]]" in error
+    assert not (root / ".foto").exists()
 
 
 def test_cli_lock_busy_exits_3(tmp_path, capsys):
@@ -146,7 +167,8 @@ def test_cli_lock_busy_exits_3(tmp_path, capsys):
     lock = IndexerLock(root / ".foto" / "index.lock")
     lock.acquire()
     try:
-        code = main(["--library", str(root), "--json"])
+        config = write_v1_config(tmp_path / "config.toml", root)
+        code = main(["--config", str(config), "--json"])
     finally:
         lock.release()
 
@@ -167,7 +189,8 @@ def test_cli_lock_busy_leaves_pending_schema_untouched(tmp_path, capsys):
     lock = IndexerLock(root / ".foto" / "index.lock")
     lock.acquire()
     try:
-        code = main(["--library", str(root), "--json"])
+        config = write_v1_config(tmp_path / "config.toml", root)
+        code = main(["--config", str(config), "--json"])
     finally:
         lock.release()
 
@@ -197,7 +220,8 @@ def test_cli_lock_busy_does_not_create_the_catalog(tmp_path, capsys):
     lock = IndexerLock(root / ".foto" / "index.lock")
     lock.acquire()
     try:
-        code = main(["--library", str(root), "--json"])
+        config = write_v1_config(tmp_path / "config.toml", root)
+        code = main(["--config", str(config), "--json"])
     finally:
         lock.release()
 
@@ -221,7 +245,8 @@ def test_cli_partial_scan_exits_1(tmp_path, monkeypatch, capsys):
         return real_scandir(path)
 
     monkeypatch.setattr(scanner_module.os, "scandir", failing_scandir)
-    code = main(["--library", str(root), "--json"])
+    config = write_v1_config(tmp_path / "config.toml", root)
+    code = main(["--config", str(config), "--json"])
     summary = json.loads(capsys.readouterr().out)
 
     assert code == 1
@@ -233,8 +258,9 @@ def test_cli_dry_run_does_not_create_anything(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     root.mkdir()
     write_image(root / "foto.jpg", b"dry")
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(["--library", str(root), "--dry-run", "--json"])
+    code = main(["--config", str(config), "--dry-run", "--json"])
     summary = json.loads(capsys.readouterr().out)
 
     assert code == 0
@@ -246,8 +272,9 @@ def test_cli_dry_run_does_not_create_anything(tmp_path, capsys):
 def test_cli_quiet_suppresses_summary(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     write_image(root / "foto.jpg", b"quiet")
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(["--library", str(root), "--quiet"])
+    code = main(["--config", str(config), "--quiet"])
 
     assert code == 0
     assert capsys.readouterr().out == ""
@@ -262,7 +289,8 @@ def test_cli_newer_schema_exits_2(tmp_path, capsys):
     connection.execute("PRAGMA user_version = 999")
     connection.close()
 
-    code = main(["--library", str(root), "--json"])
+    config = write_v1_config(tmp_path / "config.toml", root)
+    code = main(["--config", str(config), "--json"])
 
     assert code == 2
     assert "más nuevo" in capsys.readouterr().err
@@ -294,7 +322,7 @@ def test_importing_indexer_does_not_import_qt():
 # ----------------------------------------------------------------------
 def test_skip_rejects_unknown_phase_with_exit_code_2(capsys):
     with pytest.raises(SystemExit) as raised:
-        main(["--library", "/no-importa", "--skip", "minimizar"])
+        main(["--skip", "minimizar"])
 
     assert raised.value.code == 2
     assert "invalid choice" in capsys.readouterr().err
@@ -303,8 +331,9 @@ def test_skip_rejects_unknown_phase_with_exit_code_2(capsys):
 def test_skip_geocode_leaves_text_summary_noting_it(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     write_image(root / "a.jpg", b"a")
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(["--library", str(root), "--skip", "geocode"])
+    code = main(["--config", str(config), "--skip", "geocode"])
 
     assert code == 0
     output = capsys.readouterr().out
@@ -315,9 +344,10 @@ def test_skip_geocode_leaves_text_summary_noting_it(tmp_path, capsys):
 def test_skip_scan_and_geocode_run_no_phases(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     write_image(root / "a.jpg", b"a")
+    config = write_v1_config(tmp_path / "config.toml", root)
 
     code = main(
-        ["--library", str(root), "--skip", "scan", "--skip", "geocode", "--json"]
+        ["--config", str(config), "--skip", "scan", "--skip", "geocode", "--json"]
     )
     summary = json.loads(capsys.readouterr().out)
 
@@ -351,7 +381,7 @@ def test_invalid_geocoding_config_exits_2(tmp_path, capsys):
         "[geocoding]\nrequest_interval_seconds = -1\n", encoding="utf-8"
     )
 
-    code = main(["--library", str(tmp_path / "no-importa"), "--config", str(config)])
+    code = main(["--config", str(config)])
 
     assert code == 2
     assert "request_interval_seconds" in capsys.readouterr().err
@@ -360,6 +390,7 @@ def test_invalid_geocoding_config_exits_2(tmp_path, capsys):
 def test_dry_run_reports_geocode_candidates_without_network(tmp_path, capsys, monkeypatch):
     root = tmp_path / "biblioteca"
     write_image(root / "a.jpg", b"a")
+    config = write_v1_config(tmp_path / "config.toml", root)
     monkeypatch.setattr(
         "foto.indexer.cli.ExifToolExtractor.from_environment",
         classmethod(lambda cls: _StaticExtractor()),
@@ -368,7 +399,7 @@ def test_dry_run_reports_geocode_candidates_without_network(tmp_path, capsys, mo
         "foto.indexer.cli.NominatimGeocoder", lambda *a, **kw: _FailingGeocoder()
     )
 
-    code = main(["--library", str(root), "--dry-run"])
+    code = main(["--config", str(config), "--dry-run"])
 
     assert code == 0
     output = capsys.readouterr().out
@@ -380,6 +411,7 @@ def test_dry_run_reports_geocode_candidates_without_network(tmp_path, capsys, mo
 def test_cli_run_geocodes_with_injected_service(tmp_path, capsys, monkeypatch):
     root = tmp_path / "biblioteca"
     write_image(root / "a.jpg", b"a")
+    config = write_v1_config(tmp_path / "config.toml", root)
     monkeypatch.setattr(
         "foto.indexer.cli.ExifToolExtractor.from_environment",
         classmethod(lambda cls: _StaticExtractor()),
@@ -387,7 +419,7 @@ def test_cli_run_geocodes_with_injected_service(tmp_path, capsys, monkeypatch):
     geocoder = _StubGeocoder()
     monkeypatch.setattr("foto.indexer.cli.NominatimGeocoder", lambda *a, **kw: geocoder)
 
-    code = main(["--library", str(root), "--json"])
+    code = main(["--config", str(config), "--json"])
     summary = json.loads(capsys.readouterr().out)
     photos = read_photos(root)
 
@@ -441,13 +473,12 @@ def test_cli_metadata_creates_descriptor_and_catalog_in_the_external_dir(
     root = tmp_path / "biblioteca"
     write_image(root / "foto.jpg", b"externa")
     external = tmp_path / "metainfo-externa"
+    config = write_v1_config(tmp_path / "config.toml", root)
 
     code = main(
         [
-            "--library",
-            str(root),
             "--config",
-            str(tmp_path / "config-inexistente.toml"),
+            str(config),
             "--metadata",
             str(external),
             "--json",
@@ -478,10 +509,9 @@ def test_cli_metadata_adopts_a_legacy_descriptor_in_the_external_dir(
         'version = 1\nid = "3f9c1b62-8a44-4f0e-9d1a-2c7b5e0f4a11"\n',
         encoding="utf-8",
     )
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(
-        ["--library", str(root), "--metadata", str(external), "--json"]
-    )
+    code = main(["--config", str(config), "--metadata", str(external), "--json"])
 
     assert code == 0
     text = (external / "library.toml").read_text(encoding="utf-8")
@@ -496,10 +526,9 @@ def test_cli_metadata_precedence_option_over_environment(tmp_path, monkeypatch):
     from_option = tmp_path / "metainfo-opcion"
     from_env = tmp_path / "metainfo-entorno"
     monkeypatch.setenv("FOTO_METADATA", str(from_env))
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(
-        ["--library", str(root), "--metadata", str(from_option), "--json"]
-    )
+    code = main(["--config", str(config), "--metadata", str(from_option), "--json"])
 
     assert code == 0
     assert (from_option / "catalog.sqlite").is_file()
@@ -513,13 +542,14 @@ def test_cli_metadata_environment_beats_config(tmp_path, monkeypatch):
     from_config = tmp_path / "metainfo-config"
     config = tmp_path / "config.toml"
     config.write_text(
-        f'version = 1\n\n[metadata]\npath = "{from_config}"\n',
+        f'version = 1\n\n[library]\npath = "{root.as_posix()}"\n'
+        f'\n[metadata]\npath = "{from_config}"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("FOTO_CONFIG", str(config))
     monkeypatch.setenv("FOTO_METADATA", str(from_env))
 
-    code = main(["--library", str(root), "--json"])
+    code = main(["--json"])
 
     assert code == 0
     assert (from_env / "catalog.sqlite").is_file()
@@ -533,11 +563,12 @@ def test_cli_metadata_from_config_section(tmp_path, monkeypatch):
     from_config = tmp_path / "metainfo-config"
     config = tmp_path / "config.toml"
     config.write_text(
-        f'version = 1\n\n[metadata]\npath = "{from_config}"\n',
+        f'version = 1\n\n[library]\npath = "{root.as_posix()}"\n'
+        f'\n[metadata]\npath = "{from_config}"\n',
         encoding="utf-8",
     )
 
-    code = main(["--library", str(root), "--config", str(config), "--json"])
+    code = main(["--config", str(config), "--json"])
 
     assert code == 0
     assert (from_config / "catalog.sqlite").is_file()
@@ -548,8 +579,9 @@ def test_cli_metadata_default_is_derived_from_the_library(tmp_path, monkeypatch)
     monkeypatch.delenv("FOTO_METADATA", raising=False)
     root = tmp_path / "biblioteca"
     write_image(root / "foto.jpg", b"default")
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(["--library", str(root), "--json"])
+    code = main(["--config", str(config), "--json"])
 
     assert code == 0
     assert (root / ".foto" / "catalog.sqlite").is_file()
@@ -560,8 +592,9 @@ def test_cli_metadata_existing_file_exits_2_with_explicit_error(tmp_path, capsys
     write_image(root / "foto.jpg", b"fichero")
     not_a_dir = tmp_path / "no-es-directorio"
     not_a_dir.write_text("", encoding="utf-8")
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(["--library", str(root), "--metadata", str(not_a_dir)])
+    code = main(["--config", str(config), "--metadata", str(not_a_dir)])
 
     assert code == 2
     error = capsys.readouterr().err
@@ -570,7 +603,7 @@ def test_cli_metadata_existing_file_exits_2_with_explicit_error(tmp_path, capsys
     assert not (root / ".foto").exists()
 
 
-def test_cli_help_documents_the_three_location_chains(capsys):
+def test_cli_help_documents_the_location_chains(capsys):
     with pytest.raises(SystemExit) as raised:
         main(["--help"])
 
@@ -579,4 +612,4 @@ def test_cli_help_documents_the_three_location_chains(capsys):
     assert "--metadata" in output
     assert "FOTO_METADATA" in output
     assert "[metadata].path" in output
-    assert "<fototeca>/.foto" in output
+    assert "ubicación declarada>/.foto" in output

@@ -16,7 +16,15 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from foto.core.errors import CatalogError, LibraryError
 from foto.core.library import CatalogPhoto, load_from_catalog
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
-from foto.storage.config import AppConfig, ConfigError, load_config, save_config
+from foto.storage.config import (
+    DEFAULT_LOCATION_NAME,
+    DEFAULT_LOCATION_TIER,
+    AppConfig,
+    ConfigError,
+    Location,
+    load_config,
+    save_config,
+)
 from foto.storage.library import (
     LibraryConfig,
     foto_dir,
@@ -24,7 +32,7 @@ from foto.storage.library import (
     load_library,
     thumbs_dir,
 )
-from foto.storage.resolver import resolve_library_path, resolve_metadata_dir
+from foto.storage.resolver import resolve_locations, resolve_metadata_dir
 from foto.storage.tags import Tag, connect_read_write
 from foto.ui.grid import THUMB_H, THUMB_W
 from foto.ui.models import Photo, PhotoTag
@@ -38,19 +46,20 @@ logger = logging.getLogger(__name__)
 
 _RAW_EXTENSIONS = {".arw", ".cr2", ".dng", ".nef", ".raf"}
 
-# Mismas cadenas que los CLIs (ADR 0008): la UI comparte resolutores, y sus
-# overrides de CLI no se persisten en config.toml.
+# Mismas cadenas que los CLIs (ADR 0008 y ADR 0010): la UI comparte
+# resolutores, y sus overrides de CLI no se persisten en config.toml.
 UI_EPILOG = """\
-precedencia de la biblioteca:
-  1. --library PATH
-  2. FOTO_LIBRARY
-  3. [library].path de config.toml
-  4. diálogo de primera ejecución (persiste [library].path)
+ubicaciones de la fototeca (ADR 0010): se declaran solo en config.toml
+  [[library.locations]] (version = 2) o [library].path (version = 1).
+  No existe --library: si FOTO_LIBRARY está definida, error explícito.
+  Sin declaración, el diálogo de primera ejecución persiste [library].path
+  (solo en ficheros v1: la UI nunca escribe [[library.locations]]).
 precedencia de la metainformación (.foto, ADR 0008):
   1. --metadata PATH
   2. FOTO_METADATA
   3. [metadata].path de config.toml
-  4. <fototeca>/.foto (por defecto)
+  4. <única ubicación declarada>/.foto (por defecto; con varias ubicaciones
+     hay que concretarla: --metadata, FOTO_METADATA o [metadata].path)
 Para el fichero de configuración: --config PATH, FOTO_CONFIG o platformdirs.
 """
 
@@ -64,35 +73,35 @@ def _build_ui_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--config", metavar="PATH", type=Path, help="configuración global")
-    parser.add_argument("--library", metavar="PATH", type=Path, help="raíz de la biblioteca")
     parser.add_argument(
         "--metadata",
         metavar="PATH",
         type=Path,
-        help="directorio de metainformación; por defecto: <fototeca>/.foto",
+        help="directorio de metainformación; por defecto: <única ubicación "
+        "declarada>/.foto",
     )
     return parser
 
 
 def _resolve_before_dialog(
     args: argparse.Namespace,
-) -> tuple[AppConfig, Path | None]:
-    """Config y biblioteca según la cadena compartida con los CLIs.
+) -> tuple[AppConfig, tuple[Location, ...]]:
+    """Config y ubicaciones declaradas según la cadena compartida (ADR 0010).
 
     El diálogo de primera ejecución queda como último nivel del llamador,
     nunca como paso del resolvedor. Los overrides de CLI no se persisten.
     """
     config = load_config(args.config)
-    resolution = resolve_library_path(args.library, config_path=args.config)
-    return config, resolution.library_path
+    locations = resolve_locations(config_path=args.config)
+    return config, locations
 
 
 def _resolve_metadata_dir(
-    library_path: Path, args: argparse.Namespace
+    locations: tuple[Location, ...], args: argparse.Namespace
 ) -> Path:
     """Directorio de metainformación por la cadena del ADR 0008."""
     resolution = resolve_metadata_dir(
-        library_path, args.metadata, config_path=args.config
+        locations, args.metadata, config_path=args.config
     )
     assert resolution.metadata_dir is not None
     return resolution.metadata_dir
@@ -335,12 +344,37 @@ def main() -> None:
     apply_theme(app)
 
     try:
-        config, library_path = _resolve_before_dialog(args)
+        config, locations = _resolve_before_dialog(args)
     except ConfigError as exc:
         QMessageBox.critical(None, "foto", str(exc))
         sys.exit(1)
 
-    if library_path is None or not library_path.is_dir():
+    # Guardia transitoria (ADR 0010, paso 2): la UI multi-ubicación llega en
+    # el paso 4; el banner y los placeholders la retiran.
+    if len(locations) > 1:
+        QMessageBox.critical(
+            None,
+            "foto",
+            "Guardia transitoria (ADR 0010): la interfaz multi-ubicación "
+            "llega en el paso 4; declara una sola ubicación en "
+            "'[[library.locations]]' por ahora.",
+        )
+        sys.exit(1)
+
+    if not locations:
+        # Sin declaración: el diálogo de primera ejecución solo actúa sin
+        # config o con ficheros v1 (persiste [library].path); una v2 no
+        # admite [library].path y la lista se edita a mano (ADR 0010).
+        if config.version >= 2 and config.config_path.exists():
+            QMessageBox.critical(
+                None,
+                "foto",
+                "La configuración (version = 2) no declara ubicaciones y la "
+                "interfaz no puede escribirlas: decláralas a mano en "
+                "'[[library.locations]]' en config.toml.",
+            )
+            sys.exit(1)
+
         directory = QFileDialog.getExistingDirectory(
             None,
             "Seleccionar fototeca",
@@ -365,8 +399,18 @@ def main() -> None:
             )
             sys.exit(1)
 
+        locations = (
+            Location(
+                name=DEFAULT_LOCATION_NAME,
+                path=library_path,
+                tier=DEFAULT_LOCATION_TIER,
+            ),
+        )
+
+    library_path = locations[0].path
+
     try:
-        metadata_dir = _resolve_metadata_dir(library_path, args)
+        metadata_dir = _resolve_metadata_dir(locations, args)
     except (ConfigError, LibraryError) as exc:
         QMessageBox.critical(None, "foto", f"Metainformación inválida: {exc}")
         sys.exit(1)

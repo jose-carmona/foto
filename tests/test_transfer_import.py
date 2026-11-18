@@ -21,6 +21,7 @@ from foto.transfer.importer import (
     apply_tags_file,
     read_tags_file,
 )
+from tests.conftest import write_v1_config
 
 NOW_FILE = "2026-11-01T08:00:00+00:00"
 NOW_OLD = "2026-10-01T08:00:00+00:00"
@@ -607,13 +608,18 @@ def _write_files(tmp_path: Path) -> tuple[Path, Path]:
     return tags_path, places_path
 
 
+def _config_for(tmp_path: Path, root: Path) -> Path:
+    """Config v1 que declara ``root`` como única ubicación (ADR 0010)."""
+    return write_v1_config(tmp_path / "config.toml", root)
+
+
 def test_cli_imports_both_files(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     _seeded_library(root)
     tags_path, places_path = _write_files(tmp_path)
 
     code = main(
-        ["--library", str(root), "--tags", str(tags_path),
+        ["--config", str(_config_for(tmp_path, root)), "--tags", str(tags_path),
          "--places", str(places_path), "--json"]
     )
     captured = capsys.readouterr()
@@ -641,10 +647,10 @@ def test_cli_import_is_idempotent_through_the_cli(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     _seeded_library(root)
     tags_path, _ = _write_files(tmp_path)
-    main(["--library", str(root), "--tags", str(tags_path), "--json"])
+    main(["--config", str(_config_for(tmp_path, root)), "--tags", str(tags_path), "--json"])
     capsys.readouterr()
 
-    code = main(["--library", str(root), "--tags", str(tags_path), "--json"])
+    code = main(["--config", str(_config_for(tmp_path, root)), "--tags", str(tags_path), "--json"])
     captured = capsys.readouterr()
     summary = json.loads(captured.out)
 
@@ -661,7 +667,7 @@ def test_cli_dry_run_does_not_write(tmp_path, capsys):
     tags_path, _ = _write_files(tmp_path)
 
     code = main(
-        ["--library", str(root), "--tags", str(tags_path), "--dry-run", "--json"]
+        ["--config", str(_config_for(tmp_path, root)), "--tags", str(tags_path), "--dry-run", "--json"]
     )
     captured = capsys.readouterr()
     summary = json.loads(captured.out)
@@ -685,11 +691,11 @@ def test_cli_without_lock_available_returns_3(tmp_path):
     lock = IndexerLock(root / ".foto" / "index.lock")
     lock.acquire()
     try:
-        code = main(["--library", str(root), "--tags", str(tags_path)])
+        code = main(["--config", str(_config_for(tmp_path, root)), "--tags", str(tags_path)])
         assert code == 3
         # Con --dry-run no toma el lock: funciona igual.
         assert main(
-            ["--library", str(root), "--tags", str(tags_path), "--dry-run", "--quiet"]
+            ["--config", str(_config_for(tmp_path, root)), "--tags", str(tags_path), "--dry-run", "--quiet"]
         ) == 0
     finally:
         lock.release()
@@ -703,7 +709,7 @@ def test_cli_invalid_file_returns_2_without_writes(tmp_path, capsys):
     payload["version"] = 2
     tags_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    code = main(["--library", str(root), "--tags", str(tags_path)])
+    code = main(["--config", str(_config_for(tmp_path, root)), "--tags", str(tags_path)])
     captured = capsys.readouterr()
 
     assert code == 2
@@ -719,7 +725,7 @@ def test_cli_requires_at_least_one_file(tmp_path):
     root = tmp_path / "biblioteca"
     _seeded_library(root)
     with pytest.raises(SystemExit) as raised:
-        main(["--library", str(root)])
+        main(["--config", str(root / "config.toml")])
     assert raised.value.code == 2
 
 
@@ -729,7 +735,7 @@ def test_cli_force_fills_error_places(tmp_path):
     _, places_path = _write_files(tmp_path)
 
     code = main(
-        ["--library", str(root), "--places", str(places_path), "--force", "--quiet"]
+        ["--config", str(_config_for(tmp_path, root)), "--places", str(places_path), "--force", "--quiet"]
     )
 
     assert code == 0  # con --force no hay avisos: el 'error' se rellena
@@ -747,7 +753,7 @@ def test_cli_summary_has_no_names_or_addresses(tmp_path, capsys):
     tags_path, places_path = _write_files(tmp_path)
 
     main(
-        ["--library", str(root), "--tags", str(tags_path),
+        ["--config", str(_config_for(tmp_path, root)), "--tags", str(tags_path),
          "--places", str(places_path), "--json"]
     )
     dumped = capsys.readouterr().out
@@ -775,7 +781,7 @@ def test_cli_metadata_imports_into_the_external_dir(tmp_path, monkeypatch, capsy
     tags_path, _ = _write_files(tmp_path)
 
     code = main(
-        ["--library", str(root), "--metadata", str(external),
+        ["--config", str(_config_for(tmp_path, root)), "--metadata", str(external),
          "--tags", str(tags_path), "--json"]
     )
     captured = capsys.readouterr()
@@ -783,11 +789,46 @@ def test_cli_metadata_imports_into_the_external_dir(tmp_path, monkeypatch, capsy
 
     assert code == 0
     assert summary["totals"]["tags_created"] == 2
-    # El bootstrap adoptó el descriptor externo y le añadió el root.
-    assert f'root = "{root}"' in (external / "library.toml").read_text(
-        encoding="utf-8"
-    )
+    # ADR 0010 (Decisión 8): foto-import no crea nada — sin descriptor nuevo.
+    assert not (external / "library.toml").exists()
     # La fototeca no recibe escrituras.
+    assert not (root / ".foto").exists()
+
+
+def test_cli_import_without_catalog_returns_2_and_creates_nothing(tmp_path, capsys):
+    """Sin catálogo, foto-import pide foto-index y no crea la biblioteca."""
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    external = tmp_path / "metainfo-externa"
+    external.mkdir()
+    tags_path, _ = _write_files(tmp_path)
+
+    code = main(
+        ["--config", str(_config_for(tmp_path, root)), "--metadata", str(external),
+         "--tags", str(tags_path)]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "foto-index" in captured.err
+    assert "no crea la biblioteca" in captured.err
+    assert not (external / "catalog.sqlite").exists()
+    assert not (external / "library.toml").exists()
+    assert not (root / ".foto").exists()
+
+
+def test_cli_import_without_metadata_dir_returns_2(tmp_path, capsys):
+    root = tmp_path / "biblioteca"
+    root.mkdir()
+    tags_path, _ = _write_files(tmp_path)
+
+    code = main(
+        ["--config", str(_config_for(tmp_path, root)), "--tags", str(tags_path)]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "No hay metainformación" in captured.err
     assert not (root / ".foto").exists()
 
 
@@ -808,12 +849,12 @@ def test_cli_metadata_lock_is_taken_in_the_resolved_dir(tmp_path, monkeypatch):
     lock = IndexerLock(external / "index.lock")
     lock.acquire()
     try:
-        code = main(["--library", str(root), "--metadata", str(external),
+        code = main(["--config", str(_config_for(tmp_path, root)), "--metadata", str(external),
                      "--tags", str(tags_path)])
         assert code == 3
         # Con --dry-run no toma el lock: funciona igual.
         assert main(
-            ["--library", str(root), "--metadata", str(external),
+            ["--config", str(_config_for(tmp_path, root)), "--metadata", str(external),
              "--tags", str(tags_path), "--dry-run", "--quiet"]
         ) == 0
     finally:

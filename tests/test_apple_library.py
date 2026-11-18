@@ -212,13 +212,21 @@ def test_tcc_denial_reports_partial_run_without_marking_missing(
 # T2.3 — Detección y política de Apple en la CLI
 # ----------------------------------------------------------------------
 def _cli_args(tmp_path: Path, *extra: str) -> list[str]:
-    return [
-        "--library",
-        str(FIXTURE_PACKAGE),
-        "--config",
-        str(tmp_path / "config.toml"),
-        *extra,
-    ]
+    config = tmp_path / "config.toml"
+    config.write_text(
+        "version = 1\n\n[library]\n"
+        f"path = \"{FIXTURE_PACKAGE.as_posix()}\"\n",
+        encoding="utf-8",
+    )
+    return ["--config", str(config), *extra]
+
+
+def test_cli_rejects_the_retired_library_flag(tmp_path, capsys):
+    with pytest.raises(SystemExit) as raised:
+        main(["--library", str(FIXTURE_PACKAGE)])
+
+    assert raised.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
 def test_cli_indexes_the_synthetic_apple_library_without_duplicates(
@@ -291,13 +299,16 @@ def test_cli_anomalous_apple_package_without_originals_fails(
     monkeypatch.delenv("FOTO_METADATA", raising=False)
     package = tmp_path / "Rota.photoslibrary"
     package.mkdir()
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'version = 1\n\n[library]\npath = "{package.as_posix()}"\n',
+        encoding="utf-8",
+    )
 
     code = main(
         [
-            "--library",
-            str(package),
             "--config",
-            str(tmp_path / "config.toml"),
+            str(config),
             "--metadata",
             str(tmp_path / "metainfo"),
         ]

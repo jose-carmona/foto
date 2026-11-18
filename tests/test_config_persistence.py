@@ -10,6 +10,7 @@ import pytest
 from foto.storage.config import (
     AppConfig,
     ConfigError,
+    Location,
     load_config,
     save_config,
 )
@@ -334,3 +335,200 @@ def test_canonical_file_has_no_metadata_section(tmp_path):
 
     text = config.config_path.read_text(encoding="utf-8")
     assert "[metadata]" not in text
+
+
+# ----------------------------------------------------------------------
+# version = 2 y [[library.locations]] (ADR 0010, T2.1)
+# ----------------------------------------------------------------------
+def _write_v2(path: Path, body: str) -> Path:
+    path.write_text(f"version = 2\n\n{body}", encoding="utf-8")
+    return path
+
+
+def test_load_v2_reads_the_locations_list(tmp_path):
+    ssd = tmp_path / "ssd"
+    usb = tmp_path / "usb"
+    config = _config(tmp_path)
+    _write_v2(
+        config.config_path,
+        f'[[library.locations]]\nname = "ssd"\npath = "{ssd}"\ntier = "fast"\n'
+        f'\n[[library.locations]]\nname = "usb"\npath = "{usb}"\ntier = "archive"\n',
+    )
+
+    loaded = load_config(config.config_path)
+
+    assert loaded.version == 2
+    assert loaded.library_path is None
+    assert loaded.locations == (
+        Location(name="ssd", path=ssd.resolve(), tier="fast"),
+        Location(name="usb", path=usb.resolve(), tier="archive"),
+    )
+
+
+def test_load_v2_without_locations_or_path_is_valid_and_empty(tmp_path):
+    config = _config(tmp_path)
+    _write_v2(config.config_path, '[geocoding]\nlanguage = "es"\n')
+
+    loaded = load_config(config.config_path)
+
+    assert loaded.version == 2
+    assert loaded.locations == ()
+    assert loaded.library_path is None
+
+
+def test_load_v2_rejects_bare_library_path(tmp_path):
+    config = _config(tmp_path)
+    _write_v2(config.config_path, '[library]\npath = "/fototeca"\n')
+
+    with pytest.raises(ConfigError, match="suelto no es válido"):
+        load_config(config.config_path)
+
+
+def test_load_v2_rejects_bare_library_path_even_with_the_list(tmp_path):
+    config = _config(tmp_path)
+    _write_v2(
+        config.config_path,
+        '[library]\npath = "/fototeca"\n\n[[library.locations]]\n'
+        'name = "ssd"\npath = "/otra"\ntier = "fast"\n',
+    )
+
+    with pytest.raises(ConfigError, match="no puede convivir"):
+        load_config(config.config_path)
+
+
+def test_load_v1_rejects_the_locations_list_and_suggests_v2(tmp_path):
+    config = _config(tmp_path)
+    config.config_path.write_text(
+        'version = 1\n\n[[library.locations]]\nname = "ssd"\n'
+        'path = "/ssd"\ntier = "fast"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="version = 2"):
+        load_config(config.config_path)
+
+
+def test_load_v2_rejects_duplicated_names(tmp_path):
+    config = _config(tmp_path)
+    _write_v2(
+        config.config_path,
+        '[[library.locations]]\nname = "ssd"\npath = "/uno"\ntier = "fast"\n'
+        '\n[[library.locations]]\nname = "ssd"\npath = "/dos"\ntier = "fast"\n',
+    )
+
+    with pytest.raises(ConfigError, match="duplicado"):
+        load_config(config.config_path)
+
+
+def test_load_v2_rejects_duplicated_expanded_paths(tmp_path):
+    config = _config(tmp_path)
+    shared = tmp_path / "mismo"
+    _write_v2(
+        config.config_path,
+        f'[[library.locations]]\nname = "ssd"\npath = "{shared}"\ntier = "fast"\n'
+        f'\n[[library.locations]]\nname = "otro"\npath = "{shared}"\ntier = "archive"\n',
+    )
+
+    with pytest.raises(ConfigError, match="rutas deben ser únicas"):
+        load_config(config.config_path)
+
+
+def test_load_v2_rejects_unknown_tier(tmp_path):
+    config = _config(tmp_path)
+    _write_v2(
+        config.config_path,
+        '[[library.locations]]\nname = "ssd"\npath = "/ssd"\ntier = "turbo"\n',
+    )
+
+    with pytest.raises(ConfigError, match="tier"):
+        load_config(config.config_path)
+
+
+def test_load_v2_rejects_blank_name(tmp_path):
+    config = _config(tmp_path)
+    _write_v2(
+        config.config_path,
+        '[[library.locations]]\nname = "  "\npath = "/ssd"\ntier = "fast"\n',
+    )
+
+    with pytest.raises(ConfigError, match="no vacío"):
+        load_config(config.config_path)
+
+
+def test_load_v2_rejects_uri_scheme_paths(tmp_path):
+    config = _config(tmp_path)
+    _write_v2(
+        config.config_path,
+        '[[library.locations]]\nname = "nube"\npath = "s3://cubeta/fotos"\n'
+        'tier = "archive"\n',
+    )
+
+    with pytest.raises(ConfigError, match="volúmenes remotos"):
+        load_config(config.config_path)
+
+
+def test_v2_relative_paths_expand_against_the_config_dir(tmp_path):
+    config = _config(tmp_path)
+    _write_v2(
+        config.config_path,
+        '[[library.locations]]\nname = "ssd"\npath = "fotos/principal"\n'
+        'tier = "fast"\n',
+    )
+
+    loaded = load_config(config.config_path)
+
+    assert loaded.locations[0].path == (tmp_path / "fotos" / "principal").resolve()
+
+
+def test_v2_paths_support_home_expansion(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config = _config(tmp_path)
+    _write_v2(
+        config.config_path,
+        '[[library.locations]]\nname = "ssd"\npath = "~/Fotos/Principal"\n'
+        'tier = "fast"\n',
+    )
+
+    loaded = load_config(config.config_path)
+
+    assert loaded.locations[0].path == tmp_path / "Fotos" / "Principal"
+
+
+def test_save_config_refuses_library_path_on_a_v2_file(tmp_path):
+    config = _config(tmp_path)
+    original = _write_v2(
+        config.config_path,
+        '# Config v2 editada a mano\n[[library.locations]]\nname = "ssd"\n'
+        'path = "/ssd"\ntier = "fast"\n',
+    )
+    before = original.read_text(encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="version = 2"):
+        save_config(_with_library(config, tmp_path / "fototeca"))
+
+    assert original.read_text(encoding="utf-8") == before
+
+
+def test_save_config_refuses_library_path_when_creating_a_v2_file(tmp_path):
+    config = replace(
+        _config(tmp_path, "nuevo.toml"), version=2, library_path=tmp_path / "fototeca"
+    )
+
+    with pytest.raises(ConfigError, match="version = 2"):
+        save_config(config)
+
+    assert not config.config_path.exists()
+
+
+def test_save_config_accepts_v2_without_writing_a_path(tmp_path):
+    config = _config(tmp_path)
+    _write_v2(
+        config.config_path,
+        '# Config v2 editada a mano\n[[library.locations]]\nname = "ssd"\n'
+        'path = "/ssd"\ntier = "fast"\n',
+    )
+    before = config.config_path.read_text(encoding="utf-8")
+
+    save_config(replace(config, version=2))
+
+    assert config.config_path.read_text(encoding="utf-8") == before

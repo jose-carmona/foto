@@ -29,20 +29,20 @@ from foto.storage.config import ConfigError, load_config
 from foto.storage.exiftool import ExifToolExtractor
 from foto.storage.library import ensure_library
 from foto.storage.lock import LOCK_FILE_NAME, IndexerLock
-from foto.storage.resolver import resolve_library_path, resolve_metadata_dir
+from foto.storage.resolver import resolve_locations, resolve_metadata_dir
 
 logger = logging.getLogger("foto.indexer")
 
 EPILOG = """\
-precedencia de la biblioteca:
-  1. --library PATH
-  2. FOTO_LIBRARY
-  3. [library].path de config.toml
+ubicaciones de la fototeca (ADR 0010): se declaran solo en config.toml
+  [[library.locations]] (version = 2) o [library].path (version = 1).
+  No existe --library: si FOTO_LIBRARY está definida, error explícito.
 precedencia de la metainformación (.foto, ADR 0008):
   1. --metadata PATH
   2. FOTO_METADATA
   3. [metadata].path de config.toml
-  4. <fototeca>/.foto (por defecto)
+  4. <única ubicación declarada>/.foto (por defecto; con varias ubicaciones
+     hay que concretarla: --metadata, FOTO_METADATA o [metadata].path)
 Para el fichero de configuración: --config PATH, FOTO_CONFIG o platformdirs.
 
 fototeca de Apple Photos (.photoslibrary, ADR 0009):
@@ -62,11 +62,11 @@ códigos de salida:
   3  otro indexador tiene el lock
 
 ejemplos:
-  uv run foto-index --library ~/Fotos
-  uv run foto-index --library ~/Fotos --metadata ~/Fotos.foto
-  uv run foto-index --library ~/Fotos --json
-  uv run foto-index --library ~/Fotos --skip geocode
-  uv run foto-index --library ~/Fotos --prune --prune-after 30
+  uv run foto-index
+  uv run foto-index --metadata ~/Fotos.foto
+  uv run foto-index --json
+  uv run foto-index --skip geocode
+  uv run foto-index --prune --prune-after 30
 """
 
 ALL_PHASES = tuple(INDEXING_PHASES)
@@ -92,13 +92,12 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--library", metavar="PATH", type=Path, help="raíz de la biblioteca")
     parser.add_argument(
         "--metadata",
         metavar="PATH",
         type=Path,
-        help="directorio de metainformación; por defecto: <fototeca>/.foto "
-        "(nunca dentro de un paquete .photoslibrary)",
+        help="directorio de metainformación; por defecto: <única ubicación "
+        "declarada>/.foto (nunca dentro de un paquete .photoslibrary)",
     )
     parser.add_argument("--config", metavar="PATH", type=Path, help="configuración global")
     parser.add_argument("--full", action="store_true", help="rehashea y reextrae todo")
@@ -145,8 +144,9 @@ def _configure_logging(args: argparse.Namespace) -> None:
     )
 
 
-def _resolve_library(args: argparse.Namespace) -> Path | None:
-    return resolve_library_path(args.library, config_path=args.config).library_path
+def _resolve_locations(args: argparse.Namespace) -> list:
+    """Ubicaciones declaradas en la config (única fuente, ADR 0010)."""
+    return list(resolve_locations(config_path=args.config))
 
 
 def _check_apple_package(root: Path) -> None:
@@ -249,17 +249,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
-        root = _resolve_library(args)
+        locations = _resolve_locations(args)
     except ConfigError as exc:
         logger.error("Configuración inválida: %s", exc)
         return 2
 
-    if root is None:
+    if not locations:
         logger.error(
-            "No hay biblioteca configurada: usa --library, FOTO_LIBRARY o "
-            "[library].path en config.toml"
+            "No hay ubicaciones declaradas: decláralas en "
+            "'[[library.locations]]' de config.toml ('[library].path' en un "
+            "fichero 'version = 1')"
         )
         return 2
+    # Guardia transitoria (ADR 0010, paso 2): la indexación multi-ubicación
+    # llega en el paso 3; la sincronización y el esquema v6 la retiran.
+    if len(locations) > 1:
+        logger.error(
+            "Guardia transitoria (ADR 0010): la indexación multi-ubicación "
+            "llega en el paso 3; declara una sola ubicación en "
+            "'[[library.locations]]' por ahora"
+        )
+        return 2
+    root = locations[0].path
 
     # ADR 0009: si la raíz es un paquete de Apple Photos, el escaneo se
     # restringe a originals/ y la metainformación, resuelta más abajo por el
@@ -281,7 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # compartido, nunca leyendo FOTO_METADATA ni config.toml por su cuenta.
     try:
         metadata_dir = resolve_metadata_dir(
-            root, args.metadata, config_path=args.config
+            locations, args.metadata, config_path=args.config
         ).metadata_dir
     except (ConfigError, LibraryError) as exc:
         logger.error("Metainformación inválida: %s", exc)

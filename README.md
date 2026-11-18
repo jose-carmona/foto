@@ -239,24 +239,29 @@ ayuda integrada.
 ```sh
 uv sync
 uv run foto
-uv run foto --library ~/Fotos
-uv run foto --library ~/Fotos --metadata ~/Fotos.foto
+uv run foto --metadata ~/Fotos.foto
 ```
 
-La UI acepta `--config PATH`, `--library PATH` y `--metadata PATH` (mismas
-cadenas que los CLIs, [ADR 0008](docs/adr/0008-resolucion-de-ubicaciones.md));
-lanzar sin argumentos sigue funcionando desde el Finder o el lanzador. Los
-overrides de línea de comandos no se persisten: el diálogo de primera
-ejecución sigue escribiendo solo `[library].path`, y la UI nunca escribe
-`[metadata].path` (se edita a mano en `config.toml`).
+La UI acepta `--config PATH` y `--metadata PATH` (mismas cadenas que los CLIs,
+[ADR 0008](docs/adr/0008-resolucion-de-ubicaciones.md)); lanzar sin argumentos
+sigue funcionando desde el Finder o el lanzador. La fototeca se declara solo
+en `config.toml` ([ADR 0010](docs/adr/0010-fototeca-distribuida.md)):
+`--library` ya no existe. Los overrides de línea de comandos no se persisten:
+el diálogo de primera ejecución (sin config o con ficheros v1) sigue
+escribiendo solo `[library].path`; la UI nunca escribe `[metadata].path` ni
+`[[library.locations]]` (se editan a mano en `config.toml`).
 
 `PYTHONPATH=src .venv/bin/python -m foto.ui.prototype` abre la demo con fotos
 falsas para revisar la interfaz sin tocar discos.
 
 ## Ubicaciones: configuración, fototeca y metainformación
 
-Toda ubicación se resuelve con el mismo patrón: **override CLI → variable de
-entorno → `config.toml` → valor por defecto**
+La fototeca se declara **solo en `config.toml`**
+([ADR 0010](docs/adr/0010-fototeca-distribuida.md)): `[[library.locations]]`
+en `version = 2`, o `[library].path` en `version = 1` (una única ubicación
+`default`); `--library` y `FOTO_LIBRARY` ya no existen (definir esta variable
+es un error explícito). Para el resto de ubicaciones se mantiene el patrón:
+**override CLI → variable de entorno → `config.toml` → valor por defecto**
 ([ADR 0008](docs/adr/0008-resolucion-de-ubicaciones.md)). Los cuatro
 binarios (`foto`, `foto-index`, `foto-export`, `foto-import`) comparten los
 mismos resolutores en `storage/resolver.py`.
@@ -264,8 +269,8 @@ mismos resolutores en `storage/resolver.py`.
 | Ubicación | Cadena | Valor por defecto |
 | --- | --- | --- |
 | Configuración | `--config` → `FOTO_CONFIG` | `platformdirs.user_config_dir("foto")/config.toml` |
-| Fototeca | `--library` → `FOTO_LIBRARY` → `[library].path` | diálogo de primera ejecución |
-| Metainformación | `--metadata` → `FOTO_METADATA` → `[metadata].path` | `<fototeca>/.foto` |
+| Fototeca | `[[library.locations]]` / `[library].path` de `config.toml` (única fuente, ADR 0010; sin CLI ni entorno) | diálogo de primera ejecución (solo UI, ficheros v1) |
+| Metainformación | `--metadata` → `FOTO_METADATA` → `[metadata].path` | `<única ubicación declarada>/.foto`; con varias, obligatorio concretarla |
 
 - El override de metadatos redirige el **directorio completo**:
   `library.toml`, `catalog.sqlite`, `thumbs/`, `index.lock` y `exports/`
@@ -277,7 +282,7 @@ mismos resolutores en `storage/resolver.py`.
   pertenece el descriptor; si no coincide con la raíz resuelta, el error es
   explícito con la acción sugerida (relocalizar o regenerar), nunca se
   mezclan catálogos en silencio. Los descriptores sin `root` (legado) se
-  siguen aceptando.
+  siguen aceptando. (Su retirada está decidida en el ADR 0010, paso 3.)
 - `[metadata]` es opt-in: un `config.toml` nuevo creado por la app no la
   incluye y `save_config` nunca la escribe ni la reordena. Se edita a mano:
 
@@ -293,11 +298,36 @@ mismos resolutores en `storage/resolver.py`.
   path = "~/Fotos/ApplePhotos.foto"
   ```
 
+- Con `version = 2`, las ubicaciones se declaran en la lista (editada a
+  mano; `save_config` acepta v2 pero rehúsa escribir `[library].path`):
+
+  ```toml
+  version = 2
+
+  [[library.locations]]
+  name = "ssd"                    # identificador estable, único
+  path = "~/Fotos/Principal"      # "~" y rutas relativas al config
+  tier = "fast"                   # fast | archive
+
+  [[library.locations]]
+  name = "usb"
+  path = "/Volumes/FotoVault"
+  tier = "archive"
+
+  [metadata]
+  # Único para TODAS las ubicaciones; con varias es obligatorio.
+  ```
+
 - Si la fototeca es un paquete de Apple Photos (`.photoslibrary`), la
   metainformación no puede caer dentro del paquete por ninguna vía de la
   cadena ([ADR 0009](docs/adr/0009-indexado-apple-photos.md)): el nivel por
   defecto `<fototeca>/.foto` y cualquier override que apunte dentro fallan
-  con un error explícito que pide una ruta externa.
+  con un error explícito que pide una ruta externa. La regla se aplica por
+  ubicación: con varias declaradas, ninguna raíz puede ser un paquete cuyo
+  interior reciba la metainformación (ADR 0010).
+- La metainformación tampoco puede caer dentro de una ubicación
+  `tier = "archive"` (error duro, ADR 0010): el catálogo debe vivir en un
+  disco siempre disponible.
 
 ### Fototeca de Apple Photos
 
@@ -330,9 +360,12 @@ sin interferencias con Photos. El comportamiento está decidido en el
 
 Para usarla hoy:
 
+Con la fototeca declarada en `config.toml`
+(`[library].path = "~/Pictures/Photos Library.photoslibrary"` o su
+`[[library.locations]]` equivalente):
+
 ```sh
-uv run foto-index --library "~/Pictures/Photos Library.photoslibrary" \
-  --metadata ~/Fotos/ApplePhotos.foto
+uv run foto-index --metadata ~/Fotos/ApplePhotos.foto
 uv run foto --metadata ~/Fotos/ApplePhotos.foto
 ```
 
@@ -352,24 +385,26 @@ metainformación. Identifica cada foto por el SHA-256 de sus bytes: dos copias
 idénticas son una foto con dos ubicaciones. No modifica, mueve ni borra
 originales; solo escribe en el directorio de metainformación.
 
+Con la fototeca declarada en `config.toml` (`[library].path` o
+`[[library.locations]]`, [ADR 0010](docs/adr/0010-fototeca-distribuida.md)):
+
 ```sh
 uv sync
-uv run foto-index --library ~/Fotos
-uv run foto-index --library ~/Fotos --json
-uv run foto-index --library ~/Fotos --dry-run --verbose
-uv run foto-index --library ~/Fotos --prune --prune-after 30
-uv run foto-index --library ~/Fotos --full
-uv run foto-index --library ~/Fotos --skip geocode
+uv run foto-index
+uv run foto-index --json
+uv run foto-index --dry-run --verbose
+uv run foto-index --prune --prune-after 30
+uv run foto-index --full
+uv run foto-index --skip geocode
 ```
 
-También se puede lanzar como módulo: `python -m foto.indexer --library ~/Fotos`.
+También se puede lanzar como módulo: `python -m foto.indexer`.
 
 Opciones principales:
 
 | Opción | Comportamiento |
 | --- | --- |
-| `--library PATH` | Raíz de la biblioteca; máxima precedencia. |
-| `--metadata PATH` | Directorio de metainformación; por defecto `<fototeca>/.foto`. |
+| `--metadata PATH` | Directorio de metainformación; por defecto `<única ubicación>/.foto`. |
 | `--config PATH` | Fichero de configuración global. |
 | `--full` | Rehashea y reextrae todo; reintenta también los lugares en `error`. |
 | `--skip FASE` | Excluye una fase del pipeline (`scan`, `geocode`); repetible. |
@@ -408,8 +443,10 @@ sin marcar error en ninguna foto; la siguiente pasada continúa por las
 `[geocoding] enabled = false` en `config.toml`, que además acepta `endpoint`,
 `language`, `user_agent`, `request_interval_seconds` y `timeout_seconds`.
 
-La biblioteca se resuelve con la precedencia del ADR 0001: `--library` →
-`FOTO_LIBRARY` → `[library].path` de `config.toml`. El fichero de configuración,
+La biblioteca se declara solo en `config.toml`
+([ADR 0010](docs/adr/0010-fototeca-distribuida.md)): `[[library.locations]]`
+en `version = 2`, `[library].path` en `version = 1`. `--library` ya no existe
+y `FOTO_LIBRARY` definida es un error explícito. El fichero de configuración,
 con `--config` → `FOTO_CONFIG` → `platformdirs`.
 
 Códigos de salida: `0` éxito, `1` error no fatal o recorrido parcial, `2`
@@ -427,7 +464,7 @@ esperan a la extracción.
 Cron:
 
 ```cron
-0 3 * * * cd /ruta/al/repo && .venv/bin/foto-index --library "$HOME/Fotos" --quiet >> "$HOME/.local/state/foto-index.log" 2>&1
+0 3 * * * cd /ruta/al/repo && .venv/bin/foto-index --quiet >> "$HOME/.local/state/foto-index.log" 2>&1
 ```
 
 `systemd` de usuario, `~/.config/systemd/user/foto-index.service`:
@@ -439,7 +476,7 @@ After=local-fs.target
 
 [Service]
 Type=oneshot
-ExecStart=%h/wrk/foto/.venv/bin/foto-index --library %h/Fotos --quiet
+ExecStart=%h/wrk/foto/.venv/bin/foto-index --quiet
 ```
 
 `~/.config/systemd/user/foto-index.timer`:
@@ -483,14 +520,14 @@ metadatos EXIF incrustados no se exportan (su fuente de verdad sigue siendo la
 foto) y XMP no se exporta ni se importa.
 
 ```sh
-uv run foto-export --library ~/Fotos                       # ambos, a .foto/exports/
-uv run foto-export --library ~/Fotos --tags --out ~/backups
-uv run foto-export --library ~/Fotos --places --out ~/backups
-uv run foto-export --library ~/Fotos --dry-run --json
+uv run foto-export                                         # ambos, a .foto/exports/
+uv run foto-export --tags --out ~/backups
+uv run foto-export --places --out ~/backups
+uv run foto-export --dry-run --json
 
-uv run foto-import --library ~/Fotos --tags ~/backups/tags.json
-uv run foto-import --library ~/Fotos --tags a.json --places b.json
-uv run foto-import --library ~/Fotos --tags a.json --dry-run --verbose
+uv run foto-import --tags ~/backups/tags.json
+uv run foto-import --tags a.json --places b.json
+uv run foto-import --tags a.json --dry-run --verbose
 ```
 
 | Opción (export) | Comportamiento |
@@ -513,8 +550,10 @@ Los ficheros son UTF-8 con `indent=2` y orden determinista: dos exportaciones
 seguidas sin cambios producen el mismo cuerpo (aptos para `diff` y para
 versionar). La escritura es atómica. `foto-export` solo lee el catálogo (WAL:
 funciona con `foto-index` o la app corriendo); `foto-import` es escritor único
-y toma `index.lock` como `foto-index` porque rellena `place_*`. Tras un
-import, el catálogo queda en v5 y la app puede abrirlo directamente.
+y toma `index.lock` como `foto-index` porque rellena `place_*`. Con el ADR
+0010, `foto-import` no crea nada: exige un catálogo ya creado por
+`foto-index` (sin él, error pidiendo ejecutarlo primero). Tras un import, el
+catálogo queda en v5 y la app puede abrirlo directamente.
 
 Los resúmenes solo traen conteos: nunca nombres de etiquetas ni direcciones.
 Los hashes ausentes (fotos del fichero que no están en el catálogo) se

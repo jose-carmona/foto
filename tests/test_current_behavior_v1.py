@@ -2,9 +2,10 @@
 
 Antes de la fototeca distribuida (ADR 0010), fija el comportamiento
 observable de la cadena v1 —resolución, bootstrap, escaneo incremental,
-prune y carga en la UI— con ``--library``/``FOTO_LIBRARY`` aún vivos.
-Sin cambios de comportamiento: si alguno de estos tests falla al
-implementar los pasos 2–4, hay una rotura no prevista.
+prune y carga en la UI—. La resolución se actualizó en el paso 2 (T2.2: la
+config es la única fuente y ``FOTO_LIBRARY`` es error); el resto queda como
+caracterización: si alguno de estos tests falla al implementar los pasos 3–4,
+hay una rotura no prevista.
 """
 
 from __future__ import annotations
@@ -17,51 +18,56 @@ import pytest
 from foto.core.errors import LibraryError
 from foto.core.indexing import Indexer, IndexingOptions
 from foto.storage.catalog import Catalog
-from foto.storage.library import ensure_library, library_file
-from foto.storage.resolver import (
-    ORIGIN_CONFIG,
-    ORIGIN_ENVIRONMENT,
-    ORIGIN_OPTION,
-    resolve_library_path,
+from foto.storage.config import (
+    DEFAULT_LOCATION_NAME,
+    DEFAULT_LOCATION_TIER,
+    ConfigError,
+    Location,
 )
+from foto.storage.library import ensure_library, library_file
+from foto.storage.resolver import resolve_locations
 from foto.ui.app import load_photos
 
 from .conftest import write_image
 
 # ----------------------------------------------------------------------
-# Resolución v1: --library → FOTO_LIBRARY → [library].path
+# Resolución v1: la config es la única fuente (ADR 0010, T2.2)
 # ----------------------------------------------------------------------
 
 
-def test_resolution_option_beats_env_and_config(tmp_path, monkeypatch):
-    """La precedencia v1 completa en una sola cadena."""
-    from_option = tmp_path / "cli"
-    from_env = tmp_path / "env"
+def test_v1_config_declares_the_default_location(tmp_path, monkeypatch):
+    """``[library].path`` equivale a una única ubicación ``default`` fast."""
+    from_config = tmp_path / "cfg"
+    config = tmp_path / "config.toml"
+    config.write_text(f'version = 1\n[library]\npath = "{from_config}"\n')
+    monkeypatch.delenv("FOTO_LIBRARY", raising=False)
+
+    locations = resolve_locations(config_path=config)
+
+    assert locations == (
+        Location(
+            name=DEFAULT_LOCATION_NAME,
+            path=from_config.resolve(),
+            tier=DEFAULT_LOCATION_TIER,
+        ),
+    )
+
+
+def test_resolution_without_declaration_returns_empty(tmp_path, monkeypatch):
+    """Sin ninguna fuente, el resolvedor no declara ubicaciones (diálogo aparte)."""
+    monkeypatch.delenv("FOTO_LIBRARY", raising=False)
+    locations = resolve_locations(config_path=tmp_path / "ausente.toml")
+    assert locations == ()
+
+
+def test_foto_library_environment_is_rejected(tmp_path, monkeypatch):
+    """``FOTO_LIBRARY`` definida es un error explícito, nunca silencio."""
+    monkeypatch.setenv("FOTO_LIBRARY", str(tmp_path / "env"))
     config = tmp_path / "config.toml"
     config.write_text(f'version = 1\n[library]\npath = "{tmp_path / "cfg"}"\n')
-    monkeypatch.setenv("FOTO_LIBRARY", str(from_env))
 
-    resolution = resolve_library_path(from_option, config_path=config)
-
-    assert resolution.library_path == from_option.resolve()
-    assert resolution.origin == ORIGIN_OPTION
-
-    resolution = resolve_library_path(config_path=config)
-    assert resolution.library_path == from_env.resolve()
-    assert resolution.origin == ORIGIN_ENVIRONMENT
-
-    monkeypatch.delenv("FOTO_LIBRARY")
-    resolution = resolve_library_path(config_path=config)
-    assert resolution.library_path == (tmp_path / "cfg").resolve()
-    assert resolution.origin == ORIGIN_CONFIG
-
-
-def test_resolution_no_sources_returns_none(tmp_path, monkeypatch):
-    """Sin ninguna fuente, el resolvedor devuelve ``None`` (diálogo aparte)."""
-    monkeypatch.delenv("FOTO_LIBRARY", raising=False)
-    resolution = resolve_library_path(config_path=tmp_path / "ausente.toml")
-    assert resolution.library_path is None
-    assert resolution.origin == ORIGIN_CONFIG
+    with pytest.raises(ConfigError, match="FOTO_LIBRARY"):
+        resolve_locations(config_path=config)
 
 
 # ----------------------------------------------------------------------

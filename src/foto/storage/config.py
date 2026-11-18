@@ -21,9 +21,21 @@ import platformdirs
 
 VERSION_KEY = "version"
 LIBRARY_SECTION = "library"
+LOCATIONS_KEY = "locations"
 METADATA_SECTION = "metadata"
 PATH_KEY = "path"
-LATEST_CONFIG_VERSION = 1
+NAME_KEY = "name"
+TIER_KEY = "tier"
+LATEST_CONFIG_VERSION = 2
+
+#: Nombre de la única ubicación que equivale a ``[library].path`` en v1
+#: (ADR 0010): la fototeca preexistente es la principal.
+DEFAULT_LOCATION_NAME = "default"
+#: Tier de compatibilidad de la ubicación ``default`` de una config v1: gana
+#: los desempates canónicos si luego se declara una ubicación ``archive``.
+DEFAULT_LOCATION_TIER = "fast"
+#: Únicos ``tier`` válidos en ``[[library.locations]]`` (ADR 0010).
+LOCATION_TIERS = ("fast", "archive")
 
 GEOCODING_SECTION = "geocoding"
 ENABLED_KEY = "enabled"
@@ -70,6 +82,20 @@ class GeocodingSettings:
 
 
 @dataclass(frozen=True)
+class Location:
+    """Una ubicación declarada de la fototeca (ADR 0010).
+
+    ``name`` es su identidad estable (``path`` y ``tier`` pueden cambiar);
+    ``path`` llega ya expandida y absoluta. ``tier`` (`fast`/`archive`) es la
+    base de la futura política de emplazamiento.
+    """
+
+    name: str
+    path: Path
+    tier: str = DEFAULT_LOCATION_TIER
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Configuración global de la aplicación."""
 
@@ -78,6 +104,7 @@ class AppConfig:
     metadata_path: Path | None = None
     version: int = 1
     geocoding: GeocodingSettings = field(default_factory=GeocodingSettings)
+    locations: tuple[Location, ...] = ()
 
 
 class ConfigError(Exception):
@@ -110,8 +137,8 @@ def _expand_path(value: str, base_dir: Path) -> Path:
     return (base_dir / path).resolve()
 
 
-# Política de versión (ver D03 del informe): un fichero sin ``version`` se
-# trata como v1, la única versión soportada por ahora.
+# Política de versión: un fichero sin ``version`` se trata como v1; v2
+# introduce ``[[library.locations]]`` (ADR 0010).
 def _validate_version(data: dict[str, object]) -> int:
     """Valida ``version`` y devuelve la versión como entero."""
     if VERSION_KEY not in data:
@@ -132,23 +159,106 @@ def _validate_version(data: dict[str, object]) -> int:
     return version
 
 
-def _validate_library_section(data: dict[str, object], base_dir: Path) -> Path | None:
-    """Valida ``[library]`` y devuelve la ruta expandida, o ``None`` si no está."""
+def _validate_library_section(
+    data: dict[str, object], base_dir: Path, version: int
+) -> tuple[Path | None, tuple[Location, ...]]:
+    """Valida ``[library]`` según la versión y devuelve (path, ubicaciones).
+
+    - v1: ``[library].path`` es una única ubicación ``default`` (se resuelve
+      en el llamador); ``[[library.locations]]`` es error con mensaje que
+      sugiere subir la versión.
+    - v2: la única sintaxis de ubicaciones es ``[[library.locations]]``
+      (nombres no vacíos y únicos, ``tier`` fast/archive, rutas expandidas
+      únicas); ``[library].path`` suelto es error, con o sin lista.
+    """
     if LIBRARY_SECTION not in data:
-        return None
+        return None, ()
 
     section = data[LIBRARY_SECTION]
     if not isinstance(section, dict):
         raise ConfigError(f"La sección '[{LIBRARY_SECTION}]' debe ser una tabla TOML")
 
-    if PATH_KEY not in section:
-        return None
+    raw_locations = section.get(LOCATIONS_KEY)
+    has_path = PATH_KEY in section
 
-    path_value = section[PATH_KEY]
-    if not isinstance(path_value, str):
-        raise ConfigError(f"El campo '[{LIBRARY_SECTION}].{PATH_KEY}' debe ser texto")
+    if version < 2:
+        if raw_locations is not None:
+            raise ConfigError(
+                "La lista '[[library.locations]]' solo es válida en "
+                f"'{VERSION_KEY} = 2': sube la versión del fichero de configuración"
+            )
+        if not has_path:
+            return None, ()
+        path_value = section[PATH_KEY]
+        if not isinstance(path_value, str):
+            raise ConfigError(f"El campo '[{LIBRARY_SECTION}].{PATH_KEY}' debe ser texto")
+        return _expand_path(path_value, base_dir), ()
 
-    return _expand_path(path_value, base_dir)
+    # version >= 2: la única sintaxis de ubicaciones es la lista.
+    if raw_locations is None:
+        if has_path:
+            raise ConfigError(
+                f"En '{VERSION_KEY} = 2' la única sintaxis de ubicaciones es "
+                f"'[[{LIBRARY_SECTION}.{LOCATIONS_KEY}]]': '[{LIBRARY_SECTION}]."
+                f"{PATH_KEY}' suelto no es válido"
+            )
+        return None, ()
+    if not isinstance(raw_locations, list) or not all(
+        isinstance(entry, dict) for entry in raw_locations
+    ):
+        raise ConfigError(
+            f"'[[{LIBRARY_SECTION}.{LOCATIONS_KEY}]]' debe ser un array de tablas TOML"
+        )
+    if has_path:
+        raise ConfigError(
+            f"'[{LIBRARY_SECTION}].{PATH_KEY}' no puede convivir con "
+            f"'[[{LIBRARY_SECTION}.{LOCATIONS_KEY}]]' (ambigüedad prohibida): "
+            "en version = 2 declara las ubicaciones solo en la lista"
+        )
+
+    locations: list[Location] = []
+    seen_names: set[str] = set()
+    seen_paths: set[Path] = set()
+    for index, entry in enumerate(raw_locations, start=1):
+        name = entry.get(NAME_KEY)
+        if not isinstance(name, str) or not name.strip():
+            raise ConfigError(
+                f"La ubicación {index} de '[[{LIBRARY_SECTION}.{LOCATIONS_KEY}]]' "
+                f"debe tener un '{NAME_KEY}' de texto no vacío"
+            )
+        path_value = entry.get(PATH_KEY)
+        if not isinstance(path_value, str) or not path_value.strip():
+            raise ConfigError(
+                f"La ubicación '{name}' debe tener un '{PATH_KEY}' de texto no vacío"
+            )
+        if "://" in path_value:
+            raise ConfigError(
+                f"La ubicación '{name}' usa una ruta con esquema "
+                f"('{path_value}'): los volúmenes remotos no están soportados "
+                "todavía; declara una ruta local"
+            )
+        tier = entry.get(TIER_KEY)
+        if not isinstance(tier, str) or tier not in LOCATION_TIERS:
+            raise ConfigError(
+                f"La ubicación '{name}' debe tener un '{TIER_KEY}' de texto: "
+                f"{' o '.join(LOCATION_TIERS)}"
+            )
+        if name in seen_names:
+            raise ConfigError(
+                f"El nombre de ubicación '{name}' está duplicado en "
+                f"'[[{LIBRARY_SECTION}.{LOCATIONS_KEY}]]'"
+            )
+        path = _expand_path(path_value, base_dir)
+        if path in seen_paths:
+            raise ConfigError(
+                f"La ubicación '{name}' comparte ruta expandida con otra "
+                f"({path}): las rutas deben ser únicas"
+            )
+        seen_names.add(name)
+        seen_paths.add(path)
+        locations.append(Location(name=name, path=path, tier=tier))
+
+    return None, tuple(locations)
 
 
 def _validate_metadata_section(data: dict[str, object], base_dir: Path) -> Path | None:
@@ -233,9 +343,20 @@ def load_config(config_path: Path | None = None) -> AppConfig:
 
     data = _read_toml_file(resolved)
     version = _validate_version(data)
-    library_path = _validate_library_section(data, resolved.parent)
+    library_path, locations = _validate_library_section(data, resolved.parent, version)
     metadata_path = _validate_metadata_section(data, resolved.parent)
     geocoding = _validate_geocoding_section(data)
+
+    # ADR 0010: en v1, ``[library].path`` equivale a una única ubicación
+    # ``default`` (fast): la fototeca preexistente es la principal.
+    if version < 2 and library_path is not None and not locations:
+        locations = (
+            Location(
+                name=DEFAULT_LOCATION_NAME,
+                path=library_path,
+                tier=DEFAULT_LOCATION_TIER,
+            ),
+        )
 
     return AppConfig(
         config_path=resolved,
@@ -243,6 +364,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         metadata_path=metadata_path,
         version=version,
         geocoding=geocoding,
+        locations=locations,
     )
 
 
@@ -441,10 +563,21 @@ def save_config(config: AppConfig) -> None:
     claves y secciones desconocidas se conservan tal cual (C01). ``[metadata]``
     (ADR 0008) nunca se escribe ni reordena: es opt-in y se edita a mano. Un
     fichero existente inválido o con versión incompatible produce ``ConfigError``
-    en lugar de sobrescribirse silenciosamente (C02).
+    en lugar de sobrescribirse silenciosamente (C02). Acepta ``version = 2``
+    (ADR 0010): rehúsa escribir ``[library].path`` en cualquier fichero v2
+    (con o sin ``[[library.locations]]``) y, sin nada que escribir, deja el
+    fichero v2 intacto: en v2 las ubicaciones se editan a mano y el diálogo
+    de primera ejecución persiste solo en ficheros v1.
     """
     path = config.config_path
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    if config.version >= 2 and config.library_path is not None:
+        raise ConfigError(
+            "No se puede escribir '[library].path' en un fichero "
+            f"'{VERSION_KEY} = 2': las ubicaciones se declaran solo en "
+            "'[[library.locations]]', editadas a mano"
+        )
 
     canonical = _render_canonical(config.version, config.library_path)
     content = canonical
@@ -458,9 +591,19 @@ def save_config(config: AppConfig) -> None:
     if text is not None and text.strip():
         # Validar el contenido existente antes de tocarlo.
         data = _read_toml_file(path)
-        _validate_version(data)
-        _validate_library_section(data, path.parent)
+        file_version = _validate_version(data)
+        _validate_library_section(data, path.parent, file_version)
         _validate_metadata_section(data, path.parent)
+        if file_version >= 2:
+            if config.library_path is not None:
+                raise ConfigError(
+                    "No se puede escribir '[library].path' en un fichero "
+                    f"'{VERSION_KEY} = 2': las ubicaciones se declaran solo en "
+                    "'[[library.locations]]', editadas a mano"
+                )
+            # Un fichero v2 es de edición manual: sin [library].path que
+            # escribir, se deja intacto (conservador, ADR 0010).
+            return
 
         content = _update_library_path(text, config.library_path)
 

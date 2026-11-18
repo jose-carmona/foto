@@ -17,21 +17,20 @@ from foto.storage.lock import LOCK_FILE_NAME
 from foto.transfer.cli_export import main as export_main
 from foto.transfer.cli_import import main as import_main
 from foto.ui.app import load_photos
-from tests.conftest import write_image
+from tests.conftest import write_image, write_v1_config
 
 
 def test_the_four_entry_points_derive_the_same_metadata_dir(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     write_image(root / "2026" / "una.jpg", b"coherencia")
-    # Config inexistente: la suite no debe depender de la del usuario.
-    config = tmp_path / "config.toml"
+    # Config v1 que declara la única ubicación: la suite no debe depender de
+    # la del usuario (ADR 0010: la config es la única fuente de ubicaciones).
+    config = write_v1_config(tmp_path / "config.toml", root)
     derived = foto_dir(root)
 
     # foto-index crea el directorio de metainformación derivado.
     code = index_main(
         [
-            "--library",
-            str(root),
             "--config",
             str(config),
             "--skip",
@@ -52,9 +51,7 @@ def test_the_four_entry_points_derive_the_same_metadata_dir(tmp_path, capsys):
 
     # foto-export lee el catálogo de esa misma .foto.
     out_dir = tmp_path / "salida"
-    code = export_main(
-        ["--library", str(root), "--config", str(config), "--out", str(out_dir)]
-    )
+    code = export_main(["--config", str(config), "--out", str(out_dir)])
     assert code == 0
     capsys.readouterr()
     assert (out_dir / "places.json").is_file()
@@ -62,8 +59,6 @@ def test_the_four_entry_points_derive_the_same_metadata_dir(tmp_path, capsys):
     # foto-import valida contra el catálogo de esa misma .foto (dry-run).
     code = import_main(
         [
-            "--library",
-            str(root),
             "--config",
             str(config),
             "--places",

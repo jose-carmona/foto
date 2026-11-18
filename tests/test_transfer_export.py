@@ -15,6 +15,7 @@ from foto.storage.catalog import Catalog
 from foto.transfer import exporter, model
 from foto.transfer.cli_export import main
 from foto.transfer.exporter import export_library
+from tests.conftest import write_v1_config
 
 GENERATED = "2026-11-12T10:00:00+00:00"
 NOW = "2026-11-10T09:00:00+00:00"
@@ -392,12 +393,18 @@ def _seeded_library(root: Path) -> Path:
     return root / ".foto" / "catalog.sqlite"
 
 
+def _config_for(tmp_path: Path, root: Path) -> Path:
+    """Config v1 que declara ``root`` como única ubicación (ADR 0010)."""
+    return write_v1_config(tmp_path / "config.toml", root)
+
+
 def test_cli_exports_both_files(tmp_path):
     root = tmp_path / "biblioteca"
     _seeded_library(root)
     out_dir = tmp_path / "salida"
+    config = write_v1_config(tmp_path / "config.toml", root)
 
-    code = main(["--library", str(root), "--out", str(out_dir)])
+    code = main(["--config", str(config), "--out", str(out_dir)])
 
     assert code == 0
     tags_data = _read_json(out_dir / "tags.json")
@@ -413,7 +420,7 @@ def test_cli_selection_and_json_summary(tmp_path, capsys):
     _seeded_library(root)
 
     code = main(
-        ["--library", str(root), "--tags", "--out", str(tmp_path / "solo-tags"), "--json"]
+        ["--config", str(_config_for(tmp_path, root)), "--tags", "--out", str(tmp_path / "solo-tags"), "--json"]
     )
     captured = capsys.readouterr()
 
@@ -432,7 +439,7 @@ def test_cli_places_only(tmp_path):
     _seeded_library(root)
 
     code = main(
-        ["--library", str(root), "--places", "--out", str(tmp_path / "solo-lugares")]
+        ["--config", str(_config_for(tmp_path, root)), "--places", "--out", str(tmp_path / "solo-lugares")]
     )
 
     assert code == 0
@@ -444,7 +451,7 @@ def test_cli_default_out_is_exports_dir(tmp_path):
     root = tmp_path / "biblioteca"
     _seeded_library(root)
 
-    code = main(["--library", str(root)])
+    code = main(["--config", str(_config_for(tmp_path, root))])
 
     assert code == 0
     assert (root / ".foto" / "exports" / "tags.json").exists()
@@ -467,7 +474,7 @@ def test_cli_address_warning_returns_1(tmp_path):
     finally:
         conn.close()
 
-    code = main(["--library", str(root), "--out", str(tmp_path / "salida")])
+    code = main(["--config", str(_config_for(tmp_path, root)), "--out", str(tmp_path / "salida")])
 
     assert code == 1
     places = _read_json(tmp_path / "salida" / "places.json")["places"]
@@ -479,7 +486,7 @@ def test_cli_without_catalog_returns_2(tmp_path, capsys):
     root = tmp_path / "vacia"
     root.mkdir()
 
-    code = main(["--library", str(root), "--out", str(tmp_path / "nada")])
+    code = main(["--config", str(_config_for(tmp_path, root)), "--out", str(tmp_path / "nada")])
     captured = capsys.readouterr()
 
     assert code == 2
@@ -490,7 +497,7 @@ def test_cli_dry_run_writes_nothing(tmp_path):
     root = tmp_path / "biblioteca"
     _seeded_library(root)
 
-    code = main(["--library", str(root), "--out", str(tmp_path / "nada"), "--dry-run"])
+    code = main(["--config", str(_config_for(tmp_path, root)), "--out", str(tmp_path / "nada"), "--dry-run"])
 
     assert code == 0
     assert not (tmp_path / "nada").exists()
@@ -516,7 +523,7 @@ def test_cli_metadata_reads_the_catalog_in_the_external_dir(tmp_path, monkeypatc
         catalog.close()
 
     code = main(
-        ["--library", str(root), "--metadata", str(external),
+        ["--config", str(_config_for(tmp_path, root)), "--metadata", str(external),
          "--out", str(tmp_path / "salida")]
     )
 
@@ -537,7 +544,7 @@ def test_cli_metadata_default_out_is_the_metadata_exports_dir(tmp_path, monkeypa
     finally:
         catalog.close()
 
-    code = main(["--library", str(root), "--metadata", str(external)])
+    code = main(["--config", str(_config_for(tmp_path, root)), "--metadata", str(external)])
 
     assert code == 0
     assert (external / "exports" / "tags.json").exists()
@@ -549,7 +556,7 @@ def test_cli_metadata_missing_dir_returns_2_and_creates_nothing(tmp_path, capsys
     root.mkdir()
     external = tmp_path / "no-existe"
 
-    code = main(["--library", str(root), "--metadata", str(external)])
+    code = main(["--config", str(_config_for(tmp_path, root)), "--metadata", str(external)])
     captured = capsys.readouterr()
 
     assert code == 2
@@ -571,7 +578,7 @@ def test_cli_metadata_environment_is_respected(tmp_path, monkeypatch):
     monkeypatch.setenv("FOTO_METADATA", str(external))
 
     code = main(
-        ["--library", str(root), "--out", str(tmp_path / "salida"), "--quiet"]
+        ["--config", str(_config_for(tmp_path, root)), "--out", str(tmp_path / "salida"), "--quiet"]
     )
 
     assert code == 0

@@ -25,9 +25,8 @@ from foto.core.errors import (
 )
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import ConfigError
-from foto.storage.library import ensure_library
 from foto.storage.lock import LOCK_FILE_NAME, IndexerLock
-from foto.storage.resolver import resolve_library_path, resolve_metadata_dir
+from foto.storage.resolver import resolve_locations, resolve_metadata_dir
 from foto.transfer.importer import (
     AppliedFile,
     ImportCounters,
@@ -41,28 +40,30 @@ from foto.transfer.importer import (
 logger = logging.getLogger("foto.transfer")
 
 EPILOG = """\
-precedencia de la biblioteca:
-  1. --library PATH
-  2. FOTO_LIBRARY
-  3. [library].path de config.toml
+ubicaciones de la fototeca (ADR 0010): se declaran solo en config.toml
+  [[library.locations]] (version = 2) o [library].path (version = 1).
+  No existe --library: si FOTO_LIBRARY está definida, error explícito.
 precedencia de la metainformación (.foto, ADR 0008):
   1. --metadata PATH
   2. FOTO_METADATA
   3. [metadata].path de config.toml
-  4. <fototeca>/.foto (por defecto)
+  4. <única ubicación declarada>/.foto (por defecto; con varias ubicaciones
+     hay que concretarla: --metadata, FOTO_METADATA o [metadata].path)
+
+foto-import no crea nada: exige un catálogo ya creado por foto-index.
 
 códigos de salida:
   0  éxito
   1  error no fatal (avisos de importación incluidos)
-  2  configuración, biblioteca, catálogo o fichero inválido
+  2  configuración, catálogo o fichero inválido
   3  otro proceso tiene el lock de la biblioteca
   130  interrumpido (SIGINT)
 
 ejemplos:
-  uv run foto-import --library ~/Fotos --tags ~/backups/tags.json
-  uv run foto-import --library ~/Fotos --metadata ~/Fotos.foto --tags a.json
-  uv run foto-import --library ~/Fotos --tags a.json --places b.json
-  uv run foto-import --library ~/Fotos --tags a.json --dry-run --verbose
+  uv run foto-import --tags ~/backups/tags.json
+  uv run foto-import --metadata ~/Fotos.foto --tags a.json
+  uv run foto-import --tags a.json --places b.json
+  uv run foto-import --tags a.json --dry-run --verbose
 """
 
 
@@ -76,12 +77,12 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--library", metavar="PATH", type=Path, help="raíz de la biblioteca")
     parser.add_argument(
         "--metadata",
         metavar="PATH",
         type=Path,
-        help="directorio de metainformación; por defecto: <fototeca>/.foto",
+        help="directorio de metainformación; por defecto: <única ubicación "
+        "declarada>/.foto",
     )
     parser.add_argument("--config", metavar="PATH", type=Path, help="configuración global")
     parser.add_argument(
@@ -183,28 +184,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("indica al menos un fichero: --tags FILE o --places FILE")
 
     try:
-        root = resolve_library_path(args.library, config_path=args.config).library_path
+        locations = resolve_locations(config_path=args.config)
     except ConfigError as exc:
         logger.error("Configuración inválida: %s", exc)
         return 2
 
-    if root is None:
+    if not locations:
         logger.error(
-            "No hay biblioteca configurada: usa --library, FOTO_LIBRARY o "
-            "[library].path en config.toml"
+            "No hay ubicaciones declaradas: decláralas en "
+            "'[[library.locations]]' de config.toml ('[library].path' en un "
+            "fichero 'version = 1')"
         )
         return 2
 
     # ADR 0008: la metainformación se resuelve solo por el resolvedor
     # compartido, nunca leyendo FOTO_METADATA ni config.toml por su cuenta.
+    # Con varias ubicaciones declaradas, sin override es un error explícito.
     try:
         metadata_dir = resolve_metadata_dir(
-            root, args.metadata, config_path=args.config
+            locations, args.metadata, config_path=args.config
         ).metadata_dir
     except (ConfigError, LibraryError) as exc:
         logger.error("Metainformación inválida: %s", exc)
         return 2
     assert metadata_dir is not None
+
+    # ADR 0010 (Decisión 8): foto-import no crea nada. Sin metainformación
+    # o sin catálogo, error pidiendo ejecutar foto-index primero.
+    if not metadata_dir.is_dir():
+        logger.error(
+            "No hay metainformación en %s: ejecuta 'foto-index' en la "
+            "biblioteca o corrige --metadata/FOTO_METADATA/[metadata].path",
+            metadata_dir,
+        )
+        return 2
+    catalog_path = metadata_dir / CATALOG_FILE_NAME
+    if not catalog_path.exists():
+        logger.error(
+            "No hay catálogo en %s: ejecuta 'foto-index' antes de importar "
+            "(foto-import no crea la biblioteca)", catalog_path
+        )
+        return 2
 
     # Los ficheros se validan completos antes de escribir nada: ni siquiera
     # se toma el lock si el fichero es inválido (ADR 0007, Decisión 5).
@@ -216,12 +236,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.places is not None:
             places_data = read_places_file(args.places)
     except TransferError as exc:
-        logger.error("%s", exc)
-        return 2
-
-    try:
-        ensure_library(root, metadata_dir, dry_run=args.dry_run)
-    except LibraryError as exc:
         logger.error("%s", exc)
         return 2
 
@@ -242,7 +256,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 logger.error("%s", exc)
                 return 2
 
-        catalog_path = metadata_dir / CATALOG_FILE_NAME
         try:
             if args.dry_run:
                 catalog = Catalog.open_dry_run(catalog_path)

@@ -704,13 +704,26 @@ registrado como decisión del ADR.
 
 # Paso 2 — Config v2 y resolución solo-config (§ 3.1, § 3.2)
 
-- [ ] **T2.1 — `storage/config.py`: `version = 2` y `[[library.locations]]`.**
+- [x] **T2.1 — `storage/config.py`: `version = 2` y `[[library.locations]]`.**
   Validación (nombres únicos, tiers, rutas expandidas únicas, error si
   `[library].path` convive con la lista, error de lista en v1), expansión
   de rutas como hoy, `AppConfig` con la lista de ubicaciones;
   `save_config` intacto (conservador, y rehúsa `[library].path` en v2 con
   lista; los tests de persistencia deben demostrar ambas cosas).
-- [ ] **T2.2 — `storage/resolver.py`: `resolve_locations()` y la config
+  > Nota (2026-11-18): **completada**. `LATEST_CONFIG_VERSION = 2`,
+  > dataclass `Location` (name/path/tier), `AppConfig.locations`; la
+  > validación cubre nombres no vacíos y únicos, `tier` fast/archive,
+  > rutas expandidas únicas, `://` rechazado (volúmenes remotos),
+  > `[[library.locations]]` en v1 = error que sugiere subir la versión,
+  > y en v2 `[library].path` suelto = error (con o sin lista). En v1 con
+  > `[library].path`, `load_config` expone la única ubicación `default`
+  > (fast). `save_config` acepta `version = 2`: rehúsa escribir
+  > `[library].path` en cualquier fichero v2 (creado o existente) y, sin
+  > nada que escribir, deja un fichero v2 válido intacto (el enunciado
+  > decía «intacto» por lo que a `[library].path` respecta; la
+  > conservación byte a byte del resto queda como en v1). Tests en
+  > `tests/test_config_persistence.py` (sección v2).
+- [x] **T2.2 — `storage/resolver.py`: `resolve_locations()` y la config
   como única fuente.** Retirar `resolve_library_path` y migrar los cuatro
   llamadores; `FOTO_LIBRARY` definida → error explícito (según lo decidido
   en el ADR); cadena de metainformación intacta (`--metadata` →
@@ -719,23 +732,75 @@ registrado como decisión del ADR.
   ubicación; varias sin override → error explícito). Tests al patrón de
   `test_library_resolution.py` pero con configs de fixture y `--config`:
   v1, v2 con lista, vacío, y los dos casos del default de metainformación.
-- [ ] **T2.3 — Superficie CLI de los cuatro binarios.** Quitar `--library`
+  > Nota (2026-11-18): **completada**. `resolve_library_path` y
+  > `LibraryResolution` retirados; `resolve_locations()` devuelve la
+  > declaración solo desde la config y `FOTO_LIBRARY` definida es
+  > `ConfigError` (nunca silencio). `resolve_metadata_dir(locations, …)`
+  > gana la regla del default (una → `<ubicación>/.foto`; varias sin
+  > override → `ConfigError`; cero → `ConfigError`) y las reglas duras por
+  > ubicación: metainformación en `archive` = `LibraryError` (T1.14) y
+  > regla Apple aplicada a cada ubicación (T1.15). Los cuatro llamadores
+  > migrados. Tests: `test_library_resolution.py` reescrito (configs de
+  > fixture), `test_metadata_resolution.py` migrado a la firma nueva con
+  > los casos del default y de las reglas duras, y
+  > `test_current_behavior_v1.py` actualizado en su sección de resolución
+  > (caracterización de la cadena v1 nueva).
+- [x] **T2.3 — Superficie CLI de los cuatro binarios.** Quitar `--library`
   (argparse lo rechaza solo); epílogos con las cadenas nuevas y ejemplos
   sin `--library`; mensajes de error que citen `[[library.locations]]`.
   Guardia transitoria documentada: `foto-index` y la UI con más de una
   ubicación declarada fallan con «multi-ubicación llega en el paso 3/4»
   (se retira ahí); `foto-export`/`foto-import` no necesitan guardia.
   Tests de CLI actualizados.
-- [ ] **T2.4 — UI: parseo y resolución sin `--library`** (patrón de
+  > Nota (2026-11-18): **completada**. `--library` retirado de los cuatro
+  > parsers (argparse lo rechaza con «unrecognized arguments»); epílogos
+  > reescritos con la declaración en config y ejemplos sin `--library`;
+  > los errores de «no hay ubicaciones declaradas» citan
+  > `[[library.locations]]`. Guardia transitoria: `foto-index` con varias
+  > ubicaciones falla con «la indexación multi-ubicación llega en el paso
+  > 3» (exit 2) y la UI con «llega en el paso 4» (el enunciado decía
+  > «paso 3/4»: cada binario cita su paso). Export/import sin guardia.
+  > Tests actualizados: `test_cli.py` (todos los call sites a configs de
+  > fixture con `--config`, más guardia, `--library` rechazado y
+  > `FOTO_LIBRARY` = error), `test_apple_library.py`,
+  > `test_transfer_export.py`, `test_transfer_import.py`,
+  > `test_metadata_coherence.py` y helper `write_v1_config` en
+  > `tests/conftest.py`.
+- [x] **T2.4 — UI: parseo y resolución sin `--library`** (patrón de
   `_build_ui_parser`; quedan `--config` y `--metadata`); el diálogo de
   primera ejecución persiste como hoy (ubicación única `default`); la UI
   nunca escribe `[[library.locations]]`.
-- [ ] **T2.5 — Documentación** (AGENT.md § Configuración y comandos,
+  > Nota (2026-11-18): **completada**. El parser queda con `--config` y
+  > `--metadata`; `_resolve_before_dialog` devuelve (config, ubicaciones).
+  > El diálogo solo actúa sin declaración y en ficheros v1 (persiste
+  > `[library].path`, ubicación única `default`, como hoy); una v2 sin
+  > ubicaciones **no** abre diálogo: error explícito que pide editar
+  > `[[library.locations]]` a mano (Decisión 1/7 del ADR). Matiz respecto
+  > a hoy: el diálogo ya no se dispara por «la ruta declarada no es un
+  > directorio» (la declaración es verdad; la tolerancia llega en el paso
+  > 4). La UI nunca escribe la lista. Tests en `test_ui_arguments.py`.
+- [x] **T2.5 — Documentación** (AGENT.md § Configuración y comandos,
   README, `--help`): la fototeca se declara en la config, punto.
-- [ ] **T2.6 — `foto-import` en multi-ubicación (D6).** Aplicar lo
+  > Nota (2026-11-18): **completada**. AGENT.md (§ Configuración:
+  > cadenas nuevas, `FOTO_LIBRARY` = error, default de metainformación y
+  > reglas duras por ubicación; comandos sin `--library`) y README
+  > (comandos, tabla de cadenas, ejemplo `[[library.locations]]`,
+  > ejemplo Apple por config, `foto-import` no crea nada). `--help` de
+  > los cuatro binarios cubierto por los epílogos de T2.3.
+- [x] **T2.6 — `foto-import` en multi-ubicación (D6).** Aplicar lo
   decidido en T1.10 sobre `ensure_library`/`foto-import` (raíz de
   referencia o rediseño del arranque según el ADR), con tests de import
   con varias ubicaciones declaradas y metadatos explícitos.
+  > Nota (2026-11-18): **completada** (Decisión 8 del ADR).
+  > `foto-import` ya no llama `ensure_library` —que sigue vivo solo para
+  > el bootstrap de `foto-index` hasta T3.7— y no crea nada: sin
+  > metainformación o sin catálogo en el directorio resuelto, error
+  > (código 2) pidiendo ejecutar `foto-index` primero. Con varias
+  > ubicaciones declaradas y `--metadata` explícito, importa sobre el
+  > catálogo sin guardia adicional; sin override, el error de ambigüedad
+  > viene del resolvedor (T2.2). Tests: import a directorio externo sin
+  > crear descriptor, sin catálogo → 2 y no crea nada, sin
+  > metainformación → 2.
 
 # Paso 3 — Catálogo v6, sincronización y indexado multi-ubicación (§ 3.3, § 3.4, § 3.5)
 
