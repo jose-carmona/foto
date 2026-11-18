@@ -8,7 +8,8 @@
   fuente, regla de metainformación obligatoriamente externa, tratamiento de
   vídeo y de ausencias, y la fase nueva `apple-import` del pipeline (importación
   mínima de **favoritos y personas** desde `database/Photos.sqlite`, con
-  migración del esquema a v6). Amplía el [ADR 0008](0008-resolucion-de-ubicaciones.md)
+  migración del esquema a v7, renumerada; ver la nota de corrección al
+  final). Amplía el [ADR 0008](0008-resolucion-de-ubicaciones.md)
   (que dejó esto «pendiente») y se apoya en el [ADR 0002](0002-indexado.md)
   (identidad, incremental, reconciliación), el [ADR 0005](0005-fases-y-geocodificacion.md)
   (pipeline de fases) y el [ADR 0006](0006-etiquetas.md) (etiquetas, procedencia
@@ -181,9 +182,14 @@ no puede caer dentro del paquete**, sea cual sea el origen de la cadena
   importan**: la fixture de prueba los incluye precisamente para demostrar
   que la fase los ignora.
 
-### 9. Esquema v6: una columna de vínculo, sin tablas nuevas
+### 9. Esquema v7: una columna de vínculo, sin tablas nuevas
 
-- `SCHEMA_VERSION = 6` con migración idempotente al estilo `_migrate_to_vN`:
+> Renumerado (2026-11-18): este esquema era «v6» cuando se redactó el ADR;
+> el número 6 lo toma el [ADR 0010](0010-fototeca-distribuida.md), que se
+> implementa antes. Ver la nota de corrección al final.
+
+- `SCHEMA_VERSION = 7` con migración idempotente al estilo `_migrate_to_vN`
+  (desde el v6 del ADR 0010, ya vigente cuando esta feature se implemente):
   única columna nueva `photos.apple_uuid TEXT` (NULL para las fotos que no
   vienen de Apple; índice único parcial `WHERE apple_uuid IS NOT NULL`).
   Es la clave de unión entre `photos(hash)` y `ZASSET.ZUUID`.
@@ -286,8 +292,8 @@ ADR 0005; los contadores de la fase son numéricos.
 | Indexar también `resources/renders/` (versiones editadas) | Segundo hash por foto editada: rompe la unicidad y duplica el catálogo; decisión futura aparte. |
 | Flag `--apple` para activar la política | Redundante: el sufijo `.photoslibrary` ya identifica el paquete; un flag invita a apuntar a un paquete sin tenerlo o a no usar la política debiendo. |
 | Fallback automático de metainformación a una ruta externa inventada | Crea metainformación donde el dueño no la pidió; el error explícito con las tres vías (`--metadata`, `FOTO_METADATA`, `[metadata].path`) es suficiente y verificable. |
-| Importar todo el modelo de Apple (álbumes, títulos, descripciones, fecha de importación) | No hay destino en el esquema v5/v6; importar sin lugar donde vivir es basura en el catálogo. Queda anotado en el roadmap (Fase 5). |
-| Tabla nueva de favoritos/álbumes en el esquema v6 | Duplicaría el mecanismo único de etiquetas del ADR 0006, que ya tiene `kind`, `source`, `status`, `confidence` y regiones. |
+| Importar todo el modelo de Apple (álbumes, títulos, descripciones, fecha de importación) | No hay destino en el esquema v5/v7; importar sin lugar donde vivir es basura en el catálogo. Queda anotado en el roadmap (Fase 5). |
+| Tabla nueva de favoritos/álbumes en el esquema v7 | Duplicaría el mecanismo único de etiquetas del ADR 0006, que ya tiene `kind`, `source`, `status`, `confidence` y regiones. |
 | Usar `osxphotos` como dependencia | Dependencia nueva de runtime solo para leer dos tablas; `sqlite3` de la stdlib basta y mantiene el núcleo sin dependencias. |
 | Copiar `Photos.sqlite` a un temporal antes de leer | Copia de cientos de MB en cada pasada y una escritura más que gestionar; `mode=ro&immutable=1` garantiza lo mismo sin copia. |
 | `mode=ro` a secas | Sobre una BD en WAL sin `-shm`/`-wal` accesibles o a medio checkpoint puede exigir crear sidecars (escritura en el paquete) o fallar; `immutable=1` no toca nada. |
@@ -314,7 +320,7 @@ ADR 0005; los contadores de la fase son numéricos.
 - **Versiones del modelo de Apple.** La validación del extractor se hace por
   presencia de tablas/columnas esperadas; el rango de `LibrarySchemaVersion`
   soportado se fijará en el paso 3 con los datos reales (5001 verificado).
-- **Esquema v6 y visor.** Como en v3 y v4, tras actualizar el código hay que
+- **Esquema v7 y visor.** Como en v3 y v4, tras actualizar el código hay que
   ejecutar `foto-index` una vez antes de abrir la app (el visor exige el
   esquema actual).
 - **Confirmación de caras en la UI:** sin sintaxis de asignación/confirmación
@@ -418,3 +424,19 @@ propios de Photos), `metaSchema.db`, `photos.db` (iPhoto), `protection/`,
 3. La forma de los placeholders de iCloud dentro de `originals/`.
 4. El rango de `LibrarySchemaVersion` soportado (5001 verificado; validación
    del extractor por presencia de tablas/columnas).
+
+### Nota de corrección (2026-11-18)
+
+Renumeración de esquema. Redactado el 2026-11-15, este ADR definía su
+migración como «v5 → v6» (`SCHEMA_VERSION = 6`; Decisión 9, columna
+`photos.apple_uuid`). El [ADR 0010](0010-fototeca-distribuida.md)
+(fototeca distribuida en varias ubicaciones) definió después otro cambio
+de esquema con el mismo número (renombre `locations` → `files`, tabla
+`locations` de ubicaciones con nombre, columna `location_id`, PK
+compuesta) y **se implementa antes que este**. Colisión resuelta por orden
+de ejecución: **el v6 es el del ADR 0010** y este esquema pasa a
+`SCHEMA_VERSION = 7`, migrando desde el v6 vigente. Nada más cambia: la
+columna, su índice parcial y todas las reglas de la Decisión 9 quedan
+como estaban. Las menciones de «v6» que queden en el prompt
+`prompts/indexado-fototeca-apple-photos.md` (p. ej. su T3.2) se ajustarán
+al reanudar esa feature.
