@@ -25,13 +25,7 @@ from foto.storage.config import (
     load_config,
     save_config,
 )
-from foto.storage.library import (
-    LibraryConfig,
-    foto_dir,
-    library_file,
-    load_library,
-    thumbs_dir,
-)
+from foto.storage.library import foto_dir, thumbs_dir
 from foto.storage.resolver import resolve_locations, resolve_metadata_dir
 from foto.storage.tags import Tag, connect_read_write
 from foto.ui.grid import THUMB_H, THUMB_W
@@ -198,41 +192,26 @@ def _to_ui_photo(photo: CatalogPhoto) -> Photo:
     )
 
 
-def _validated_library(library_path: Path, metadata_dir: Path | None = None) -> LibraryConfig:
-    """Carga y valida el descriptor de la biblioteca sin crearlo (C04).
-
-    El catálogo solo se abre una vez validado ``library.toml``: descriptor
-    ausente, TOML corrupto, UUID inválido, versión futura o ``root`` que no
-    coincide producen un error explícito, nunca la creación del descriptor
-    desde la UI (ADR 0008).
-    """
-    resolved_dir = metadata_dir if metadata_dir is not None else foto_dir(library_path)
-    if not library_file(resolved_dir).exists():
-        raise RuntimeError(
-            "La biblioteca no tiene descriptor (library.toml). Ejecuta "
-            "'foto-index' en ella para prepararla."
-        )
-    try:
-        return load_library(resolved_dir, library_path)
-    except LibraryError as exc:
-        raise RuntimeError(str(exc)) from exc
-
-
 def _metadata_dir_for(library_path: Path, metadata_dir: Path | None) -> Path:
     """Directorio de metadatos efectivo (ADR 0008)."""
     return metadata_dir if metadata_dir is not None else foto_dir(library_path)
 
 
 def load_photos(library_path: Path, metadata_dir: Path | None = None) -> list[Photo]:
-    """Carga las fotos de una biblioteca validada y con índice existente."""
+    """Carga las fotos del catálogo de la biblioteca (fuente de verdad, ADR 0010).
+
+    La UI no resuelve ubicaciones ni las lista: abre el catálogo por la
+    cadena de metainformación y de la BD salen las rutas absolutas. Sin
+    catálogo no hay sesión: error explícito pidiendo ``foto-index``, sin
+    crear nada.
+    """
     resolved_dir = _metadata_dir_for(library_path, metadata_dir)
-    _validated_library(library_path, resolved_dir)
 
     catalog_path = resolved_dir / CATALOG_FILE_NAME
     if not catalog_path.exists():
         raise FileNotFoundError(
-            "No se encontró el índice de la fototeca. Ejecuta 'foto-index' "
-            "para crearlo en el directorio de metainformación."
+            "No hay catálogo en la metainformación de la fototeca. Ejecuta "
+            "'foto-index' para crearlo."
         )
 
     try:
@@ -241,7 +220,7 @@ def load_photos(library_path: Path, metadata_dir: Path | None = None) -> list[Ph
         raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
 
     try:
-        catalog_photos = load_from_catalog(catalog, library_path)
+        catalog_photos = load_from_catalog(catalog)
     finally:
         catalog.close()
 
@@ -285,8 +264,6 @@ class MainWindow(PhotoWindow):
         try:
             photos = load_photos(library_path, resolved_dir)
             tags = load_tags(library_path, resolved_dir)
-            # C04: el modelo validado del descriptor se conserva explícitamente.
-            self._library_config = _validated_library(library_path, resolved_dir)
         except (OSError, RuntimeError) as exc:
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)
@@ -347,18 +324,6 @@ def main() -> None:
         config, locations = _resolve_before_dialog(args)
     except ConfigError as exc:
         QMessageBox.critical(None, "foto", str(exc))
-        sys.exit(1)
-
-    # Guardia transitoria (ADR 0010, paso 2): la UI multi-ubicación llega en
-    # el paso 4; el banner y los placeholders la retiran.
-    if len(locations) > 1:
-        QMessageBox.critical(
-            None,
-            "foto",
-            "Guardia transitoria (ADR 0010): la interfaz multi-ubicación "
-            "llega en el paso 4; declara una sola ubicación en "
-            "'[[library.locations]]' por ahora.",
-        )
         sys.exit(1)
 
     if not locations:

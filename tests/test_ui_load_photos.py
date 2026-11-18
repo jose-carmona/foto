@@ -12,7 +12,7 @@ import pytest
 
 from foto.core.geocoding import Place, PlaceRecord
 from foto.storage.catalog import Catalog
-from foto.storage.library import ensure_library
+from foto.storage.config import Location
 from foto.ui.app import load_photos
 from tests.conftest import write_image
 
@@ -20,10 +20,18 @@ NOW = "2026-10-30T12:00:00+00:00"
 
 
 def _seed_catalog(root, photo_hash: str) -> None:
-    catalog = Catalog.open(root / ".foto" / "catalog.sqlite")
+    (root / ".foto").mkdir(parents=True, exist_ok=True)
+    declared = (Location("default", root, "fast"),)
+    catalog = Catalog.open(
+        root / ".foto" / "catalog.sqlite", declared_locations=declared
+    )
     try:
+        location_id = catalog.insert_named_location(
+            name="default", path=root, tier="fast", now=NOW
+        )
         catalog.insert_photo(photo_hash, ".jpg", "JPEG", NOW)
-        catalog.insert_location(
+        catalog.insert_file(
+            location_id=location_id,
             rel_path="2024/una.jpg",
             photo_hash=photo_hash,
             size=5,
@@ -40,12 +48,16 @@ def _seed_catalog(root, photo_hash: str) -> None:
 def test_ui_loads_the_resolved_place_fields(tmp_path):
     root = tmp_path / "biblioteca"
     write_image(root / "2024" / "una.jpg", b"visibles")
-    ensure_library(root)
+    (root / ".foto").mkdir()
     photo_hash = "sha256:" + "d" * 64
     catalog = Catalog.open(root / ".foto" / "catalog.sqlite")
     try:
+        location_id = catalog.insert_named_location(
+            name="default", path=root, tier="fast", now=NOW
+        )
         catalog.insert_photo(photo_hash, ".jpg", "JPEG", NOW)
-        catalog.insert_location(
+        catalog.insert_file(
+            location_id=location_id,
             rel_path="2024/una.jpg",
             photo_hash=photo_hash,
             size=5,
@@ -88,7 +100,6 @@ def test_ui_loads_the_resolved_place_fields(tmp_path):
 def test_ui_loads_photos_from_an_existing_catalog(tmp_path):
     root = tmp_path / "biblioteca"
     write_image(root / "2024" / "una.jpg", b"visibles")
-    ensure_library(root)
     _seed_catalog(root, "sha256:" + "d" * 64)
 
     photos = load_photos(root)
@@ -101,7 +112,6 @@ def test_ui_loads_photos_from_an_existing_catalog(tmp_path):
 def test_ui_missing_catalog_raises_without_creating_a_file(tmp_path):
     root = tmp_path / "biblioteca"
     root.mkdir()
-    ensure_library(root)
     catalog_path = root / ".foto" / "catalog.sqlite"
 
     with pytest.raises(FileNotFoundError, match="foto-index"):
@@ -110,20 +120,10 @@ def test_ui_missing_catalog_raises_without_creating_a_file(tmp_path):
     assert not catalog_path.exists()
 
 
-def test_ui_without_descriptor_asks_to_run_the_indexer(tmp_path):
-    root = tmp_path / "biblioteca"
-    root.mkdir()
-
-    with pytest.raises(RuntimeError, match="foto-index"):
-        load_photos(root)
-
-    assert not (root / ".foto").exists()
-
-
 def test_ui_does_not_migrate_newer_schemas(tmp_path):
     root = tmp_path / "biblioteca"
     root.mkdir()
-    ensure_library(root)
+    (root / ".foto").mkdir()
     catalog_path = root / ".foto" / "catalog.sqlite"
     connection = sqlite3.connect(catalog_path)
     connection.execute("PRAGMA user_version = 999")
@@ -138,22 +138,22 @@ def test_ui_does_not_migrate_newer_schemas(tmp_path):
 
 
 # ----------------------------------------------------------------------
-# Validación del descriptor al abrir desde la UI (C04)
+# Guard del catálogo al abrir desde la UI (T3.7, ADR 0010 Decisión C)
 # ----------------------------------------------------------------------
-def test_ui_requires_descriptor_before_opening_the_catalog(tmp_path):
+def test_ui_requires_a_migrated_catalog_before_opening_it(tmp_path):
+    """Un catálogo sin migrar no se toca desde la UI: error pidiendo foto-index."""
     root = tmp_path / "biblioteca"
     root.mkdir()
     catalog_path = root / ".foto" / "catalog.sqlite"
     catalog_path.parent.mkdir()
     connection = sqlite3.connect(catalog_path)
-    connection.execute("PRAGMA user_version = 1")
+    connection.execute("PRAGMA user_version = 0")
     connection.close()
 
     with pytest.raises(RuntimeError, match="foto-index"):
         load_photos(root)
 
-    # No se creó el descriptor y el catálogo no se tocó.
-    assert not (root / ".foto" / "library.toml").exists()
+    # El catálogo no se creó ni se migró.
     connection = sqlite3.connect(catalog_path)
     tables = connection.execute(
         "SELECT count(*) FROM sqlite_master WHERE type = 'table'"
@@ -162,54 +162,18 @@ def test_ui_requires_descriptor_before_opening_the_catalog(tmp_path):
     assert tables == 0
 
 
-def test_ui_rejects_corrupt_descriptor(tmp_path):
+def test_ui_ignores_a_legacy_descriptor_orphan(tmp_path):
+    """Un ``library.toml`` huérfano se ignora: no se lee ni se borra."""
     root = tmp_path / "biblioteca"
     root.mkdir()
     (root / ".foto").mkdir()
-    (root / ".foto" / "library.toml").write_text("version = [", encoding="utf-8")
+    legacy_text = 'version = 1\nid = "3f9c1b62-8a44-4f0e-9d1a-2c7b5e0f4a11"\n'
+    (root / ".foto" / "library.toml").write_text(legacy_text, encoding="utf-8")
+    _seed_catalog(root, "sha256:" + "d" * 64)
 
-    with pytest.raises(RuntimeError, match="TOML"):
-        load_photos(root)
+    photos = load_photos(root)
 
-
-def test_ui_rejects_future_descriptor_version(tmp_path):
-    root = tmp_path / "biblioteca"
-    root.mkdir()
-    (root / ".foto").mkdir()
-    (root / ".foto" / "library.toml").write_text(
-        'version = 99\nid = "3f9c1b62-8a44-4f0e-9d1a-2c7b5e0f4a11"\n',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(RuntimeError, match="más nueva"):
-        load_photos(root)
-
-
-def test_ui_rejects_descriptor_with_invalid_uuid(tmp_path):
-    root = tmp_path / "biblioteca"
-    root.mkdir()
-    (root / ".foto").mkdir()
-    (root / ".foto" / "library.toml").write_text(
-        'version = 1\nid = "no-es-un-uuid"\n',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(RuntimeError, match="UUID"):
-        load_photos(root)
-
-
-def test_ui_rejects_descriptor_with_future_version_unmigrated_catalog(tmp_path):
-    root = tmp_path / "biblioteca"
-    root.mkdir()
-    (root / ".foto").mkdir()
-    (root / ".foto" / "library.toml").write_text(
-        'version = 99\nid = "3f9c1b62-8a44-4f0e-9d1a-2c7b5e0f4a11"\n',
-        encoding="utf-8",
-    )
-    catalog_path = root / ".foto" / "catalog.sqlite"
-    connection = sqlite3.connect(catalog_path)
-    connection.execute("PRAGMA user_version = 999")
-    connection.close()
-
-    with pytest.raises(RuntimeError, match="más nueva"):
-        load_photos(root)
+    assert len(photos) == 1
+    assert (root / ".foto" / "library.toml").read_text(
+        encoding="utf-8"
+    ) == legacy_text

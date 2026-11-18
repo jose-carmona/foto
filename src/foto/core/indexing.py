@@ -5,6 +5,12 @@ reconciliación) y ``geocode`` (geocodificación inversa de las fotos con GPS).
 Cada fase registra su estado, sus contadores y su motivo en el historial de la
 pasada y el resumen; el servicio de geocodificación se inyecta y no conoce
 HTTP desde aquí.
+
+Multi-ubicación (ADR 0010): al arrancar, y dentro del lock del indexador, la
+pasada sincroniza la declaración de ``[[library.locations]]`` con la tabla
+``locations`` del catálogo (``storage/sync.py``) y después recorre **solo las
+ubicaciones declaradas y disponibles**. Una ubicación ausente (USB
+desmontado) avisa y se degrada: sus filas no se tocan y la pasada no falla.
 """
 
 from __future__ import annotations
@@ -12,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,13 +28,21 @@ from foto.core.errors import (
     GeocodingResponseError,
     HashError,
     IndexingError,
-    LibraryError,
 )
 from foto.core.geocoding import REVERSE_ZOOM, Geocoder, cell_for
 from foto.core.hashing import Hasher, Sha256Hasher
 from foto.core.metadata import ExtractionOutcome, MetadataExtractor
-from foto.core.scanner import FileSignature, LibraryScanner, ScanIssue
-from foto.storage.catalog import Catalog, LocationRow
+from foto.core.scanner import (
+    FileSignature,
+    LibraryScanner,
+    ScanIssue,
+    apple_photos_scan_policy,
+    is_apple_photos_library,
+)
+from foto.storage.availability import AVAILABLE, availability_state
+from foto.storage.catalog import Catalog, FileRow, NamedLocationRow
+from foto.storage.config import Location
+from foto.storage.sync import SyncReport, sync_locations
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +125,9 @@ class IndexingSummary:
     pruned_photos: int = 0
     duration_seconds: float = 0.0
     partial_reason: str | None = None
+    locations_scanned: tuple[str, ...] = ()
+    locations_unavailable: tuple[str, ...] = ()
+    locations_sync: SyncReport = field(default_factory=SyncReport)
     scan_phase: PhaseResult = field(default_factory=PhaseResult)
     geocode: GeocodePhaseResult = field(default_factory=GeocodePhaseResult)
 
@@ -127,6 +144,11 @@ class IndexingSummary:
                 "duplicate_photos": self.duplicate_photos,
                 "metadata_pending": self.metadata_pending,
                 "place_pending": self.place_pending,
+            },
+            "locations": {
+                **self.locations_sync.to_dict(),
+                "scanned": list(self.locations_scanned),
+                "unavailable": list(self.locations_unavailable),
             },
             "phases": {
                 "scan": {
@@ -183,22 +205,26 @@ def _stat_signature(path) -> FileSignature:
 
 
 class Indexer:
-    """Ejecuta una pasada incremental o completa sobre una biblioteca.
+    """Ejecuta una pasada incremental o completa sobre las ubicaciones.
 
     La pasada es un pipeline de fases: cada fase se ejecuta solo si la pasada
     llegó a ella sin error fatal, y todas comparten lock, catálogo y resumen.
+    ADR 0010: el ``Indexer`` recibe las ubicaciones **declaradas en la
+    config**; al arrancar sincroniza la declaración con el catálogo y luego
+    recorre solo las disponibles. El lock lo toma el llamador: la
+    sincronización corre dentro de él, antes de las fases.
     """
 
     def __init__(
         self,
         catalog: Catalog,
-        root,
+        locations: Sequence[Location],
         *,
         options: IndexingOptions,
         hasher: Hasher | None = None,
         extractor: MetadataExtractor | None = None,
         geocoder: Geocoder | None = None,
-        scanner: LibraryScanner | Callable[..., LibraryScanner] | None = None,
+        scanner: Callable[[Path], LibraryScanner] | None = None,
         now: Callable[[], datetime] = _utcnow,
         batch_size: int = DEFAULT_BATCH_SIZE,
         metadata_batch_size: int = DEFAULT_METADATA_BATCH_SIZE,
@@ -208,26 +234,32 @@ class Indexer:
             unknown = ", ".join(sorted(options.skip - set(INDEXING_PHASES)))
             raise IndexingError(f"Se desconoce la fase a omitir: {unknown}")
         self.catalog = catalog
-        self.root = root
+        self.locations = tuple(locations)
         self.options = options
         self.hasher = hasher or Sha256Hasher()
         self.extractor = extractor
         self.geocoder = geocoder
-        # ADR 0009: scanner o factoría inyectable (misma pieza que Hasher,
-        # MetadataExtractor y Geocoder). Sin él, el scanner de siempre.
+        # Factoría de scanner inyectable (misma pieza que Hasher,
+        # MetadataExtractor y Geocoder). Sin ella, el Indexer aplica la
+        # política por ubicación mirando la raíz (Apple Photos, ADR 0009).
         self.scanner = scanner
         self._now = now
         self.batch_size = max(1, batch_size)
         self.metadata_batch_size = max(1, metadata_batch_size)
         self.geocode_batch_size = max(1, geocode_batch_size)
+        self._incomplete_scans: list[str] = []
+        self._scanned_location_ids: list[int] = []
 
     # ------------------------------------------------------------------
     # Pasada
     # ------------------------------------------------------------------
     def run(self) -> IndexingSummary:
         """Ejecuta el pipeline de fases y devuelve su resumen."""
-        if not self.root.is_dir():
-            raise LibraryError("La raíz de la biblioteca no existe o no es un directorio")
+        if not self.locations:
+            raise IndexingError(
+                "No hay ubicaciones declaradas: decláralas en "
+                "'[[library.locations]]' de config.toml"
+            )
         if self.options.prune_after_days < 0:
             raise IndexingError("--prune-after no puede ser negativo")
 
@@ -242,9 +274,17 @@ class Indexer:
         self.catalog.mark_interrupted_runs(started_at)
         run_id = self.catalog.start_run(self.options.mode, started_at)
 
-        self._scan_complete = True
+        self._incomplete_scans = []
+        self._scanned_location_ids = []
         completed: set[str] = set()
         try:
+            # Sincronización config ↔ catálogo (ADR 0010, Decisión 3):
+            # dentro del lock del llamador y antes de las fases. Con
+            # --dry-run corre sobre la copia en memoria del catálogo, así
+            # que el diff se calcula sin escribir en disco.
+            summary.locations_sync = sync_locations(
+                self.catalog, self.locations, self._now()
+            )
             interrupted = False
             for phase in INDEXING_PHASES:
                 if interrupted:
@@ -336,29 +376,57 @@ class Indexer:
     def _run_scan_phase(self, summary: IndexingSummary, run_id: int) -> None:
         """Lanza la fase ``scan``: recorrido, metadatos y reconciliación.
 
-        Un recorrido parcial o con errores de ficheros no es fatal: la fase
-        queda ``partial`` y el pipeline continúa. Solo una excepción (raíz
-        ausente, catálogo, disco…) aborta la pasada.
+        Recorre **solo las ubicaciones declaradas y disponibles** (ADR 0010,
+        Decisión 5). Una ubicación ausente avisa y se degrada: sus filas no
+        se tocan y la pasada no falla. Un recorrido parcial o con errores de
+        ficheros no es fatal: la fase queda ``partial`` y el pipeline
+        continúa. Solo una excepción (catálogo, disco…) aborta la pasada.
         """
         self.catalog.prepare_seen()
-        self._scan(summary)
-        if self._scan_complete:
-            summary.missing = self.catalog.mark_missing(_iso(self._now()))
-            self.catalog.commit()
-        else:
-            summary.scan_phase.reason = (
-                "El recorrido fue parcial; no se marcaron ausencias para no "
-                "confundir un error de acceso con fotos borradas"
-            )
-            logger.warning(summary.scan_phase.reason)
+        for declared in self.locations:
+            record = self.catalog.get_named_location(declared.name)
+            if record is None:
+                raise IndexingError(
+                    f"La ubicación '{declared.name}' no está registrada en el "
+                    "catálogo; ejecuta foto-index para sincronizarla"
+                )
+            if record.state != "active":
+                raise IndexingError(
+                    f"La ubicación '{declared.name}' está dada de baja en el "
+                    "catálogo pero sigue declarada en la config; ejecuta "
+                    "foto-index para sincronizarla"
+                )
+            if availability_state(declared.path) != AVAILABLE:
+                summary.locations_unavailable += (declared.name,)
+                logger.warning(
+                    "La ubicación «%s» no está disponible (%s): sus fotos no "
+                    "se tocan y no se marcan ausencias",
+                    declared.name,
+                    declared.path,
+                )
+                continue
+            if is_apple_photos_library(declared.path):
+                logger.info(
+                    "Ubicación «%s»: política de escaneo de Apple Photos "
+                    "aplicada (solo originals/; variantes editadas y "
+                    "derivados quedan fuera)",
+                    declared.name,
+                )
+            self._scan_location(summary, record)
+
         if self.extractor is not None:
             self._extract_metadata(summary)
+
         # prune: no es una fase propia, es trabajo opcional del scan.
         if self.options.prune:
             (
                 summary.pruned_locations,
                 summary.pruned_photos,
-            ) = self.catalog.prune(self._now(), self.options.prune_after_days)
+            ) = self.catalog.prune(
+                self._now(),
+                self.options.prune_after_days,
+                tuple(self._scanned_location_ids),
+            )
         summary.scan_phase.status = "ok" if self._scan_phase_ok(summary) else "partial"
         self.catalog.record_phase(
             run_id,
@@ -369,10 +437,16 @@ class Indexer:
         )
 
     def _scan_phase_ok(self, summary: IndexingSummary) -> bool:
-        return self._scan_complete and summary.errors == 0
+        return not self._incomplete_scans and summary.errors == 0
 
-    def _scan(self, summary: IndexingSummary) -> None:
-        scanner = self._make_scanner()
+    def _scan_location(self, summary: IndexingSummary, record: NamedLocationRow) -> None:
+        """Recorre una ubicación disponible y reconcilia sus ausencias.
+
+        Devuelve sin marcar nada si el recorrido fue parcial: la
+        reconciliación de ausencias solo se aplica a recorridos completos,
+        y solo de esta ubicación (el estado ``present`` es por ubicación).
+        """
+        scanner = self._make_scanner(record.path)
         seen_buffer: list[str] = []
 
         for event in scanner.scan():
@@ -381,63 +455,80 @@ class Indexer:
                 if event.kind == "file":
                     summary.scanned += 1
                     seen_buffer.append(event.rel_path)
-                seen_buffer = self._flush_seen(seen_buffer)
+                seen_buffer = self._flush_seen(record.id, seen_buffer)
                 continue
 
             summary.scanned += 1
-            self._process_file(event, summary)
+            self._process_file(event, summary, record)
             seen_buffer.append(event.rel_path)
-            seen_buffer = self._flush_seen(seen_buffer)
+            seen_buffer = self._flush_seen(record.id, seen_buffer)
 
-        self._flush_seen(seen_buffer, force=True)
+        self._flush_seen(record.id, seen_buffer, force=True)
         self.catalog.commit()
-        self._scan_complete = scanner.complete
-        if not scanner.complete:
+        self._scanned_location_ids.append(record.id)
+        summary.locations_scanned += (record.name,)
+        self.catalog.mark_location_scanned(record.id, _iso(self._now()))
+        self.catalog.commit()
+
+        if scanner.complete:
+            summary.missing += self.catalog.mark_missing_files(
+                record.id, _iso(self._now())
+            )
+            self.catalog.commit()
+        else:
+            self._incomplete_scans.append(record.name)
+            reason = (
+                f"El recorrido de «{record.name}» fue parcial "
+                f"({scanner.directory_errors} directorios fallaron); no se "
+                "marcaron sus ausencias para no confundir un error de "
+                "acceso con fotos borradas"
+            )
+            if summary.scan_phase.reason is None:
+                summary.scan_phase.reason = reason
             logger.warning(
-                "El recorrido no fue completo: %s directorios fallaron",
+                "El recorrido de «%s» no fue completo: %s directorios fallaron",
+                record.name,
                 scanner.directory_errors,
             )
 
-    def _flush_seen(self, buffer: list[str], *, force: bool = False) -> list[str]:
+    def _flush_seen(
+        self, location_id: int, buffer: list[str], *, force: bool = False
+    ) -> list[str]:
         if not buffer:
             return buffer
         if not force and len(buffer) < self.batch_size:
             return buffer
-        self.catalog.add_seen(buffer)
+        self.catalog.add_seen(location_id, buffer)
         self.catalog.commit()
         return []
 
-    def _make_scanner(self) -> LibraryScanner:
-        """El scanner de la pasada: inyectado o el de siempre (ADR 0009).
+    def _make_scanner(self, root: Path) -> LibraryScanner:
+        """El scanner de una ubicación: inyectado o el de siempre (ADR 0009).
 
-        Una instancia inyectada se reinicia para ser reutilizable entre
-        pasadas; una factoría se construye contra la raíz del Indexer. Si la
-        política del scanner es incompatible con la raíz (raíz relativa
+        La política Apple se aplica **por ubicación** mirando la raíz
+        (ADR 0010, Decisión 9): el resto de ubicaciones recorren su raíz
+        entera. Si la política es incompatible con la raíz (raíz relativa
         incluida ausente), ``LibraryScanner.scan`` lo eleva como
         ``LibraryError`` antes de procesar ningún fichero.
         """
         source = self.scanner
-        if source is None:
-            return LibraryScanner(self.root)
-        if isinstance(source, LibraryScanner):
-            if Path(source.root) != Path(self.root):
-                raise IndexingError(
-                    "El scanner inyectado está construido sobre otra raíz"
-                )
-            source.complete = True
-            source.directory_errors = 0
-            source.file_errors = 0
-            return source
-        return source(self.root)
+        if source is not None:
+            return source(root)
+        policy = (
+            apple_photos_scan_policy() if is_apple_photos_library(root) else None
+        )
+        return LibraryScanner(root, policy=policy)
 
 
-    def _process_file(self, scanned, summary: IndexingSummary) -> None:
+    def _process_file(
+        self, scanned, summary: IndexingSummary, record: NamedLocationRow
+    ) -> None:
         now = _iso(self._now())
         signature = scanned.signature
-        existing = self.catalog.get_location(scanned.rel_path)
+        existing = self.catalog.get_file(record.id, scanned.rel_path)
 
         if existing is None:
-            self._index_new(scanned, summary, now)
+            self._index_new(scanned, summary, record, now)
             return
 
         same_signature = self._same_signature(existing, signature)
@@ -445,7 +536,7 @@ class Indexer:
             if existing.status == "present":
                 summary.unchanged += 1
             else:
-                self.catalog.mark_location_present(scanned.rel_path, now)
+                self.catalog.mark_file_present(record.id, scanned.rel_path, now)
                 logger.info("La foto reaparece en %s", scanned.rel_path)
                 summary.unchanged += 1
             return
@@ -461,7 +552,8 @@ class Indexer:
         summary.hashed_bytes += hashed_bytes
         summary.hashed_files += 1
         if photo_hash == existing.photo_hash:
-            self.catalog.update_location_signature(
+            self.catalog.update_file_signature(
+                location_id=record.id,
                 rel_path=scanned.rel_path,
                 photo_hash=photo_hash,
                 size=fresh.size,
@@ -479,7 +571,8 @@ class Indexer:
             None,
             now,
         )
-        self.catalog.update_location_signature(
+        self.catalog.update_file_signature(
+            location_id=record.id,
             rel_path=scanned.rel_path,
             photo_hash=photo_hash,
             size=fresh.size,
@@ -491,7 +584,9 @@ class Indexer:
         summary.modified += 1
         logger.info("Contenido modificado en %s", scanned.rel_path)
 
-    def _index_new(self, scanned, summary: IndexingSummary, now: str) -> None:
+    def _index_new(
+        self, scanned, summary: IndexingSummary, record: NamedLocationRow, now: str
+    ) -> None:
         try:
             photo_hash, fresh, hashed_bytes = self._stable_hash(scanned.path)
         except (HashError, OSError) as exc:
@@ -507,7 +602,8 @@ class Indexer:
             None,
             now,
         )
-        self.catalog.insert_location(
+        self.catalog.insert_file(
+            location_id=record.id,
             rel_path=scanned.rel_path,
             photo_hash=photo_hash,
             size=fresh.size,
@@ -530,7 +626,7 @@ class Indexer:
         raise HashError("El fichero cambió durante la lectura")
 
     @staticmethod
-    def _same_signature(existing: LocationRow, signature: FileSignature) -> bool:
+    def _same_signature(existing: FileRow, signature: FileSignature) -> bool:
         return (
             existing.size == signature.size
             and existing.mtime_ns == signature.mtime_ns
@@ -549,7 +645,9 @@ class Indexer:
             if not targets:
                 break
 
-            paths = [self.root / target.rel_path for target in targets]
+            paths = [
+                target.location_path / target.rel_path for target in targets
+            ]
             logger.info(
                 "Extrayendo metadatos de %d ficheros (desde %s)",
                 len(targets),

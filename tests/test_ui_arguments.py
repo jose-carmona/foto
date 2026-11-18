@@ -12,7 +12,6 @@ import pytest
 from foto.core.errors import LibraryError
 from foto.storage.catalog import Catalog
 from foto.storage.config import ConfigError, Location
-from foto.storage.library import ensure_library
 from foto.ui.app import (
     _build_ui_parser,
     _resolve_before_dialog,
@@ -178,11 +177,18 @@ def test_ui_load_photos_reads_the_external_metadata_dir(tmp_path, monkeypatch):
     write_image(root / "2026" / "una.jpg", b"externa")
     external = tmp_path / "metainfo-externa"
 
-    assert ensure_library(root, external).created is True
-    catalog = Catalog.open(external / "catalog.sqlite")
+    external.mkdir()
+    declared = (Location("default", root, "fast"),)
+    catalog = Catalog.open(
+        external / "catalog.sqlite", declared_locations=declared
+    )
     try:
+        location_id = catalog.insert_named_location(
+            name="default", path=root, tier="fast", now="2026-11-13T00:00:00"
+        )
         catalog.insert_photo("sha256:" + "a" * 64, ".jpg", "JPEG", "2026-11-13T00:00:00")
-        catalog.insert_location(
+        catalog.insert_file(
+            location_id=location_id,
             rel_path="2026/una.jpg",
             photo_hash="sha256:" + "a" * 64,
             size=6,

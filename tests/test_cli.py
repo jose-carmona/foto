@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from foto.indexer.cli import main
-from foto.storage.library import ensure_library
+from foto.storage.catalog import Catalog
 from foto.storage.lock import IndexerLock
 from tests.conftest import read_photos, write_image, write_v1_config
 
@@ -56,8 +56,8 @@ def test_cli_indexes_and_emits_valid_json(tmp_path, capsys):
     assert summary["phases"]["scan"]["metadata_extracted"] == 0
     assert summary["phases"]["geocode"]["status"] == "ok"
     assert summary["phases"]["geocode"]["candidates"] == 0
-    assert (root / ".foto" / "library.toml").is_file()
     assert (root / ".foto" / "catalog.sqlite").is_file()
+    assert not (root / ".foto" / "library.toml").exists()
     assert next(iter(read_photos(root).values()))["metadata_status"] == "pending"
 
 
@@ -78,22 +78,126 @@ def test_cli_indexes_a_v2_single_location(tmp_path, capsys):
     assert (root / ".foto" / "catalog.sqlite").is_file()
 
 
-def test_cli_multi_location_guard_exits_2(tmp_path, capsys):
-    """Guardia transitoria (paso 2): la indexación multi-ubicación llega en el paso 3."""
+def test_cli_multi_location_indexes_available_and_reports_unavailable(
+    tmp_path, capsys
+):
+    """Dos ubicaciones: se indexa la disponible y la ausente se avisa (T3.3)."""
+    ssd = tmp_path / "ssd"
+    usb = tmp_path / "usb"
+    write_image(ssd / "una.jpg", b"ssd")
+    write_image(usb / "dos.jpg", b"usb")
     config = tmp_path / "config.toml"
     config.write_text(
         "version = 2\n\n[[library.locations]]\nname = \"ssd\"\n"
-        f"path = \"{(tmp_path / 'ssd').as_posix()}\"\ntier = \"fast\"\n"
+        f"path = \"{ssd.as_posix()}\"\ntier = \"fast\"\n"
         "\n[[library.locations]]\nname = \"usb\"\n"
-        f"path = \"{(tmp_path / 'usb').as_posix()}\"\ntier = \"archive\"\n",
+        f"path = \"{(tmp_path / 'desmontado').as_posix()}\"\ntier = \"archive\"\n",
         encoding="utf-8",
     )
 
-    code = main(["--config", str(config), "--json"])
+    code = main(["--config", str(config), "--metadata", str(tmp_path / "meta"), "--json"])
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
 
-    assert code == 2
-    error = capsys.readouterr().err
-    assert "multi-ubicación llega en el paso 3" in error
+    assert code == 0
+    assert summary["status"] == "ok"
+    assert summary["locations"]["added"] == ["ssd", "usb"]
+    assert summary["locations"]["scanned"] == ["ssd"]
+    assert summary["locations"]["unavailable"] == ["usb"]
+    assert summary["totals"]["photos"] == 1
+
+
+def _multi_location_config(tmp_path: Path, *, with_usb: bool = True) -> tuple[Path, Path]:
+    """Config v2 de dos ubicaciones (el USB apunta a un punto ausente)."""
+    ssd = tmp_path / "ssd"
+    write_image(ssd / "una.jpg", b"ssd")
+    usb = tmp_path / "usb"
+    write_image(usb / "dos.jpg", b"usb")
+    config = tmp_path / "config.toml"
+    usb_path = usb if with_usb else tmp_path / "desmontado"
+    config.write_text(
+        "version = 2\n\n[[library.locations]]\nname = \"ssd\"\n"
+        f"path = \"{ssd.as_posix()}\"\ntier = \"fast\"\n"
+        "\n[[library.locations]]\nname = \"usb\"\n"
+        f"path = \"{usb_path.as_posix()}\"\ntier = \"archive\"\n",
+        encoding="utf-8",
+    )
+    return config, usb
+
+
+def test_cli_sync_reports_a_removal_and_never_deletes_files(tmp_path, capsys):
+    """Quitar una ubicación de la config: baja en el catálogo, ficheros intactos."""
+    config, usb = _multi_location_config(tmp_path)
+    main(["--config", str(config), "--metadata", str(tmp_path / "meta"), "--json"])
+    capsys.readouterr()
+
+    # Reescribir la config sin el USB y reindexar: el fichero sigue en el USB.
+    usb_bytes = (usb / "dos.jpg").read_bytes()
+    (tmp_path / "usb-de-paso").mkdir()  # el USB «se desmonta» de verdad
+    usb.rename(tmp_path / "usb-de-paso" / "usb")
+    config.write_text(
+        "version = 2\n\n[[library.locations]]\nname = \"ssd\"\n"
+        f"path = \"{(tmp_path / 'ssd').as_posix()}\"\ntier = \"fast\"\n",
+        encoding="utf-8",
+    )
+
+    code = main(["--config", str(config), "--metadata", str(tmp_path / "meta"), "--json"])
+    summary = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert summary["locations"]["removed"] == ["usb"]
+    assert summary["locations"]["unavailable"] == []
+    catalog = Catalog.open(tmp_path / "meta" / "catalog.sqlite")
+    try:
+        states = {
+            str(row["name"]): str(row["state"])
+            for row in catalog._conn.execute(
+                "SELECT name, state FROM locations"
+            )
+        }
+        assert states == {"ssd": "active", "usb": "deleted"}
+        rows = {
+            str(row["rel_path"]): str(row["status"])
+            for row in catalog._conn.execute("SELECT rel_path, status FROM files")
+        }
+        assert rows["dos.jpg"] == "deleted"
+    finally:
+        catalog.close()
+    # Regla 1 del AGENT.md: el fichero del USB no se ha borrado.
+    assert (tmp_path / "usb-de-paso" / "usb" / "dos.jpg").read_bytes() == usb_bytes
+
+
+def test_cli_dry_run_reports_the_sync_diff_without_writing_it(tmp_path, capsys):
+    """--dry-run calcula el diff de sincronización sin tocar el catálogo real."""
+    config, _usb = _multi_location_config(tmp_path)
+    main(["--config", str(config), "--metadata", str(tmp_path / "meta"), "--json"])
+    capsys.readouterr()
+
+    config.write_text(
+        "version = 2\n\n[[library.locations]]\nname = \"ssd\"\n"
+        f"path = \"{(tmp_path / 'ssd').as_posix()}\"\ntier = \"fast\"\n",
+        encoding="utf-8",
+    )
+    code = main(
+        ["--config", str(config), "--metadata", str(tmp_path / "meta"), "--dry-run", "--json"]
+    )
+    summary = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert summary["dry_run"] is True
+    assert summary["locations"]["removed"] == ["usb"]
+
+    catalog = Catalog.open(tmp_path / "meta" / "catalog.sqlite")
+    try:
+        states = {
+            str(row["name"]): str(row["state"])
+            for row in catalog._conn.execute(
+                "SELECT name, state FROM locations"
+            )
+        }
+        assert states == {"ssd": "active", "usb": "active"}
+    finally:
+        catalog.close()
 
 
 def test_cli_text_summary_shows_work_done(tmp_path, capsys):
@@ -117,7 +221,7 @@ def test_cli_missing_root_exits_2_and_creates_nothing(tmp_path, capsys):
 
     assert code == 2
     assert not root.exists()
-    assert "no existe" in capsys.readouterr().err
+    assert "no está disponible" in capsys.readouterr().err
 
 
 def test_cli_without_declared_locations_exits_2(tmp_path, monkeypatch, capsys):
@@ -163,7 +267,7 @@ def test_cli_foto_library_environment_is_an_explicit_error(tmp_path, monkeypatch
 def test_cli_lock_busy_exits_3(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     root.mkdir()
-    ensure_library(root)
+    (root / ".foto").mkdir()
     lock = IndexerLock(root / ".foto" / "index.lock")
     lock.acquire()
     try:
@@ -180,7 +284,7 @@ def test_cli_lock_busy_leaves_pending_schema_untouched(tmp_path, capsys):
     """Un lock ocupado no debe configurar ni migrar el catálogo (I02)."""
     root = tmp_path / "biblioteca"
     root.mkdir()
-    ensure_library(root)
+    (root / ".foto").mkdir()
     catalog_path = root / ".foto" / "catalog.sqlite"
     connection = sqlite3.connect(catalog_path)
     connection.execute("PRAGMA user_version = 0")
@@ -214,7 +318,7 @@ def test_cli_lock_busy_leaves_pending_schema_untouched(tmp_path, capsys):
 def test_cli_lock_busy_does_not_create_the_catalog(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     root.mkdir()
-    ensure_library(root)
+    (root / ".foto").mkdir()
     catalog_path = root / ".foto" / "catalog.sqlite"
 
     lock = IndexerLock(root / ".foto" / "index.lock")
@@ -234,7 +338,6 @@ def test_cli_partial_scan_exits_1(tmp_path, monkeypatch, capsys):
     write_image(root / "visible.jpg", b"visible")
     blocked = root / "bloqueado"
     write_image(blocked / "oculta.jpg", b"oculta")
-    ensure_library(root)
 
     scanner_module = importlib.import_module("foto.core.scanner")
     real_scandir = os.scandir
@@ -283,7 +386,7 @@ def test_cli_quiet_suppresses_summary(tmp_path, capsys):
 def test_cli_newer_schema_exits_2(tmp_path, capsys):
     root = tmp_path / "biblioteca"
     root.mkdir()
-    ensure_library(root)
+    (root / ".foto").mkdir()
     catalog_path = root / ".foto" / "catalog.sqlite"
     connection = sqlite3.connect(catalog_path)
     connection.execute("PRAGMA user_version = 999")
@@ -466,7 +569,7 @@ class _StubGeocoder:
 # ----------------------------------------------------------------------
 # --metadata (ADR 0008, § 3.4)
 # ----------------------------------------------------------------------
-def test_cli_metadata_creates_descriptor_and_catalog_in_the_external_dir(
+def test_cli_metadata_creates_catalog_in_the_external_dir(
     tmp_path, monkeypatch, capsys
 ):
     monkeypatch.delenv("FOTO_METADATA", raising=False)
@@ -488,35 +591,28 @@ def test_cli_metadata_creates_descriptor_and_catalog_in_the_external_dir(
 
     assert code == 0
     assert json.loads(captured.out)["status"] == "ok"
-    assert (external / "library.toml").is_file()
     assert (external / "catalog.sqlite").is_file()
     assert (external / "index.lock").is_file()
     assert not (root / ".foto").exists()
-    # El descriptor creado registra la fototeca a la que pertenece.
-    text = (external / "library.toml").read_text(encoding="utf-8")
-    assert f'root = "{root}"' in text
+    # El descriptor ya no existe: nada lo crea (ADR 0010, Decisión C).
+    assert not (external / "library.toml").exists()
 
 
-def test_cli_metadata_adopts_a_legacy_descriptor_in_the_external_dir(
-    tmp_path, monkeypatch, capsys
-):
+def test_cli_metadata_ignores_a_legacy_descriptor(tmp_path, monkeypatch, capsys):
+    """Un ``library.toml`` huérfano se ignora: no se lee ni se borra (Decisión C)."""
     monkeypatch.delenv("FOTO_METADATA", raising=False)
     root = tmp_path / "biblioteca"
-    write_image(root / "foto.jpg", b"adopcion")
+    write_image(root / "foto.jpg", b"huerfano")
     external = tmp_path / "metainfo-externa"
     external.mkdir()
-    (external / "library.toml").write_text(
-        'version = 1\nid = "3f9c1b62-8a44-4f0e-9d1a-2c7b5e0f4a11"\n',
-        encoding="utf-8",
-    )
+    legacy_text = 'version = 1\nid = "3f9c1b62-8a44-4f0e-9d1a-2c7b5e0f4a11"\n'
+    (external / "library.toml").write_text(legacy_text, encoding="utf-8")
     config = write_v1_config(tmp_path / "config.toml", root)
 
     code = main(["--config", str(config), "--metadata", str(external), "--json"])
 
     assert code == 0
-    text = (external / "library.toml").read_text(encoding="utf-8")
-    assert f'root = "{root}"' in text
-    assert "3f9c1b62" in text
+    assert (external / "library.toml").read_text(encoding="utf-8") == legacy_text
     assert (external / "catalog.sqlite").is_file()
 
 

@@ -804,7 +804,7 @@ registrado como decisión del ADR.
 
 # Paso 3 — Catálogo v6, sincronización y indexado multi-ubicación (§ 3.3, § 3.4, § 3.5)
 
-- [ ] **T3.1 — Migración v5 → v6** (renombre `locations` → `files` o lo
+- [x] **T3.1 — Migración v5 → v6** (renombre `locations` → `files` o lo
   decidido en el ADR, tabla `locations` nueva con estado, filas existentes
   → `default`, error explícito v5 + config multi). Tests de migración
   sobre catálogos v5 reales de `tests/fixtures` o generados.
@@ -813,25 +813,63 @@ registrado como decisión del ADR.
   > config es v1. Test obligatorio: v5 + config v2 con una única ubicación
   > de nombre propio → filas heredadas a esa ubicación, sin baja
   > intermedia.
-- [ ] **T3.2 — Sincronización config ↔ catálogo** (§ 3.3): alta, cambio,
+  > Nota (2026-11-18): **completada**. `SCHEMA_VERSION = 6`: la tabla
+  > per-foto se renombra a `files` (reconstruida con clave compuesta y el
+  > estado `deleted`) y `locations` queda reservada para las ubicaciones
+  > con nombre. La migración exige la ubicación declarada única (su nombre
+  > real) solo si hay filas heredadas; con varias declaradas o con ninguna
+  > y filas, error antes de tocar nada. Tests en `tests/test_catalog_v6.py`
+  > sobre catálogos v5 reales (generados con el esquema v1 + columnas de
+  > lugar). `Catalog.open`/`open_dry_run` aceptan `declared_locations`.
+- [x] **T3.2 — Sincronización config ↔ catálogo** (§ 3.3): alta, cambio,
   baja (marca ubicación **y** fotos, no borra), reactivación, renombrado,
   dentro del lock y antes de escanear; idempotencia; `--dry-run`; bloque
   `locations` en `--json`. Tests de todos los casos límite de § 3.3.
-- [ ] **T3.3 — Scanner e `Indexer` por ubicación**: recorrido de cada raíz
+  > Nota (2026-11-18): **completada**. Módulo nuevo `storage/sync.py`
+  > (`sync_locations` + `SyncReport`): corre dentro de `Indexer.run` (el
+  > lock lo toma el llamador) antes de las fases; toda la operación es
+  > idempotente y determinista, con el diff en una única transacción. El
+  > bloque `locations` de `--json` lleva `added`, `removed`,
+  > `reactivated`, `path_changed` (cambio de `path` **o** `tier`),
+  > `scanned` y `unavailable`. Con `--dry-run` el diff se calcula sobre la
+  > copia en memoria del catálogo (nada en disco). Tests:
+  > `tests/test_catalog_sync.py` (alta/cambio/baja/reactivación/renombrado/
+  > idempotencia, la baja no borra ficheros) y los CLI de
+  > `tests/test_cli.py` (baja informada en `--json`, `--dry-run` sin
+  > escribir el diff).
+- [x] **T3.3 — Scanner e `Indexer` por ubicación**: recorrido de cada raíz
   declarada y disponible, filas `(location_id, rel_path)`, aviso y
   continuación si una ubicación falta (exit 0; `--json` lo reporta).
   Retirar la guardia transitoria de `foto-index`.
-- [ ] **T3.4 — Reglas de prune multi-ubicación** (§ 3.5): solo filas, nunca
+  > Nota (2026-11-18): **completada**. `Indexer(catalog, locations)`
+  > recibe las ubicaciones declaradas; `_scan_location` recorre cada raíz
+  > disponible con seen por `(location_id, rel_path)` y reconcilia
+  > ausencias **por ubicación** (solo recorridos completos). Una
+  > ubicación ausente avisa, queda en `locations.unavailable` y la salida
+  > sigue siendo 0. Guardia transitoria retirada de `foto-index`; la
+  > política Apple se aplica por ubicación mirando la raíz (ADR 0010,
+  > Decisión 9) y la validación de paquetes de la CLI pasa a ser por
+  > ubicación disponible. Tests en `tests/test_multi_location.py`.
+- [x] **T3.4 — Reglas de prune multi-ubicación** (§ 3.5): solo filas, nunca
   ficheros; ubicaciones verificadas presentes + ubicaciones `deleted`
   (ventana según el ADR); nunca filas de ubicaciones ausentes no
   escaneadas. Tests adversariales (USB «desmontado» simulado durante el
   prune; foto en dos ubicaciones, una de ellas dada de baja).
+  > Nota (2026-11-18): **completada**. `Catalog.prune` recibe los ids
+  > escaneados en esa ejecución: limpia (a) filas `missing` antiguas de
+  > ubicaciones verificadas presentes y (b) filas `deleted` de ubicaciones
+  > `deleted`, con la ventana `--prune-after` medida desde el `deleted_at`
+  > de la ubicación (misma gracia que las `missing`, Decisión 5). Jamás
+  > toca filas de ubicaciones declaradas no escaneadas, y nunca ficheros.
+  > Tests adversariales: prune con el USB desmontado (filas del USB
+  > intactas), baja + ventana 0 limpia filas deleted y borra en cascada la
+  > foto huérfana, ventana amplia mantiene las filas recuperables.
 - [ ] **T3.5 — Marcador de volumen `.foto-volume.toml`** (escritura en el
   primer indexado, validación de identidad, estado `mismatch`; caso Apple
   Photos según el ADR).
   > Nota (2026-11-17): retirada (§ 7.2): el marcador se descarta; no
   > existe el estado `mismatch` (solo `available`/`unavailable`, T4.1).
-- [ ] **T3.6 — Canonical por tier y rutas desde la BD** en
+- [x] **T3.6 — Canonical por tier y rutas desde la BD** en
   `load_from_catalog`: desempate `fast` > `archive`, paths absolutos por
   fila (join con `locations.path`), sin parámetro de raíz. Tests del
   desempate. Retirar la guardia transitoria de la UI.
@@ -839,7 +877,15 @@ registrado como decisión del ADR.
   > primario** (`fast` gana a `archive`) y el `rel_path` solo desempata
   > dentro del mismo tier. Test: foto con `rel_path` menor en `archive` y
   > mayor en `fast` → gana la `fast`.
-- [ ] **T3.7 — `library.toml`: coherencia multi-raíz** según lo decidido en
+  > Nota (2026-11-18): **completada**. `load_from_catalog(catalog)` pierde
+  > el parámetro de raíz: canónico = tier primero (`TIER_RANK` de
+  > `catalog.py`), `rel_path` solo desempata; las rutas absolutas salen
+  > del join `files.location_id` → `locations.path` y `other_locations`
+  > cualifica con el nombre de ubicación (`usb:ruta`). Las filas de
+  > ubicaciones `deleted` no se muestran. Guardia transitoria de la UI
+  > retirada (la UI ya consume el catálogo multi-ubicación). Tests del
+  > desempate y de rutas por fila en `tests/test_multi_location.py`.
+- [x] **T3.7 — `library.toml`: coherencia multi-raíz** según lo decidido en
   el ADR (`root` sustituido por la tabla o limitado a ubicación única).
   > Nota (2026-11-17): decisión del dueño — `library.toml` desaparece
   > (§ 7.2, Decisión C). La tarea pasa a retirar el descriptor y todo su
@@ -850,18 +896,52 @@ registrado como decisión del ADR.
   > descriptores ya presentes en `.foto/` se ignoran, no se borran. Los
   > tests de bootstrap (`tests/test_library_bootstrap.py`) se retiran o
   > adaptan al nuevo arranque.
-- [ ] **T3.8 — Smoke end-to-end multi-ubicación**: dos raíces de prueba,
+  > Nota (2026-11-18): **completada** (Decisión C). `storage/library.py`
+  > queda reducido a `foto_dir`/`thumbs_dir`: el descriptor, `ensure_library`,
+  > el lock de creación y el `id` desaparecen. `foto-index` crea el
+  > directorio de metainformación y abre el catálogo directamente (el
+  > lock de escritor único sigue como salvaguarda); con el default
+  > derivado de la única ubicación y esta ausente, error duro pidiendo
+  > montar el volumen o concretar `--metadata`. La UI apoya su guard en la
+  > existencia del catálogo («No hay catálogo. Ejecuta 'foto-index'»); los
+  > `library.toml` huérfanos se ignoran. `tests/test_library_bootstrap.py`
+  > retirado; su sustituto es la caracterización de arranque en
+  > `tests/test_current_behavior_v1.py` y los tests de la CLI (creación
+  > directa, descriptor huérfano ignorado, import que no crea nada ya de
+  > T2.6).
+- [x] **T3.8 — Smoke end-to-end multi-ubicación**: dos raíces de prueba,
   alta y baja en la config, indexado parcial con una «desmontada», prune
   seguro, export/import.
-- [ ] **T3.9 — Clave compuesta `(location_id, rel_path)` (D17).** Hoy
+  > Nota (2026-11-18): **completada**. Smoke automatizado
+  > (`tests/test_multi_location.py::test_smoke_two_roots_lifecycle_from_baja_to_reactivation`:
+  > alta, baja con prune seguro y reactivación con repuebla por escaneo)
+  > y smoke manual de la CLI: dos raíces con config v2, alta informada
+  > (`altas=2 (ssd, usb)`), reindexado sin cambios y bloque `locations` en
+  > `--json`. Export/import operan sobre el catálogo sin cambios (T2.6).
+- [x] **T3.9 — Clave compuesta `(location_id, rel_path)` (D17).** Hoy
   `locations.rel_path` es clave primaria; la tabla `files` de v6 exige
   clave compuesta, y `seen`, `mark_missing` y `get_location` pasan a
   trabajar con el par. Tests de un mismo `rel_path` en dos ubicaciones
   (deduplicación por hash intacta).
-- [ ] **T3.10 — Evaluación de estados disponible en el paso 3 (D14).**
+  > Nota (2026-11-18): **completada** con el esquema v6: PK
+  > `(location_id, rel_path)` en `files`, seen con la ubicación como parte
+  > y los métodos per-fila migrados a `get_file`/`insert_file`/
+  > `update_file_signature`/`mark_file_present`/`mark_missing_files`.
+  > Tests: mismo `rel_path` en dos ubicaciones convive (un hash = una foto,
+  > dos filas) y el par duplicado lo rechaza la PK.
+- [x] **T3.10 — Evaluación de estados disponible en el paso 3 (D14).**
   Subir la función pura de estados de T4.1 a este paso (o documentar la
   provisional de T3.3 y sustituirla en T4.1 sin duplicar lógica):
   `foto-index` la necesita «antes de escanear» (§ 3.6).
+  > Nota (2026-11-18): **completada**. Módulo nuevo
+  > `storage/availability.py`: `availability_state(path, *, checker)`
+  > pura e inyectable, exactamente dos estados (`AVAILABLE`/
+  > `UNAVAILABLE`, sin marcador de volumen); el `checker` inyectable es
+  > la abstracción que la Decisión 9 pide para un futuro backend remoto.
+  > `foto-index` la usa antes de escanear cada ubicación. T4.1 queda como
+  > consumo de la misma función desde la UI, sin duplicar lógica. Tests en
+  > `tests/test_multi_location.py` (función inyectable + tolerancia del
+  > indexado).
 
 # Paso 4 — Disponibilidad y tolerancia en la UI (§ 3.6, § 3.7)
 

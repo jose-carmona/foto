@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 from foto.core.errors import (
@@ -18,18 +18,13 @@ from foto.core.errors import (
     LockError,
 )
 from foto.core.indexing import INDEXING_PHASES, Indexer, IndexingOptions, IndexingSummary
-from foto.core.scanner import (
-    LibraryScanner,
-    apple_photos_scan_policy,
-    is_apple_photos_library,
-)
+from foto.core.scanner import is_apple_photos_library
 from foto.indexer.geonames import NominatimGeocoder, ReverseGeocoderConfig
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import ConfigError, load_config
 from foto.storage.exiftool import ExifToolExtractor
-from foto.storage.library import ensure_library
 from foto.storage.lock import LOCK_FILE_NAME, IndexerLock
-from foto.storage.resolver import resolve_locations, resolve_metadata_dir
+from foto.storage.resolver import ORIGIN_DEFAULT, resolve_locations, resolve_metadata_dir
 
 logger = logging.getLogger("foto.indexer")
 
@@ -37,6 +32,11 @@ EPILOG = """\
 ubicaciones de la fototeca (ADR 0010): se declaran solo en config.toml
   [[library.locations]] (version = 2) o [library].path (version = 1).
   No existe --library: si FOTO_LIBRARY está definida, error explícito.
+  Al arrancar, foto-index sincroniza la declaración con el catálogo:
+  registra las ubicaciones nuevas y marca deleted las quitadas de la
+  config (no borra nada: la limpieza de filas es de --prune). Una
+  ubicación ausente (USB desmontado) avisa y se degrada: salida 0, sus
+  fotos no se tocan y jamás se da de baja por estar desconectada.
 precedencia de la metainformación (.foto, ADR 0008):
   1. --metadata PATH
   2. FOTO_METADATA
@@ -45,20 +45,19 @@ precedencia de la metainformación (.foto, ADR 0008):
      hay que concretarla: --metadata, FOTO_METADATA o [metadata].path)
 Para el fichero de configuración: --config PATH, FOTO_CONFIG o platformdirs.
 
-fototeca de Apple Photos (.photoslibrary, ADR 0009):
-  solo se escanea originals/ (variantes editadas y derivados quedan fuera);
-  la metainformación debe vivir fuera del paquete (--metadata, FOTO_METADATA
-  o [metadata].path): sin ella el arranque falla con un error explícito.
-  Sin «Acceso total al disco» (Full Disk Access) el paquete no se puede leer.
+fototeca de Apple Photos (.photoslibrary, ADR 0009): la política
+  (solo originals/) se aplica por ubicación; la metainformación debe vivir
+  fuera del paquete (--metadata, FOTO_METADATA o [metadata].path). Sin
+  «Acceso total al disco» (Full Disk Access) el paquete no se puede leer.
 
 fases del pipeline (todas por defecto); --skip FASE las excluye:
   scan    recorrido del filesystem, hashing, metadatos y ausencias
   geocode geocodificación inversa (OpenStreetMap/Nominatim) de las fotos con GPS
 
 códigos de salida:
-  0  éxito, con o sin cambios
+  0  éxito, con o sin cambios (una ubicación ausente no es error)
   1  error no fatal, recorrido parcial, errores de ficheros o fase detenida
-  2  configuración inválida, biblioteca inexistente o esquema incompatible
+  2  configuración inválida, metainformación no disponible o esquema incompatible
   3  otro indexador tiene el lock
 
 ejemplos:
@@ -154,7 +153,8 @@ def _check_apple_package(root: Path) -> None:
 
     Si el acceso falla (p. ej. TCC sin *Full Disk Access*) no se puede saber:
     el recorrido lo reportará como parcial con la causa explícita
-    (ADR 0009, § 3), no aquí.
+    (ADR 0009, § 3), no aquí. Solo se llama con ubicaciones disponibles:
+    una desmontada no puede ser «anómala».
     """
     try:
         present = (root / "originals").is_dir()
@@ -169,11 +169,6 @@ def _check_apple_package(root: Path) -> None:
             "La raíz parece un paquete de Apple Photos pero no contiene "
             "originals/: paquete anómalo o no es una fototeca de Photos"
         )
-
-
-def _apple_scanner_factory(root: Path) -> LibraryScanner:
-    """Scanner con la política de Apple del ADR 0009 (solo ``originals/``)."""
-    return LibraryScanner(root, policy=apple_photos_scan_policy())
 
 
 def _emit_summary(summary: IndexingSummary, args: argparse.Namespace) -> None:
@@ -209,9 +204,28 @@ def _emit_summary(summary: IndexingSummary, args: argparse.Namespace) -> None:
             f"limpiadas={summary.pruned_locations} ubicaciones y "
             f"{summary.pruned_photos} fotos"
         )
+    _emit_locations_block(summary)
     _emit_geocode_phase(summary)
     if summary.partial_reason:
         print(f"  aviso: {summary.partial_reason}")
+
+
+def _emit_locations_block(summary: IndexingSummary) -> None:
+    """Resumen de la sincronización config ↔ catálogo y de la disponibilidad."""
+    sync = summary.locations_sync
+    if sync.changed:
+        parts = []
+        if sync.added:
+            parts.append(f"altas={len(sync.added)} ({', '.join(sync.added)})")
+        if sync.removed:
+            parts.append(f"bajas={len(sync.removed)} ({', '.join(sync.removed)})")
+        if sync.reactivated:
+            parts.append(f"reactivadas={len(sync.reactivated)} ({', '.join(sync.reactivated)})")
+        if sync.path_changed:
+            parts.append(f"cambios={len(sync.path_changed)} ({', '.join(sync.path_changed)})")
+        print(f"  ubicaciones: {'; '.join(parts)}")
+    for name in summary.locations_unavailable:
+        print(f"  aviso: la ubicación «{name}» no está disponible; sus fotos no se tocan")
 
 
 def _emit_geocode_phase(summary: IndexingSummary) -> None:
@@ -261,54 +275,53 @@ def main(argv: Sequence[str] | None = None) -> int:
             "fichero 'version = 1')"
         )
         return 2
-    # Guardia transitoria (ADR 0010, paso 2): la indexación multi-ubicación
-    # llega en el paso 3; la sincronización y el esquema v6 la retiran.
-    if len(locations) > 1:
-        logger.error(
-            "Guardia transitoria (ADR 0010): la indexación multi-ubicación "
-            "llega en el paso 3; declara una sola ubicación en "
-            "'[[library.locations]]' por ahora"
-        )
-        return 2
-    root = locations[0].path
 
-    # ADR 0009: si la raíz es un paquete de Apple Photos, el escaneo se
-    # restringe a originals/ y la metainformación, resuelta más abajo por el
-    # resolvedor compartido, tendrá que vivir fuera del paquete.
-    scanner: LibraryScanner | Callable[..., LibraryScanner] | None = None
-    if is_apple_photos_library(root):
-        try:
-            _check_apple_package(root)
-        except LibraryError as exc:
-            logger.error("%s", exc)
-            return 2
-        scanner = _apple_scanner_factory
-        logger.info(
-            "Raíz de Apple Photos detectada: política de escaneo aplicada "
-            "(solo originals/; variantes editadas y derivados quedan fuera)"
-        )
+    # ADR 0010 (Decisión 9): la validación de paquetes Apple pasa de global
+    # a por ubicación; solo para las disponibles (una desmontada no puede
+    # ser «anómala»: la tolera el indexado con un aviso).
+    for location in locations:
+        if location.path.is_dir() and is_apple_photos_library(location.path):
+            try:
+                _check_apple_package(location.path)
+            except LibraryError as exc:
+                logger.error("%s", exc)
+                return 2
 
     # ADR 0008: la metainformación se resuelve solo por el resolvedor
     # compartido, nunca leyendo FOTO_METADATA ni config.toml por su cuenta.
     try:
-        metadata_dir = resolve_metadata_dir(
+        resolution = resolve_metadata_dir(
             locations, args.metadata, config_path=args.config
-        ).metadata_dir
+        )
     except (ConfigError, LibraryError) as exc:
         logger.error("Metainformación inválida: %s", exc)
         return 2
+    metadata_dir = resolution.metadata_dir
     assert metadata_dir is not None
 
-    try:
-        bootstrap = ensure_library(root, metadata_dir, dry_run=args.dry_run)
-    except LibraryError as exc:
-        logger.error("%s", exc)
+    # ADR 0010 (Decisión 6): la metainformación es la fuente de verdad única
+    # de todas las ubicaciones; si no está disponible, error duro. Con el
+    # default derivado de la única ubicación declarada, esa ubicación
+    # ausente deja la sesión sin catálogo: error con la acción sugerida.
+    if resolution.origin == ORIGIN_DEFAULT and not metadata_dir.parent.is_dir():
+        logger.error(
+            "La metainformación por defecto vive en %s y la única ubicación "
+            "declarada no está disponible: monta el volumen o concreta la "
+            "metainformación con --metadata PATH, FOTO_METADATA o "
+            "[metadata].path",
+            metadata_dir,
+        )
         return 2
 
-    if bootstrap.would_create:
-        logger.info("Se crearía library.toml en %s: la biblioteca aún no existe", metadata_dir)
-    elif bootstrap.created:
-        logger.info("Biblioteca preparada con un nuevo library.toml en %s", metadata_dir)
+    if not args.dry_run:
+        try:
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.error(
+                "No se pudo crear el directorio de metainformación: %s",
+                exc.strerror or type(exc).__name__,
+            )
+            return 2
 
     catalog_path = metadata_dir / CATALOG_FILE_NAME
 
@@ -331,9 +344,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         try:
             if args.dry_run:
-                catalog = Catalog.open_dry_run(catalog_path)
+                catalog = Catalog.open_dry_run(
+                    catalog_path, declared_locations=tuple(locations)
+                )
             else:
-                catalog = Catalog.open(catalog_path)
+                catalog = Catalog.open(catalog_path, declared_locations=tuple(locations))
         except CatalogVersionError as exc:
             logger.error("%s", exc)
             return 2
@@ -342,7 +357,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
 
         if args.verbose:
-            logger.debug("Indexando la biblioteca en %s", root)
+            logger.debug("Indexando las ubicaciones declaradas en %s", metadata_dir)
 
         extractor = ExifToolExtractor.from_environment()
         if extractor is None:
@@ -372,7 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         indexer = Indexer(
             catalog,
-            root,
+            tuple(locations),
             options=IndexingOptions(
                 full=args.full,
                 prune=args.prune,
@@ -382,7 +397,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             extractor=extractor,
             geocoder=geocoder,
-            scanner=scanner,
         )
         summary = indexer.run()
         _emit_summary(summary, args)

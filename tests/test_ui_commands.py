@@ -10,7 +10,6 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from foto.storage.library import ensure_library
 from foto.ui.commands import COMMANDS
 from foto.ui.window import PhotoWindow
 from tests.conftest import write_image
@@ -44,7 +43,6 @@ def test_ui_sources_contain_no_rescan_trace():
 def test_viewer_still_loads_from_the_catalog_after_removal(tmp_path):
     root = tmp_path / "biblioteca"
     write_image(root / "2024" / "una.jpg", b"visibles")
-    ensure_library(root)
     _seed_catalog(root, "sha256:" + "f" * 64)
 
     photos = load_photos(root)

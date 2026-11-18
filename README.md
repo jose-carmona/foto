@@ -223,6 +223,10 @@ foto/
   - `0009-indexado-apple-photos.md` — política de escaneo de un paquete
     `.photoslibrary` (solo `originals/`), metainformación obligatoriamente
     externa y la fase `apple-import` de favoritos y personas.
+  - `0010-fototeca-distribuida.md` — la fototeca en varias ubicaciones
+    con nombre: declaración en config v2, sincronización config ↔ catálogo,
+    esquema v6 del catálogo, indexado y prune multi-ubicación, tolerancia
+    a ubicaciones ausentes y retirada de `library.toml`.
 
 ## UI
 
@@ -273,16 +277,18 @@ mismos resolutores en `storage/resolver.py`.
 | Metainformación | `--metadata` → `FOTO_METADATA` → `[metadata].path` | `<única ubicación declarada>/.foto`; con varias, obligatorio concretarla |
 
 - El override de metadatos redirige el **directorio completo**:
-  `library.toml`, `catalog.sqlite`, `thumbs/`, `index.lock` y `exports/`
-  viven juntos ahí o no viven. Nunca piezas sueltas.
+  `catalog.sqlite`, `thumbs/`, `index.lock` y `exports/` viven juntos ahí
+  o no viven. Nunca piezas sueltas.
 - No se mueve nada automáticamente: apuntar `--metadata` a un directorio
-  vacío lo inicializa (bootstrap atómico) y apuntar a uno con `library.toml`
-  previo lo adopta (añadiéndole el campo `root` si le falta).
-- `library.toml` lleva un campo opcional `root` con la fototeca a la que
-  pertenece el descriptor; si no coincide con la raíz resuelta, el error es
-  explícito con la acción sugerida (relocalizar o regenerar), nunca se
-  mezclan catálogos en silencio. Los descriptores sin `root` (legado) se
-  siguen aceptando. (Su retirada está decidida en el ADR 0010, paso 3.)
+  vacío lo inicializa `foto-index` (crea ahí el catálogo) y apuntar a uno
+  con un `library.toml` previo lo ignora: el descriptor ya no existe
+  (ADR 0010) y los ficheros huérfanos no se borran ni se leen.
+- La referencia de ubicaciones es la tabla `locations` del catálogo
+  (esquema v6): `foto-index` la sincroniza con la config al arrancar —
+  registra las ubicaciones nuevas y marca `deleted` las quitadas de la
+  config, sin borrar nada (la limpieza de filas es de `--prune`); una
+  ubicación ausente (USB desmontado) avisa y se degrada, jamás se da de
+  baja por estar desconectada.
 - `[metadata]` es opt-in: un `config.toml` nuevo creado por la app no la
   incluye y `save_config` nunca la escribe ni la reordena. Se edita a mano:
 
@@ -372,10 +378,12 @@ uv run foto --metadata ~/Fotos/ApplePhotos.foto
 ### Migración manual de una `.foto/` existente
 
 La migración es operación del dueño, no automatizada: copia el directorio
-completo a la nueva ubicación, edita la línea `root` de `library.toml` (o
-bórrala) y usa `--metadata`/`FOTO_METADATA`/`[metadata].path` para apuntar
-allí. La app nunca mezcla catálogos en silencio: un `root` que no coincide
-produce un error con la acción sugerida.
+completo a la nueva ubicación y usa
+`--metadata`/`FOTO_METADATA`/`[metadata].path` para apuntar allí. Las rutas
+del catálogo son relativas a cada ubicación y sobreviven al traslado; un
+`library.toml` que venga en la copia es un huérfano que se ignora. La app
+nunca mezcla catálogos en silencio: la sincronización config ↔ catálogo
+hace visibles las altas y bajas masivas en el resumen (`--json`).
 
 ## Indexador
 
@@ -408,10 +416,10 @@ Opciones principales:
 | `--config PATH` | Fichero de configuración global. |
 | `--full` | Rehashea y reextrae todo; reintenta también los lugares en `error`. |
 | `--skip FASE` | Excluye una fase del pipeline (`scan`, `geocode`); repetible. |
-| `--prune` | Borra ubicaciones `missing` antiguas y fotos huérfanas del catálogo. |
+| `--prune` | Borra filas del catálogo —nunca ficheros—: filas `missing` antiguas de ubicaciones escaneadas, filas `deleted` de ubicaciones dadas de baja y fotos huérfanas. |
 | `--prune-after DAYS` | Antigüedad mínima para `--prune`; 30 por defecto. |
-| `--dry-run` | No escribe nada ni toca la red; simula sobre una copia en memoria. |
-| `--json` | Resumen JSON en stdout, segmentado por fases; los logs van a stderr. |
+| `--dry-run` | No escribe nada ni toca la red; simula sobre una copia en memoria (incluido el diff de sincronización). |
+| `--json` | Resumen JSON en stdout, segmentado por fases, con el bloque `locations` (altas, bajas, reactivadas, cambios, escaneadas, no disponibles); los logs van a stderr. |
 | `--quiet` / `--verbose` | Menos o más detalle en los logs. |
 
 El resumen de texto distingue lo que se ha procesado de lo que ha cambiado, y
@@ -449,9 +457,17 @@ en `version = 2`, `[library].path` en `version = 1`. `--library` ya no existe
 y `FOTO_LIBRARY` definida es un error explícito. El fichero de configuración,
 con `--config` → `FOTO_CONFIG` → `platformdirs`.
 
-Códigos de salida: `0` éxito, `1` error no fatal o recorrido parcial, `2`
-configuración/raíz/esquema inválidos, `3` otro indexador tiene el lock y `130`
-interrupción con `SIGINT`.
+Con varias ubicaciones declaradas, `foto-index` sincroniza la declaración
+con el catálogo al arrancar (altas, cambios, bajas con filas marcadas
+`deleted` y reactivaciones; idempotente y reportado en el bloque
+`locations` de `--json`) y después recorre solo las ubicaciones disponibles:
+una ausente (USB desmontado) avisa por stderr y no es error (salida 0); sus
+filas no se tocan y jamás se da de baja por estar desconectada.
+
+Códigos de salida: `0` éxito (una ubicación ausente no es error), `1` error
+no fatal o recorrido parcial, `2` configuración o esquema inválidos
+(incluida metainformación no disponible), `3` otro indexador tiene el lock
+y `130` interrupción con `SIGINT`.
 
 Si `exiftool` no está instalado, el indexado de hashes y ubicaciones funciona
 igual y los metadatos quedan `pending`; se completan en la siguiente pasada

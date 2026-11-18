@@ -1,4 +1,12 @@
-"""Catálogo SQLite reconstruible de la fototeca."""
+"""Catálogo SQLite reconstruible de la fototeca.
+
+Esquema v6 (ADR 0010): la tabla per-foto se renombra a ``files`` —
+apariciones de fichero con clave compuesta ``(location_id, rel_path)`` y
+estado ``present``/``missing``/``deleted`` — y ``locations`` queda
+reservada para las ubicaciones con nombre (``name``, ``path``, ``tier``,
+``state``). ``library.toml`` desaparece: esta tabla es la única referencia
+de ubicaciones del sistema.
+"""
 
 from __future__ import annotations
 
@@ -12,12 +20,22 @@ from pathlib import Path
 from foto.core.errors import CatalogError, CatalogVersionError
 from foto.core.geocoding import Place, PlaceRecord
 from foto.core.metadata import PhotoMetadata
+from foto.storage.config import Location
 from foto.storage.tags import Tag, TagAssignment, assignments_by_hash, list_tags
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 CATALOG_FILE_NAME = "catalog.sqlite"
+
+#: Orden canónico por ``tier`` (ADR 0010, Decisión 4): ``fast`` gana a
+#: ``archive``; el ``rel_path`` solo desempata dentro del mismo ``tier``.
+TIER_RANK: dict[str, int] = {"fast": 0, "archive": 1}
+
+
+def _utcnow_iso() -> str:
+    """Marca de tiempo ISO-8601 con segundos, como en el resto del catálogo."""
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS photos (
@@ -262,11 +280,56 @@ CREATE INDEX IF NOT EXISTS photo_tags_tag_idx   ON photo_tags(tag_id);
 COMMIT;
 """
 
+# Esquema v6 (ADR 0010): tabla nueva de ubicaciones con nombre. ``name`` es
+# la identidad estable (``path`` y ``tier`` pueden cambiar); ``state`` solo
+# pasa a ``deleted`` cuando la config deja de declarar la ubicación —
+# nunca por estar el volumen desmontado. Sin fila por ``deleted_at`` en
+# ``files``: la ventana de poda usa el ``deleted_at`` de la ubicación.
+SCHEMA_V6_LOCATIONS = """
+CREATE TABLE IF NOT EXISTS locations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL UNIQUE,
+    path            TEXT NOT NULL,
+    tier            TEXT NOT NULL CHECK (tier IN ('fast', 'archive')),
+    state           TEXT NOT NULL DEFAULT 'active'
+                    CHECK (state IN ('active', 'deleted')),
+    created_at      TEXT NOT NULL,
+    deleted_at      TEXT,
+    last_scanned_at TEXT
+);
+"""
+
+# La tabla per-foto pasa a llamarse ``files`` (es lo que contiene:
+# apariciones de fichero) con clave compuesta ``(location_id, rel_path)``
+# y el estado ``deleted`` además de ``present``/``missing``.
+SCHEMA_V6_FILES = """
+CREATE TABLE IF NOT EXISTS files (
+    location_id     INTEGER NOT NULL REFERENCES locations(id),
+    rel_path        TEXT NOT NULL,
+    photo_hash      TEXT NOT NULL REFERENCES photos(hash) ON DELETE RESTRICT,
+    size            INTEGER NOT NULL,
+    mtime_ns        INTEGER NOT NULL,
+    inode           INTEGER,
+    device          INTEGER,
+    status          TEXT NOT NULL DEFAULT 'present'
+                    CHECK (status IN ('present', 'missing', 'deleted')),
+    first_seen_at   TEXT NOT NULL,
+    last_indexed_at TEXT NOT NULL,
+    missing_since   TEXT,
+    PRIMARY KEY (location_id, rel_path)
+);
+
+CREATE INDEX IF NOT EXISTS files_photo_hash_idx ON files(photo_hash);
+CREATE INDEX IF NOT EXISTS files_status_idx ON files(status);
+CREATE INDEX IF NOT EXISTS files_location_idx ON files(location_id);
+"""
+
 
 @dataclass(frozen=True)
-class LocationRow:
-    """Fila de ``locations`` necesaria para reconciliar una ruta."""
+class FileRow:
+    """Fila de ``files``: una aparición de fichero en una ubicación (v6)."""
 
+    location_id: int
     rel_path: str
     photo_hash: str
     size: int
@@ -277,11 +340,26 @@ class LocationRow:
 
 
 @dataclass(frozen=True)
+class NamedLocationRow:
+    """Fila de ``locations``: una ubicación con nombre del catálogo (v6)."""
+
+    id: int
+    name: str
+    path: Path
+    tier: str
+    state: str
+    created_at: str
+    deleted_at: str | None
+    last_scanned_at: str | None
+
+
+@dataclass(frozen=True)
 class MetadataTarget:
-    """Foto pendiente de metadatos y una ubicación vista para leerla."""
+    """Foto pendiente de metadatos y una aparición vista para leerla."""
 
     hash: str
     rel_path: str
+    location_path: Path
 
 
 @dataclass(frozen=True)
@@ -313,11 +391,13 @@ class Catalog:
         path: Path,
         memory: bool = False,
         read_only: bool = False,
+        declared_locations: Sequence[Location] = (),
     ) -> None:
         self._conn = connection
         self.path = path
         self.memory = memory
         self.read_only = read_only
+        self._declared_locations = tuple(declared_locations)
         try:
             self._configure()
             self._migrate()
@@ -332,13 +412,24 @@ class Catalog:
     # Construcción
     # ------------------------------------------------------------------
     @classmethod
-    def open(cls, path: Path) -> Catalog:
-        """Abre o crea el catálogo en disco."""
+    def open(
+        cls,
+        path: Path,
+        declared_locations: Sequence[Location] = (),
+    ) -> Catalog:
+        """Abre o crea el catálogo en disco.
+
+        ``declared_locations`` alimenta la migración a v6 (ADR 0010): un
+        catálogo anterior con filas heredadas de raíz única exige la
+        ubicación declarada única —con su nombre real— a la que asignarlas;
+        si la config declara varias (o ninguna) y hay filas, el error es
+        explícito antes de migrar nada.
+        """
         try:
             connection = sqlite3.connect(str(path), timeout=5.0)
         except sqlite3.Error as exc:
             raise CatalogError(f"No se pudo abrir el catálogo: {exc}") from exc
-        return cls(connection, path)
+        return cls(connection, path, declared_locations=tuple(declared_locations))
 
     @classmethod
     def open_read_only(cls, path: Path) -> Catalog:
@@ -364,11 +455,16 @@ class Catalog:
         return cls(connection, Path(":memory:"), memory=True)
 
     @classmethod
-    def open_dry_run(cls, path: Path) -> Catalog:
+    def open_dry_run(
+        cls,
+        path: Path,
+        declared_locations: Sequence[Location] = (),
+    ) -> Catalog:
         """Simula sobre una copia en memoria del catálogo existente.
 
         Si el catálogo no existe, crea uno vacío en memoria con el mismo
-        esquema. Nunca escribe en disco.
+        esquema. Nunca escribe en disco. ``declared_locations`` alimenta la
+        migración simulada, igual que en ``open``.
         """
         connection: sqlite3.Connection
         if path.exists():
@@ -384,7 +480,12 @@ class Catalog:
                 raise CatalogError(f"No se pudo copiar el catálogo: {exc}") from exc
             finally:
                 source.close()
-            return cls(connection, path, memory=True)
+            return cls(
+                connection,
+                path,
+                memory=True,
+                declared_locations=tuple(declared_locations),
+            )
         return cls.open_in_memory()
 
     # ------------------------------------------------------------------
@@ -437,6 +538,8 @@ class Catalog:
                 self._migrate_to_v4()
             if version < 5:
                 self._migrate_to_v5()
+            if version < 6:
+                self._migrate_to_v6(self._declared_locations)
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._conn.commit()
         except sqlite3.Error as exc:
@@ -502,6 +605,64 @@ class Catalog:
         convertir.
         """
         self._conn.executescript(SCHEMA_V5_PHOTO_TAGS_REBUILD)
+
+    def _migrate_to_v6(self, declared_locations: Sequence[Location]) -> None:
+        """Aplica la migración a v6 (ADR 0010, Decisión 4).
+
+        Renombra la tabla per-foto ``locations`` a ``files`` (reconstruida
+        con clave compuesta ``(location_id, rel_path)`` y el estado
+        ``deleted``), crea la tabla ``locations`` de ubicaciones con nombre
+        y, si hay filas heredadas, crea la **ubicación declarada única con
+        su nombre real** y se las asigna. ``default`` solo aparece cuando
+        la config es v1 (T1.6). Con varias ubicaciones declaradas y filas
+        heredadas —o con ninguna declarada— el error es explícito **antes**
+        de tocar nada: las filas no saben a qué raíz pertenecen.
+        """
+        legacy_rows = self._scalar("SELECT COUNT(*) FROM locations")
+        if legacy_rows:
+            if len(declared_locations) > 1:
+                raise CatalogError(
+                    f"El catálogo (esquema anterior) tiene {legacy_rows} "
+                    "apariciones heredadas de una única raíz y la "
+                    "configuración declara varias ubicaciones: ejecuta "
+                    "foto-index primero con solo la ubicación original "
+                    "declarada en '[[library.locations]]'"
+                )
+            if not declared_locations:
+                raise CatalogError(
+                    f"El catálogo (esquema anterior) tiene {legacy_rows} "
+                    "apariciones de fichero y la configuración no declara "
+                    "ninguna ubicación: declara en '[[library.locations]]' "
+                    "la ubicación que contiene esas fotos y vuelve a "
+                    "ejecutar foto-index"
+                )
+
+        # Los índices de la tabla legacy siguen su tabla tras el renombre:
+        # se sueltan y se recrean con los nombres de la v6.
+        self._conn.execute("DROP INDEX IF EXISTS locations_photo_hash_idx")
+        self._conn.execute("DROP INDEX IF EXISTS locations_status_idx")
+        self._conn.execute("ALTER TABLE locations RENAME TO files_v6_legacy")
+        self._conn.executescript(SCHEMA_V6_LOCATIONS + SCHEMA_V6_FILES)
+
+        location_id: int | None = None
+        if legacy_rows:
+            declared = declared_locations[0]
+            location_id = self.insert_named_location(
+                name=declared.name,
+                path=declared.path,
+                tier=declared.tier,
+                now=_utcnow_iso(),
+            )
+        self._conn.execute(
+            "INSERT INTO files "
+            "(location_id, rel_path, photo_hash, size, mtime_ns, inode, "
+            "device, status, first_seen_at, last_indexed_at, missing_since) "
+            "SELECT ?, rel_path, photo_hash, size, mtime_ns, inode, device, "
+            "status, first_seen_at, last_indexed_at, missing_since "
+            "FROM files_v6_legacy",
+            (location_id,),
+        )
+        self._conn.execute("DROP TABLE files_v6_legacy")
 
     def _ensure_columns(self, table: str, columns: tuple[tuple[str, str], ...]) -> None:
         """Añade a la tabla las columnas que le falten (idempotente)."""
@@ -606,16 +767,137 @@ class Catalog:
         self.commit()
 
     # ------------------------------------------------------------------
-    # Ubicaciones y fotos
+    # Ubicaciones con nombre (tabla ``locations``, v6)
+    # ------------------------------------------------------------------
+    def list_named_locations(self) -> list[NamedLocationRow]:
+        """Todas las ubicaciones con nombre, activas y dadas de baja."""
+        rows = self._conn.execute(
+            "SELECT id, name, path, tier, state, created_at, deleted_at, "
+            "last_scanned_at FROM locations ORDER BY name"
+        ).fetchall()
+        return [
+            NamedLocationRow(
+                id=int(row["id"]),
+                name=str(row["name"]),
+                path=Path(str(row["path"])),
+                tier=str(row["tier"]),
+                state=str(row["state"]),
+                created_at=str(row["created_at"]),
+                deleted_at=(
+                    str(row["deleted_at"]) if row["deleted_at"] is not None else None
+                ),
+                last_scanned_at=(
+                    str(row["last_scanned_at"])
+                    if row["last_scanned_at"] is not None
+                    else None
+                ),
+            )
+            for row in rows
+        ]
+
+    def get_named_location(self, name: str) -> NamedLocationRow | None:
+        """La ubicación con ese nombre, o ``None`` si no existe."""
+        row = self._conn.execute(
+            "SELECT id, name, path, tier, state, created_at, deleted_at, "
+            "last_scanned_at FROM locations WHERE name = ?",
+            (name,),
+        ).fetchone()
+        if row is None:
+            return None
+        return NamedLocationRow(
+            id=int(row["id"]),
+            name=str(row["name"]),
+            path=Path(str(row["path"])),
+            tier=str(row["tier"]),
+            state=str(row["state"]),
+            created_at=str(row["created_at"]),
+            deleted_at=(
+                str(row["deleted_at"]) if row["deleted_at"] is not None else None
+            ),
+            last_scanned_at=(
+                str(row["last_scanned_at"]) if row["last_scanned_at"] is not None else None
+            ),
+        )
+
+    def insert_named_location(
+        self, *, name: str, path: Path, tier: str, now: str
+    ) -> int:
+        """Da de alta una ubicación con nombre y devuelve su ``id``."""
+        cursor = self._conn.execute(
+            "INSERT INTO locations (name, path, tier, state, created_at) "
+            "VALUES (?, ?, ?, 'active', ?)",
+            (name, str(path), tier, now),
+        )
+        if cursor.lastrowid is None:
+            raise CatalogError("No se pudo registrar la ubicación en el catálogo")
+        return int(cursor.lastrowid)
+
+    def update_named_location(
+        self, *, location_id: int, path: Path, tier: str
+    ) -> None:
+        """Actualiza ``path`` y ``tier`` de una ubicación activa (cambio).
+
+        Las filas de fotos siguen siendo válidas: son ``rel_path`` +
+        ``location_id``; el escaneo reconciliará lo que haya en la ruta
+        nueva (ADR 0010, Decisión 3).
+        """
+        self._conn.execute(
+            "UPDATE locations SET path = ?, tier = ? WHERE id = ?",
+            (str(path), tier, location_id),
+        )
+
+    def deactivate_named_location(self, *, location_id: int, now: str) -> int:
+        """Da de baja una ubicación y marca sus filas ``deleted``.
+
+        La baja solo la provoca quitar la ubicación de la config (jamás una
+        desmontada). No se borra nada: ni filas ni ficheros; la limpieza es
+        de ``--prune``. Devuelve cuántas filas de fichero se marcaron.
+        """
+        self._conn.execute(
+            "UPDATE locations SET state = 'deleted', deleted_at = ? WHERE id = ?",
+            (now, location_id),
+        )
+        cursor = self._conn.execute(
+            "UPDATE files SET status = 'deleted' "
+            "WHERE location_id = ? AND status != 'deleted'",
+            (location_id,),
+        )
+        return max(cursor.rowcount, 0)
+
+    def reactivate_named_location(self, *, location_id: int) -> None:
+        """Reactiva una ubicación dada de baja (vuelve a ``active``).
+
+        No restaura filas por sí sola: las restaura el escaneo de esa
+        ubicación (ficheros vistos → ``present``). Las filas que aún siguen
+        ``deleted`` quedan a la espera de ese escaneo.
+        """
+        self._conn.execute(
+            "UPDATE locations SET state = 'active', deleted_at = NULL WHERE id = ?",
+            (location_id,),
+        )
+
+    def mark_location_scanned(self, location_id: int, now: str) -> None:
+        """Registra la última vez que se escaneó la ubicación."""
+        self._conn.execute(
+            "UPDATE locations SET last_scanned_at = ? WHERE id = ?", (now, location_id)
+        )
+
+    # ------------------------------------------------------------------
+    # Apariciones de fichero (tabla ``files``, v6)
     # ------------------------------------------------------------------
     def prepare_seen(self) -> None:
-        self._conn.execute("CREATE TEMP TABLE IF NOT EXISTS seen (rel_path TEXT PRIMARY KEY)")
+        """Tabla temporal de ficheros vistos, con la ubicación como parte."""
+        self._conn.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS seen "
+            "(location_id INTEGER NOT NULL, rel_path TEXT NOT NULL, "
+            "PRIMARY KEY (location_id, rel_path))"
+        )
         self._conn.execute("DELETE FROM seen")
 
-    def add_seen(self, rel_paths: Iterable[str]) -> None:
+    def add_seen(self, location_id: int, rel_paths: Iterable[str]) -> None:
         self._conn.executemany(
-            "INSERT OR IGNORE INTO seen (rel_path) VALUES (?)",
-            ((rel_path,) for rel_path in rel_paths),
+            "INSERT OR IGNORE INTO seen (location_id, rel_path) VALUES (?, ?)",
+            ((location_id, rel_path) for rel_path in rel_paths),
         )
 
     def drop_seen(self) -> None:
@@ -624,15 +906,17 @@ class Catalog:
         except sqlite3.Error:
             logger.debug("No se pudo eliminar la tabla temporal seen", exc_info=True)
 
-    def get_location(self, rel_path: str) -> LocationRow | None:
+    def get_file(self, location_id: int, rel_path: str) -> FileRow | None:
+        """La fila ``(location_id, rel_path)``, o ``None`` si no existe."""
         row = self._conn.execute(
-            "SELECT rel_path, photo_hash, size, mtime_ns, inode, device, status "
-            "FROM locations WHERE rel_path = ?",
-            (rel_path,),
+            "SELECT location_id, rel_path, photo_hash, size, mtime_ns, inode, "
+            "device, status FROM files WHERE location_id = ? AND rel_path = ?",
+            (location_id, rel_path),
         ).fetchone()
         if row is None:
             return None
-        return LocationRow(
+        return FileRow(
+            location_id=int(row["location_id"]),
             rel_path=str(row["rel_path"]),
             photo_hash=str(row["photo_hash"]),
             size=int(row["size"]),
@@ -658,9 +942,10 @@ class Catalog:
         )
         return cursor.rowcount == 1
 
-    def insert_location(
+    def insert_file(
         self,
         *,
+        location_id: int,
         rel_path: str,
         photo_hash: str,
         size: int,
@@ -669,17 +954,19 @@ class Catalog:
         device: int | None,
         now: str,
     ) -> None:
+        """Registra una aparición nueva ``(location_id, rel_path)``."""
         self._conn.execute(
-            "INSERT INTO locations "
-            "(rel_path, photo_hash, size, mtime_ns, inode, device, status, "
-            "first_seen_at, last_indexed_at, missing_since) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'present', ?, ?, NULL)",
-            (rel_path, photo_hash, size, mtime_ns, inode, device, now, now),
+            "INSERT INTO files "
+            "(location_id, rel_path, photo_hash, size, mtime_ns, inode, device, "
+            "status, first_seen_at, last_indexed_at, missing_since) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'present', ?, ?, NULL)",
+            (location_id, rel_path, photo_hash, size, mtime_ns, inode, device, now, now),
         )
 
-    def update_location_signature(
+    def update_file_signature(
         self,
         *,
+        location_id: int,
         rel_path: str,
         photo_hash: str,
         size: int,
@@ -688,26 +975,32 @@ class Catalog:
         device: int | None,
         now: str,
     ) -> None:
-        """Actualiza firma y hash; la ubicación vuelve a estar presente."""
+        """Actualiza firma y hash; la aparición vuelve a estar presente."""
         self._conn.execute(
-            "UPDATE locations SET photo_hash = ?, size = ?, mtime_ns = ?, inode = ?, "
-            "device = ?, status = 'present', missing_since = NULL, last_indexed_at = ? "
-            "WHERE rel_path = ?",
-            (photo_hash, size, mtime_ns, inode, device, now, rel_path),
+            "UPDATE files SET photo_hash = ?, size = ?, mtime_ns = ?, inode = ?, "
+            "device = ?, status = 'present', missing_since = NULL, "
+            "last_indexed_at = ? WHERE location_id = ? AND rel_path = ?",
+            (photo_hash, size, mtime_ns, inode, device, now, location_id, rel_path),
         )
 
-    def mark_location_present(self, rel_path: str, now: str) -> None:
+    def mark_file_present(self, location_id: int, rel_path: str, now: str) -> None:
         self._conn.execute(
-            "UPDATE locations SET status = 'present', missing_since = NULL, "
-            "last_indexed_at = ? WHERE rel_path = ?",
-            (now, rel_path),
+            "UPDATE files SET status = 'present', missing_since = NULL, "
+            "last_indexed_at = ? WHERE location_id = ? AND rel_path = ?",
+            (now, location_id, rel_path),
         )
 
-    def mark_missing(self, now: str) -> int:
+    def mark_missing_files(self, location_id: int, now: str) -> int:
+        """Marca ``missing`` las apariciones presentes no vistas en el escaneo.
+
+        El estado ``deleted`` no se toca: lo gobierna la sincronización
+        config ↔ catálogo, no el recorrido.
+        """
         cursor = self._conn.execute(
-            "UPDATE locations SET status = 'missing', missing_since = ? "
-            "WHERE status = 'present' AND rel_path NOT IN (SELECT rel_path FROM seen)",
-            (now,),
+            "UPDATE files SET status = 'missing', missing_since = ? "
+            "WHERE location_id = ? AND status = 'present' AND rel_path NOT IN "
+            "(SELECT rel_path FROM seen WHERE location_id = ?)",
+            (now, location_id, location_id),
         )
         return max(cursor.rowcount, 0)
 
@@ -721,18 +1014,36 @@ class Catalog:
         after_hash: str | None,
         limit: int,
     ) -> list[MetadataTarget]:
-        """Siguiente lote de fotos con ubicación vista y metadatos por hacer."""
+        """Siguiente lote de fotos con aparición vista y metadatos por hacer.
+
+        Solo se leen ficheros vistos en esta pasada (tabla ``seen``). El
+        objetivo canónico de cada hash se elige por ``tier`` primero
+        (``fast`` gana a ``archive``) y por menor ``rel_path`` dentro del
+        mismo ``tier`` (ADR 0010, Decisión 4).
+        """
         rows = self._conn.execute(
-            "SELECT p.hash AS hash, MIN(l.rel_path) AS rel_path "
-            "FROM photos p JOIN locations l ON l.photo_hash = p.hash "
-            "WHERE l.rel_path IN (SELECT rel_path FROM seen) "
+            "SELECT hash, rel_path, location_path FROM ("
+            "SELECT p.hash AS hash, f.rel_path AS rel_path, loc.path AS location_path, "
+            "ROW_NUMBER() OVER ("
+            "  PARTITION BY p.hash "
+            "  ORDER BY (CASE loc.tier WHEN 'fast' THEN 0 ELSE 1 END), f.rel_path"
+            ") AS rn "
+            "FROM photos p "
+            "JOIN files f ON f.photo_hash = p.hash "
+            "JOIN locations loc ON loc.id = f.location_id "
+            "WHERE (f.location_id, f.rel_path) IN "
+            "  (SELECT location_id, rel_path FROM seen) "
             "AND (p.metadata_status = 'pending' OR ? = 1) "
-            "AND (? IS NULL OR p.hash > ?) "
-            "GROUP BY p.hash ORDER BY p.hash LIMIT ?",
+            "AND (? IS NULL OR p.hash > ?)"
+            ") WHERE rn = 1 ORDER BY hash LIMIT ?",
             (1 if full else 0, after_hash, after_hash, limit),
         ).fetchall()
         return [
-            MetadataTarget(hash=str(row["hash"]), rel_path=str(row["rel_path"]))
+            MetadataTarget(
+                hash=str(row["hash"]),
+                rel_path=str(row["rel_path"]),
+                location_path=Path(str(row["location_path"])),
+            )
             for row in rows
         ]
 
@@ -941,17 +1252,49 @@ class Catalog:
     # ------------------------------------------------------------------
     # Limpieza y totales
     # ------------------------------------------------------------------
-    def prune(self, now: datetime, older_than_days: int) -> tuple[int, int]:
-        """Elimina ubicaciones ausentes antiguas y fotos sin ubicación."""
+    def prune(
+        self,
+        now: datetime,
+        older_than_days: int,
+        scanned_location_ids: Sequence[int] = (),
+    ) -> tuple[int, int]:
+        """Limpieza de filas del catálogo (ADR 0010, Decisión 5).
+
+        Solo borra filas —nunca ficheros— y solo de:
+
+        a. ubicaciones **verificadas presentes** en esa ejecución
+           (``scanned_location_ids``): filas ``missing`` antiguas según la
+           ventana ``--prune-after``;
+        b. ubicaciones **``deleted``** (dadas de baja por la config): sus
+           filas ``deleted``, con la ventana medida desde el ``deleted_at``
+           de la ubicación — la misma gracia que las ``missing``.
+
+        Nunca toca filas de ubicaciones declaradas pero no escaneadas por
+        estar ausentes: el prune de un USB desmontado no destruye nada.
+        Después limpia las fotos huérfanas (cero filas en ``files``).
+        """
         cutoff = (now - timedelta(days=older_than_days)).isoformat()
+        pruned_locations = 0
+        if scanned_location_ids:
+            placeholders = ", ".join("?" for _ in scanned_location_ids)
+            cursor = self._conn.execute(
+                "DELETE FROM files WHERE status = 'missing' "
+                "AND missing_since IS NOT NULL "
+                "AND datetime(missing_since) <= datetime(?) "
+                f"AND location_id IN ({placeholders})",
+                (cutoff, *scanned_location_ids),
+            )
+            pruned_locations = max(cursor.rowcount, 0)
         cursor = self._conn.execute(
-            "DELETE FROM locations WHERE status = 'missing' AND missing_since IS NOT NULL "
-            "AND datetime(missing_since) <= datetime(?)",
+            "DELETE FROM files WHERE status = 'deleted' AND location_id IN ("
+            "SELECT id FROM locations WHERE state = 'deleted' "
+            "AND deleted_at IS NOT NULL AND datetime(deleted_at) <= datetime(?))",
             (cutoff,),
         )
-        pruned_locations = max(cursor.rowcount, 0)
+        pruned_locations += max(cursor.rowcount, 0)
         cursor = self._conn.execute(
-            "DELETE FROM photos WHERE hash NOT IN (SELECT DISTINCT photo_hash FROM locations)"
+            "DELETE FROM photos WHERE hash NOT IN "
+            "(SELECT DISTINCT photo_hash FROM files)"
         )
         pruned_photos = max(cursor.rowcount, 0)
         self.commit()
@@ -959,10 +1302,10 @@ class Catalog:
 
     def counts(self) -> CatalogCounts:
         photos = self._scalar("SELECT COUNT(*) FROM photos")
-        locations = self._scalar("SELECT COUNT(*) FROM locations")
+        locations = self._scalar("SELECT COUNT(*) FROM files")
         duplicates = self._scalar(
             "SELECT COUNT(*) FROM ("
-            "SELECT photo_hash FROM locations GROUP BY photo_hash HAVING COUNT(*) > 1"
+            "SELECT photo_hash FROM files GROUP BY photo_hash HAVING COUNT(*) > 1"
             ")"
         )
         pending = self._scalar("SELECT COUNT(*) FROM photos WHERE metadata_status = 'pending'")
@@ -987,14 +1330,25 @@ class Catalog:
         """Asignaciones foto–etiqueta por hash (delega en ``storage.tags``)."""
         return assignments_by_hash(self._conn)
 
-    def list_present_locations(self) -> list[sqlite3.Row]:
-        """Devuelve ubicaciones presentes con sus metadatos de foto."""
+    def list_present_files(self) -> list[sqlite3.Row]:
+        """Apariciones presentes de ubicaciones activas, con su contexto.
+
+        Devuelve cada fila de ``files`` con los metadatos de su foto y la
+        ubicación unida (``location_id`` → ``locations``): ``path``,
+        ``name`` y ``tier`` salen de la BD, que es la única verdad de
+        rutas para la UI (ADR 0010, Decisión 7). Las filas de ubicaciones
+        ``deleted`` no se muestran: están pendientes de ``--prune``.
+        """
         rows = self._conn.execute(
             """
             SELECT
-                l.rel_path,
-                l.photo_hash,
-                l.size,
+                f.location_id,
+                f.rel_path,
+                f.photo_hash,
+                f.size,
+                loc.path AS location_path,
+                loc.name AS location_name,
+                loc.tier AS location_tier,
                 p.file_type,
                 p.extension,
                 p.width,
@@ -1018,10 +1372,11 @@ class Catalog:
                 p.place_address_json,
                 p.orientation,
                 p.metadata_status
-            FROM locations l
-            JOIN photos p ON p.hash = l.photo_hash
-            WHERE l.status = 'present'
-            ORDER BY l.rel_path
+            FROM files f
+            JOIN locations loc ON loc.id = f.location_id
+            JOIN photos p ON p.hash = f.photo_hash
+            WHERE f.status = 'present' AND loc.state = 'active'
+            ORDER BY f.rel_path
             """
         ).fetchall()
         return list(rows)

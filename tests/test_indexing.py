@@ -7,11 +7,12 @@ import os
 
 import pytest
 
-from foto.core.errors import HashError, LibraryError
+from foto.core.errors import HashError
 from foto.core.hashing import hash_bytes
 from foto.core.indexing import Indexer, IndexingOptions
 from foto.core.metadata import PhotoMetadata
 from foto.storage.catalog import Catalog
+from foto.storage.config import Location
 from tests.conftest import (
     CountingHasher,
     FakeExtractor,
@@ -242,11 +243,13 @@ def test_dry_run_does_not_create_catalog_or_library(tmp_path):
     root.mkdir()
     write_image(root / "foto.jpg", b"simulada")
 
-    catalog = Catalog.open_dry_run(root / ".foto" / "catalog.sqlite")
+    catalog = Catalog.open_dry_run(
+        root / ".foto" / "catalog.sqlite", declared_locations=(Location("default", root, "fast"),)
+    )
     try:
         summary = Indexer(
             catalog,
-            root,
+            (Location("default", root, "fast"),),
             options=IndexingOptions(dry_run=True),
             hasher=CountingHasher(),
         ).run()
@@ -264,11 +267,13 @@ def test_dry_run_does_not_modify_existing_catalog(tmp_path):
     run_index(root)
     write_image(root / "dos.jpg", b"dos")
 
-    catalog = Catalog.open_dry_run(root / ".foto" / "catalog.sqlite")
+    catalog = Catalog.open_dry_run(
+        root / ".foto" / "catalog.sqlite", declared_locations=(Location("default", root, "fast"),)
+    )
     try:
         summary = Indexer(
             catalog,
-            root,
+            (Location("default", root, "fast"),),
             options=IndexingOptions(dry_run=True),
             hasher=CountingHasher(),
         ).run()
@@ -302,12 +307,20 @@ def test_partial_scan_does_not_mark_absences(tmp_path, monkeypatch):
     assert all(row["status"] == "present" for row in read_locations(root).values())
 
 
-def test_nonexistent_root_raises_without_touching_catalog(tmp_path):
+def test_unavailable_location_is_tolerated_without_touching_rows(tmp_path):
+    """Una ubicación declarada ausente avisa y degrada: no es error (ADR 0010)."""
     root = tmp_path / "no-existe"
     catalog = Catalog.open_in_memory()
     try:
-        with pytest.raises(LibraryError):
-            Indexer(catalog, root, options=IndexingOptions()).run()
+        summary = Indexer(
+            catalog,
+            (Location("default", root, "fast"),),
+            options=IndexingOptions(),
+        ).run()
+        assert summary.status == "ok"
+        assert summary.locations_scanned == ()
+        assert summary.locations_unavailable == ("default",)
+        assert summary.added == 0
         assert catalog.counts().photos == 0
         assert catalog.counts().locations == 0
     finally:
@@ -343,15 +356,9 @@ def test_move_library_preserves_relative_paths_and_photos(tmp_path):
 
     moved = tmp_path / "biblioteca-movida"
     original.rename(moved)
-    # ADR 0008: el descriptor lleva el campo root. Al relocalizar la
-    # fototeca el dueño actualiza esa línea (o borra el campo, que es
-    # opcional); la app nunca mezcla catálogos en silencio.
-    descriptor = moved / ".foto" / "library.toml"
-    descriptor.write_text(
-        descriptor.read_text(encoding="utf-8")
-        .replace(f'root = "{original}"', f'root = "{moved}"'),
-        encoding="utf-8",
-    )
+    # ADR 0010 (Decisión C): las rutas son relativas y el catálogo las
+    # sobrevive; al relocalizar la fototeca, el dueño redeclara la
+    # ubicación (o reescanea): las filas siguen siendo válidas.
     summary = run_index(moved)
 
     after = read_locations(moved)

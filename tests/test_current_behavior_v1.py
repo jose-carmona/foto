@@ -3,9 +3,10 @@
 Antes de la fototeca distribuida (ADR 0010), fija el comportamiento
 observable de la cadena v1 —resolución, bootstrap, escaneo incremental,
 prune y carga en la UI—. La resolución se actualizó en el paso 2 (T2.2: la
-config es la única fuente y ``FOTO_LIBRARY`` es error); el resto queda como
-caracterización: si alguno de estos tests falla al implementar los pasos 3–4,
-hay una rotura no prevista.
+config es la única fuente y ``FOTO_LIBRARY`` es error) y el bootstrap pasó
+al catálogo en el paso 3 (T3.7: ``library.toml`` desaparece); el resto
+queda como caracterización: si alguno de estos tests falla al implementar
+el paso 4, hay una rotura no prevista.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from foto.core.errors import LibraryError
 from foto.core.indexing import Indexer, IndexingOptions
 from foto.storage.catalog import Catalog
 from foto.storage.config import (
@@ -24,11 +24,10 @@ from foto.storage.config import (
     ConfigError,
     Location,
 )
-from foto.storage.library import ensure_library, library_file
 from foto.storage.resolver import resolve_locations
 from foto.ui.app import load_photos
 
-from .conftest import write_image
+from .conftest import default_location, write_image
 
 # ----------------------------------------------------------------------
 # Resolución v1: la config es la única fuente (ADR 0010, T2.2)
@@ -71,46 +70,67 @@ def test_foto_library_environment_is_rejected(tmp_path, monkeypatch):
 
 
 # ----------------------------------------------------------------------
-# Bootstrap v1: library.toml con root, idempotente y coherente
+# Bootstrap v1: catálogo directo en la metainformación (T3.7, Decisión C)
 # ----------------------------------------------------------------------
 
 
-def test_bootstrap_creates_descriptor_with_root_once(tmp_path):
-    """``ensure_library`` crea el descriptor una vez y lo reutiliza."""
+def test_indexer_creates_the_catalog_directly(tmp_path):
+    """Con el descriptor retirado, el catálogo se crea y abre directamente."""
     root = tmp_path / "fototeca"
     root.mkdir()
+    write_image(root / "una.jpg", b"bootstrap")
+    (root / ".foto").mkdir()
 
-    first = ensure_library(root)
-    descriptor = library_file(root / ".foto")
-    assert first.created is True
-    assert descriptor.exists()
-    content = descriptor.read_text(encoding="utf-8")
-    assert f'root = "{root.resolve()}"' in content
-    assert 'version = 1' in content
-    assert 'id = "' in content
-
-    second = ensure_library(root)
-    assert second.created is False
-    assert second.config.id == first.config.id
-    assert second.config.root == root.resolve()
-
-
-def test_bootstrap_rejects_foreign_descriptor(tmp_path):
-    """Un descriptor con ``root`` distinto es un error explícito."""
-    library_a = tmp_path / "a"
-    library_b = tmp_path / "b"
-    library_a.mkdir()
-    library_b.mkdir()
-    ensure_library(library_a)
-
-    with pytest.raises(LibraryError, match="pertenece a la fototeca"):
-        ensure_library(library_b, library_a / ".foto")
+    catalog = Catalog.open(
+        root / ".foto" / "catalog.sqlite",
+        declared_locations=(default_location(root),),
+    )
+    try:
+        summary = Indexer(
+            catalog,
+            (default_location(root),),
+            options=IndexingOptions(skip=frozenset({"geocode"})),
+        ).run()
+        assert summary.status == "ok"
+        assert (root / ".foto" / "catalog.sqlite").is_file()
+        # El descriptor ya no existe; si hubiera uno huérfano, se ignora.
+        assert not (root / ".foto" / "library.toml").exists()
+        named = catalog.list_named_locations()
+        assert [row.name for row in named] == [DEFAULT_LOCATION_NAME]
+    finally:
+        catalog.close()
 
 
-def test_bootstrap_rejects_missing_root(tmp_path):
-    """La raíz inexistente sigue siendo un error duro del bootstrap."""
-    with pytest.raises(LibraryError, match="no existe"):
-        ensure_library(tmp_path / "falta")
+def test_second_run_is_idempotent_for_the_declaration(tmp_path):
+    """Dos pasadas seguidas con la misma config no cambian la declaración."""
+    root = tmp_path / "fototeca"
+    root.mkdir()
+    write_image(root / "una.jpg", b"bootstrap")
+    (root / ".foto").mkdir()
+    declared = (default_location(root),)
+
+    catalog = Catalog.open(
+        root / ".foto" / "catalog.sqlite", declared_locations=declared
+    )
+    try:
+        Indexer(catalog, declared, options=IndexingOptions(
+            skip=frozenset({"geocode"})
+        )).run()
+        before = [
+            (row.name, row.path, row.tier, row.state)
+            for row in catalog.list_named_locations()
+        ]
+        summary = Indexer(
+            catalog, declared, options=IndexingOptions(skip=frozenset({"geocode"}))
+        ).run()
+        after = [
+            (row.name, row.path, row.tier, row.state)
+            for row in catalog.list_named_locations()
+        ]
+        assert before == after
+        assert summary.locations_sync.changed is False
+    finally:
+        catalog.close()
 
 
 # ----------------------------------------------------------------------
@@ -125,21 +145,24 @@ def indexed_library(tmp_path):
     root.mkdir()
     write_image(root / "2024" / "una.jpg", b"contenido-uno")
     write_image(root / "2025" / "dos.jpg", b"contenido-dos")
+    (root / ".foto").mkdir()
 
-    bootstrap = ensure_library(root)
-    catalog = Catalog.open(root / ".foto" / "catalog.sqlite")
+    catalog = Catalog.open(
+        root / ".foto" / "catalog.sqlite",
+        declared_locations=(default_location(root),),
+    )
     indexer = Indexer(
         catalog,
-        root,
+        (default_location(root),),
         options=IndexingOptions(skip=frozenset({"geocode"})),
     )
     summary = indexer.run()
-    return root, bootstrap, catalog, summary
+    return root, catalog, summary
 
 
 def test_single_root_scan_records_relative_locations(indexed_library):
     """La primera pasada da de alta una fila por fichero con ``rel_path``."""
-    _root, _, catalog, summary = indexed_library
+    _root, catalog, summary = indexed_library
     try:
         assert summary.status == "ok"
         assert summary.added == 2
@@ -147,7 +170,7 @@ def test_single_root_scan_records_relative_locations(indexed_library):
         assert counts.photos == 2
         assert counts.locations == 2
 
-        present = catalog.list_present_locations()
+        present = catalog.list_present_files()
         rel_paths = sorted(row["rel_path"] for row in present)
         assert rel_paths == ["2024/una.jpg", "2025/dos.jpg"]
         # Las rutas en el catálogo son relativas POSIX a la única raíz.
@@ -161,12 +184,12 @@ def test_single_root_rescan_marks_missing_without_touching_others(
     indexed_library,
 ):
     """Quitar un fichero marca su fila ``missing``; la otra queda intacta."""
-    root, _, catalog, _ = indexed_library
+    root, catalog, _ = indexed_library
     (root / "2024" / "una.jpg").unlink()
 
     indexer = Indexer(
         catalog,
-        root,
+        (default_location(root),),
         options=IndexingOptions(skip=frozenset({"geocode"})),
     )
     summary = indexer.run()
@@ -184,12 +207,12 @@ def test_single_root_prune_removes_old_missing_rows_and_orphans(
     indexed_library,
 ):
     """``--prune-after 0`` limpia filas ausentes y la foto huérfana."""
-    root, _, catalog, _ = indexed_library
+    root, catalog, _ = indexed_library
     (root / "2024" / "una.jpg").unlink()
 
     indexer = Indexer(
         catalog,
-        root,
+        (default_location(root),),
         options=IndexingOptions(
             skip=frozenset({"geocode"}), prune=True, prune_after_days=0
         ),
@@ -205,11 +228,11 @@ def test_single_root_prune_removes_old_missing_rows_and_orphans(
 
 def test_prune_never_touches_present_rows(indexed_library):
     """``--prune`` no borra filas ni fotos con ubicaciones presentes."""
-    root, _, catalog, _ = indexed_library
+    root, catalog, _ = indexed_library
 
     indexer = Indexer(
         catalog,
-        root,
+        (default_location(root),),
         options=IndexingOptions(
             skip=frozenset({"geocode"}), prune=True, prune_after_days=0
         ),
@@ -224,15 +247,15 @@ def test_prune_never_touches_present_rows(indexed_library):
 
 
 # ----------------------------------------------------------------------
-# UI v1: rutas absolutas derivadas de la raíz única
+# UI v1: rutas absolutas desde la BD (T3.6)
 # ----------------------------------------------------------------------
 
 
 def test_ui_loads_from_catalog_with_absolute_paths_from_single_root(
     indexed_library,
 ):
-    """``load_photos`` deriva las rutas absolutas de la raíz única."""
-    root, _bootstrap, catalog, _ = indexed_library
+    """``load_photos`` deriva las rutas absolutas del catálogo (join locations)."""
+    root, catalog, _ = indexed_library
     catalog.close()
 
     photos = load_photos(root)
@@ -245,29 +268,23 @@ def test_ui_loads_from_catalog_with_absolute_paths_from_single_root(
     assert all(photo.photo_hash.startswith("sha256:") for photo in photos)
 
 
-def test_ui_requires_prepared_library(tmp_path):
-    """Sin descriptor ni catálogo, la UI falla con mensaje claro.
-
-    Caracterización: hoy el guard del descriptor (library.toml) dispara
-    antes que el del catálogo; con el ADR 0010 el guard pasará al catálogo
-    y este test se actualizará entonces (T3.6).
-    """
+def test_ui_requires_the_catalog(tmp_path):
+    """Sin catálogo, la UI falla con mensaje claro (guard del catálogo, T3.7)."""
     root = tmp_path / "vacia"
     root.mkdir()
 
-    with pytest.raises(
-        RuntimeError, match="no tiene descriptor|catalogo|índice|foto-index"
-    ):
+    with pytest.raises(FileNotFoundError, match="foto-index"):
         load_photos(root)
 
 
 def test_run_summary_counts_survive_json_round_trip(indexed_library):
     """El resumen de la pasada v1 es serializable (``--json``)."""
-    _, _, _, summary = indexed_library
+    _, _, summary = indexed_library
     payload = summary.to_dict()
     assert payload["totals"]["photos"] == 2
     assert payload["totals"]["locations"] == 2
     assert payload["phases"]["scan"]["added"] == 2
     assert payload["phases"]["scan"]["status"] == "ok"
+    assert payload["locations"]["scanned"] == [DEFAULT_LOCATION_NAME]
     now = datetime.now(UTC).isoformat()
     assert summary.mode == "incremental" and now  # modo por defecto intacto

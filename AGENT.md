@@ -26,12 +26,13 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   las acciones con un único dispatcher (`_dispatch`) con registro acción →
   handler. Todos son módulos sin Qt que la ventana consume.
 - Indexador `foto-index` completo en `src/foto/indexer/` + `core/` + `storage/`:
-  catálogo SQLite incremental (esquema v5, con las tablas `tags` y
+  catálogo SQLite incremental (esquema v6, con las tablas `tags` y
   `photo_tags` de [ADR 0006](docs/adr/0006-etiquetas.md) —`photo_tags.source`
   ampliado con `'import'` por el
   [ADR 0007](docs/adr/0007-exportar-importar-metadatos.md)— y la etiqueta de
   sistema `fav` sembrada por `kind='system'`), hashes SHA-256 de contenido,
-  rutas relativas, reconciliación de ausencias, `exiftool` opcional y lock de
+  rutas relativas por ubicación (`files.location_id` + `rel_path`, ADR 0010),
+  reconciliación de ausencias, `exiftool` opcional y lock de
   escritor único. Es
   un **pipeline de fases** (`scan` y `geocode`, [ADR 0005](docs/adr/0005-fases-y-geocodificacion.md)):
   la fase `geocode` geocodifica en inverso con Nominatim las fotos con GPS y
@@ -51,10 +52,11 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   aplica merge aditivo idempotente (nunca borra; las filas que crea nacen
   `source='import'`). El indexador no importa Qt.
 - El visor **consume el catálogo** (`ADR 0003`): lee solo desde
-  `<fototeca>/.foto/catalog.sqlite` (ubicaciones `present`). Si no existe el
-  catálogo, la app avisa y se cierra. Las búsquedas y ordenaciones se hacen
-  contra el índice, incluida la búsqueda por lugar y el orden
-  `:sort date`/`camera`/`location` con grupos por `Municipio, País`
+  `<fototeca>/.foto/catalog.sqlite` (apariciones `present` de ubicaciones
+  activas; las rutas absolutas salen del join con `locations.path`, ADR
+  0010). Si no existe el catálogo, la app avisa y se cierra. Las búsquedas y
+  ordenaciones se hacen contra el índice, incluida la búsqueda por lugar y
+  el orden `:sort date`/`camera`/`location` con grupos por `Municipio, País`
   (`country` + `municipality`); el lugar llega de las columnas de `place_*`
   que la fase `geocode` llenó. `foto-index` es independiente (CLI/cron/systemd).
 - El visor **escribe** las etiquetas y los favoritos en el catálogo con una
@@ -188,14 +190,14 @@ resolución (configuración, fototeca y metainformación), en
   `version = 2`, `[library].path` en `version = 1` (una única ubicación
   `default`); las ubicaciones de la lista se editan a mano
   ([ADR 0010](docs/adr/0010-fototeca-distribuida.md)).
-- **De la biblioteca:** `library.toml` en el directorio de metainformación,
-  junto al catálogo SQLite y la caché de miniaturas. La biblioteca se describe
-  a sí misma y lleva el campo opcional `root` con la fototeca a la que
-  pertenece; su no coincidencia con la raíz resuelta es un error explícito
-  (relocalizar o regenerar), y los descriptores sin `root` (legado) se aceptan.
-  (Su retirada está decidida en el ADR 0010, paso 3.)
-- **Metainformación:** `library.toml`, `catalog.sqlite`, `thumbs/`,
-  `index.lock` y `exports/` viven juntos en el directorio resuelto, que por
+- **De la biblioteca:** la tabla `locations` del catálogo (esquema v6) es la
+  única referencia de ubicaciones (nombre, path, tier, estado). El
+  descriptor `library.toml` ya no existe (ADR 0010): no se crea, no se lee
+  y no se valida; los descriptores ya presentes en `.foto/` se ignoran
+  (huérfanos) y no se borran. La coherencia del sistema es «config ↔
+  catálogo»: `foto-index` la sincroniza al arrancar, dentro del lock.
+- **Metainformación:** `catalog.sqlite`, `thumbs/`, `index.lock` y
+  `exports/` viven juntos en el directorio resuelto, que por
   defecto es `<fototeca>/.foto` (con una sola ubicación declarada,
   `<única ubicación>/.foto`; con varias, obligatorio concretarla con
   `--metadata`/`FOTO_METADATA`/`[metadata].path`) y puede vivir fuera de la
@@ -225,16 +227,27 @@ El marco de fases y la geocodificación, en `docs/adr/0005-fases-y-geocodificaci
 Resumen operativo:
 
 - **Identidad:** `sha256:<64 hex>` del contenido. Una fila en `photos` por hash y
-  N filas en `locations` por ruta relativa POSIX.
+  N filas en `files` (esquema v6, ADR 0010) por `(location_id, rel_path)`,
+  con la tabla `locations` de ubicaciones con nombre como única referencia
+  de ubicaciones.
 - **Escrituras:** solo en `<fototeca>/.foto/`. Nunca se modifican, mueven ni
   borran originales. El catálogo es un índice reconstruible.
 - **Incremental:** firma `(size, mtime_ns, inode, device)`; el hash solo se
   calcula para altas y cambios. `--full` fuerza un rehash completo y reextrae
   metadatos. El resumen expone `hashed_files` y `metadata_extracted` para que ese
   trabajo sea visible aunque `unchanged` no cambie.
+- **Multi-ubicación (ADR 0010):** al arrancar, `foto-index` sincroniza la
+  declaración de la config con la tabla `locations` (alta, cambio, baja con
+  filas marcadas `deleted`, reactivación; idempotente, `--dry-run` calcula
+  el diff sin escribir y `--json` lo reporta) y después recorre solo las
+  ubicaciones declaradas y disponibles: una ausente avisa y degrada (salida
+  0, sus filas no se tocan).
 - **Ausencias:** se marcan `missing` por reconciliación con la tabla temporal
-  `seen`; un recorrido parcial o una raíz ausente no marcan nada. `--prune` solo
-  borra filas del catálogo.
+  `seen`, por ubicación; un recorrido parcial o una raíz ausente no marcan
+  nada. `--prune` solo borra filas del catálogo —nunca ficheros— y solo de
+  ubicaciones verificadas presentes en esa ejecución y de ubicaciones
+  `deleted` (ventana `--prune-after` medida desde el `deleted_at` de la
+  ubicación).
 - **Fototeca de Apple Photos** ([ADR 0009](docs/adr/0009-indexado-apple-photos.md)):
   si la raíz es un paquete `.photoslibrary`, el escaneo se restringe a
   `originals/` con una `ScanPolicy` declarativa (`core/scanner.py`), inyectada
@@ -266,7 +279,9 @@ Resumen operativo:
 - Usa `tmp_path` y fixtures con ficheros de imagen mínimos en lugar de imágenes
   reales grandes.
 - La suite cubre hash e identidad, indexado incremental, borrados y `--prune`,
-  recorrido parcial, metadatos, catálogo, bootstrap, lock y CLI; la geometría y
+  recorrido parcial, metadatos, catálogo, sincronización config ↔ catálogo
+  (altas, cambios, bajas, reactivaciones), ubicaciones ausentes, lock y CLI;
+  la geometría y
   los nombres de la caché de miniaturas, así como la lógica de presentación de
   la UI (`tests/test_presentation.py`), se prueban sin Qt.
 - Todo bug corregido lleva su test de regresión.

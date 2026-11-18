@@ -13,10 +13,30 @@ from foto.storage.catalog import SCHEMA_VERSION, Catalog
 NOW = "2026-10-30T12:00:00+00:00"
 
 
-def _open_catalog(tmp_path):
+def _open_catalog(tmp_path, *, declared=()):
     root = tmp_path / "biblioteca"
     (root / ".foto").mkdir(parents=True)
-    return root, Catalog.open(root / ".foto" / "catalog.sqlite")
+    return root, Catalog.open(root / ".foto" / "catalog.sqlite", declared_locations=declared)
+
+
+def _seed_named_location(catalog, root, *, name="default", tier="fast") -> int:
+    """Crea una ubicación con nombre y devuelve su ``id``."""
+    return catalog.insert_named_location(
+        name=name, path=root, tier=tier, now=NOW
+    )
+
+
+def _insert_file(catalog, location_id, rel_path, photo_hash, **overrides):
+    catalog.insert_file(
+        location_id=location_id,
+        rel_path=rel_path,
+        photo_hash=photo_hash,
+        size=overrides.get("size", 5),
+        mtime_ns=overrides.get("mtime_ns", 1),
+        inode=overrides.get("inode", 1),
+        device=overrides.get("device", 1),
+        now=NOW,
+    )
 
 
 def test_schema_version_and_wal(tmp_path):
@@ -52,14 +72,12 @@ def test_dry_run_copies_existing_catalog_without_writing(tmp_path):
     root, catalog = _open_catalog(tmp_path)
     try:
         catalog.insert_photo("sha256:" + "a" * 64, ".jpg", "JPEG", NOW)
-        catalog.insert_location(
-            rel_path="2024/una.jpg",
-            photo_hash="sha256:" + "a" * 64,
+        _insert_file(
+            catalog,
+            _seed_named_location(catalog, root),
+            "2024/una.jpg",
+            "sha256:" + "a" * 64,
             size=10,
-            mtime_ns=1,
-            inode=1,
-            device=1,
-            now=NOW,
         )
         catalog.commit()
     finally:
@@ -103,17 +121,9 @@ def test_load_from_catalog_exposes_content_hash(tmp_path):
     (root / "2024" / "una.jpg").write_bytes(b"datos")
     try:
         catalog.insert_photo(photo_hash, ".jpg", "JPEG", NOW)
-        catalog.insert_location(
-            rel_path="2024/una.jpg",
-            photo_hash=photo_hash,
-            size=5,
-            mtime_ns=1,
-            inode=1,
-            device=1,
-            now=NOW,
-        )
+        _insert_file(catalog, _seed_named_location(catalog, root), "2024/una.jpg", photo_hash)
         catalog.commit()
-        photos = load_from_catalog(catalog, root)
+        photos = load_from_catalog(catalog)
     finally:
         catalog.close()
 
@@ -129,15 +139,7 @@ def test_open_read_only_reads_data_without_changing_the_file(tmp_path):
     photo_hash = "sha256:" + "d" * 64
     try:
         catalog.insert_photo(photo_hash, ".jpg", "JPEG", NOW)
-        catalog.insert_location(
-            rel_path="2024/una.jpg",
-            photo_hash=photo_hash,
-            size=5,
-            mtime_ns=1,
-            inode=1,
-            device=1,
-            now=NOW,
-        )
+        _insert_file(catalog, _seed_named_location(catalog, root), "2024/una.jpg", photo_hash)
         catalog.commit()
     finally:
         catalog.close()
@@ -168,15 +170,7 @@ def test_open_read_only_rejects_writes(tmp_path):
     photo_hash = "sha256:" + "e" * 64
     try:
         catalog.insert_photo(photo_hash, ".jpg", "JPEG", NOW)
-        catalog.insert_location(
-            rel_path="2024/una.jpg",
-            photo_hash=photo_hash,
-            size=5,
-            mtime_ns=1,
-            inode=1,
-            device=1,
-            now=NOW,
-        )
+        _insert_file(catalog, _seed_named_location(catalog, root), "2024/una.jpg", photo_hash)
         catalog.commit()
     finally:
         catalog.close()
@@ -185,7 +179,7 @@ def test_open_read_only_rejects_writes(tmp_path):
     read_only = Catalog.open_read_only(path)
     try:
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
-            read_only.mark_location_present("2024/una.jpg", NOW)
+            read_only.mark_file_present(1, "2024/una.jpg", NOW)
     finally:
         read_only.close()
 
@@ -306,7 +300,7 @@ def test_v5_migration_preserves_rows_and_accepts_import(tmp_path):
 
     catalog = Catalog.open(path)
     try:
-        assert catalog.user_version() == 5
+        assert catalog.user_version() == SCHEMA_VERSION
         rows = catalog._conn.execute(
             "SELECT source, status, confidence, region_x, region_y, "
             "region_w, region_h, created_at, updated_at "
@@ -413,7 +407,7 @@ def test_v5_migration_is_idempotent(tmp_path):
 
     second = Catalog.open(path)
     try:
-        assert second.user_version() == 5
+        assert second.user_version() == SCHEMA_VERSION
         assert _tags_schema(second._conn) == schema_first
         assert second._conn.execute(
             "SELECT COUNT(*) FROM photo_tags"

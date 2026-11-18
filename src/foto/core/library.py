@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from foto.storage.catalog import Catalog
+from foto.storage.catalog import TIER_RANK, Catalog
 from foto.storage.tags import TagAssignment
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".heic", ".raf", ".cr2", ".nef", ".arw", ".dng", ".png", ".tif", ".tiff"}
@@ -155,13 +155,24 @@ def _format_dimensions(width: int | None, height: int | None) -> str:
     return ""
 
 
-def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto]:
-    """Carga fotos desde el catálogo SQLite (solo ubicaciones presentes).
+def _tier_rank(tier: str | None) -> int:
+    """Orden canónico por ``tier`` (ADR 0010, Decisión 4): fast < archive."""
+    if tier is None:
+        return 1
+    return TIER_RANK.get(tier, 1)
 
-    Agrupa por hash: una entrada por foto. Ubicación canónica = menor rel_path
-    en orden lexicográfico POSIX. El resto se guardan como ubicaciones alternativas.
+
+def load_from_catalog(catalog: Catalog) -> list[CatalogPhoto]:
+    """Carga fotos desde el catálogo SQLite (solo ubicaciones activas).
+
+    El catálogo es la única fuente de verdad (ADR 0010, Decisión 7): no hay
+    parámetro de raíz. Agrupa por hash: una entrada por foto. Ubicación
+    canónica = ``tier`` primero (``fast`` gana a ``archive``) y menor
+    ``rel_path`` dentro del mismo ``tier``; las rutas absolutas salen del
+    join ``files.location_id`` → ``locations.path``. Las apariciones de
+    ubicaciones ``deleted`` no se muestran (pendientes de ``--prune``).
     """
-    rows = catalog.list_present_locations()
+    rows = catalog.list_present_files()
     grouped: dict[str, list] = {}
     for row in rows:
         grouped.setdefault(row["photo_hash"], []).append(row)
@@ -170,12 +181,19 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
 
     photos: list[CatalogPhoto] = []
     for photo_hash, items in grouped.items():
-        items_sorted = sorted(items, key=lambda r: str(r["rel_path"]))
+        items_sorted = sorted(
+            items,
+            key=lambda r: (
+                _tier_rank(r["location_tier"]),
+                str(r["rel_path"]),
+            ),
+        )
         canonical = items_sorted[0]
         others = items_sorted[1:]
 
+        location_path = Path(canonical["location_path"])
         rel_path = Path(canonical["rel_path"])
-        full_path = (library_path / rel_path).resolve()
+        full_path = (location_path / rel_path).resolve()
         folder = str(rel_path.parent)
         if folder == ".":
             folder = "."
@@ -220,7 +238,9 @@ def load_from_catalog(catalog: Catalog, library_path: Path) -> list[CatalogPhoto
             tags=assignments.get(photo_hash, ()),
             path=full_path,
             canonical_rel_path=str(canonical["rel_path"]),
-            other_locations=tuple(str(r["rel_path"]) for r in others),
+            other_locations=tuple(
+                f"{row['location_name']}:{row['rel_path']}" for row in others
+            ),
             photo_hash=photo_hash,
         )
         photos.append(photo)

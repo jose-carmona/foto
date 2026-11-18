@@ -18,7 +18,7 @@ from PySide6.QtGui import QKeyEvent, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from foto.storage.catalog import Catalog
-from foto.storage.library import ensure_library
+from foto.storage.config import Location
 from foto.storage.tags import (
     assign_tag,
     connect_read_write,
@@ -83,13 +83,20 @@ def library(tmp_path):
     root = tmp_path / "biblioteca"
     write_image(root / "2024" / "a.jpg", b"one")
     write_image(root / "2024" / "b.jpg", b"two")
-    ensure_library(root)
+    (root / ".foto").mkdir()
 
-    catalog = Catalog.open(root / ".foto" / "catalog.sqlite")
+    declared = (Location("default", root, "fast"),)
+    catalog = Catalog.open(
+        root / ".foto" / "catalog.sqlite", declared_locations=declared
+    )
     try:
+        location_id = catalog.insert_named_location(
+            name="default", path=root, tier="fast", now=NOW
+        )
         for photo_hash, rel_path in ((HASH_A, "2024/a.jpg"), (HASH_B, "2024/b.jpg")):
             catalog.insert_photo(photo_hash, ".jpg", "JPEG", NOW)
-            catalog.insert_location(
+            catalog.insert_file(
+                location_id=location_id,
                 rel_path=rel_path,
                 photo_hash=photo_hash,
                 size=4,

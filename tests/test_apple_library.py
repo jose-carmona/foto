@@ -16,13 +16,13 @@ from pathlib import Path
 
 import pytest
 
-from foto.core.errors import IndexingError, LibraryError
+from foto.core.errors import LibraryError
 from foto.core.hashing import hash_bytes
 from foto.core.indexing import Indexer, IndexingOptions
 from foto.core.scanner import LibraryScanner, apple_photos_scan_policy
 from foto.indexer.cli import main
 from foto.storage.catalog import Catalog
-from foto.storage.library import ensure_library
+from foto.storage.config import Location
 from tests.conftest import write_image
 
 FIXTURE_PACKAGE = (
@@ -46,16 +46,17 @@ def _run_index(
     *,
     options: IndexingOptions | None = None,
     hasher=None,
-    scanner: LibraryScanner | Callable[..., LibraryScanner] | None = None,
+    scanner: Callable[[Path], LibraryScanner] | None = None,
 ):
     """Indexa con metainformación externa al paquete, como manda el ADR 0009."""
     metadata = root.parent / "metainfo"
-    ensure_library(root, metadata)
-    catalog = Catalog.open(metadata / "catalog.sqlite")
+    metadata.mkdir(parents=True, exist_ok=True)
+    declared = (Location("default", root, "fast"),)
+    catalog = Catalog.open(metadata / "catalog.sqlite", declared_locations=declared)
     try:
         return Indexer(
             catalog,
-            root,
+            declared,
             options=options or IndexingOptions(),
             hasher=hasher,
             scanner=scanner,
@@ -67,7 +68,7 @@ def _run_index(
 def _location_rel_paths(metadata: Path) -> set[str]:
     catalog = Catalog.open(metadata / "catalog.sqlite")
     try:
-        rows = catalog._conn.execute("SELECT rel_path FROM locations").fetchall()
+        rows = catalog._conn.execute("SELECT rel_path FROM files").fetchall()
         return {str(row["rel_path"]) for row in rows}
     finally:
         catalog.close()
@@ -97,13 +98,12 @@ class CountingHasher:
 # ----------------------------------------------------------------------
 # T2.2 — Inyección del scanner en el Indexer
 # ----------------------------------------------------------------------
-def test_indexer_uses_the_injected_scanner_and_indexes_only_originals(tmp_path):
+def test_indexer_indexes_only_originals_with_the_per_location_policy(tmp_path):
+    """Sin scanner inyectado, la política Apple se aplica mirando la raíz."""
     root = _build_synthetic_package(tmp_path)
     hasher = CountingHasher()
 
-    summary = _run_index(
-        root, hasher=hasher, scanner=_apple_scanner_factory
-    )
+    summary = _run_index(root, hasher=hasher)
 
     assert summary.status == "ok"
     assert summary.photos_total == 2
@@ -116,30 +116,23 @@ def test_indexer_uses_the_injected_scanner_and_indexes_only_originals(tmp_path):
     }
 
 
-def test_injected_scanner_instance_is_reused_across_runs(tmp_path):
+def test_indexer_uses_the_injected_scanner_factory(tmp_path):
+    """La factoría inyectada se llama con la ruta de la ubicación declarada."""
     root = _build_synthetic_package(tmp_path)
-    scanner = _apple_scanner_factory(root)
+    calls: list[Path] = []
 
-    first = _run_index(root, scanner=scanner)
-    second = _run_index(root, scanner=scanner)
+    def factory(path: Path) -> LibraryScanner:
+        calls.append(Path(path))
+        return LibraryScanner(path, policy=apple_photos_scan_policy())
+
+    first = _run_index(root, scanner=factory)
+    second = _run_index(root, scanner=factory)
 
     assert first.status == "ok"
     assert second.status == "ok"
     assert second.unchanged == 2
     assert second.hashed_files == 0
-
-
-def test_injected_scanner_built_on_another_root_is_rejected(tmp_path):
-    root = _build_synthetic_package(tmp_path)
-    other = tmp_path / "Otra.photoslibrary"
-    other.mkdir()
-
-    with pytest.raises(IndexingError, match="otra raíz"):
-        _run_index(
-            root,
-            options=IndexingOptions(prune_after_days=0),
-            scanner=LibraryScanner(other, policy=apple_photos_scan_policy()),
-        )
+    assert calls == [root, root]
 
 
 def test_incremental_flow_works_over_originals(tmp_path):
@@ -170,7 +163,7 @@ def test_incremental_flow_works_over_originals(tmp_path):
         rows = {
             str(row["rel_path"]): str(row["status"])
             for row in locations._conn.execute(
-                "SELECT rel_path, status FROM locations"
+                "SELECT rel_path, status FROM files"
             )
         }
     finally:
@@ -261,7 +254,7 @@ def test_cli_logs_the_applied_apple_policy(tmp_path, capsys, monkeypatch):
     code = main(_cli_args(tmp_path, "--metadata", str(tmp_path / "metainfo")))
 
     assert code == 0
-    assert "política de escaneo aplicada" in capsys.readouterr().err
+    assert "política de escaneo de Apple Photos aplicada" in capsys.readouterr().err
 
 
 def test_cli_without_external_metadata_fails_for_an_apple_package(

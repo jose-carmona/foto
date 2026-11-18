@@ -12,7 +12,7 @@ import json
 
 from foto.indexer.cli import main as index_main
 from foto.storage.catalog import CATALOG_FILE_NAME
-from foto.storage.library import foto_dir, library_file, thumbs_dir
+from foto.storage.library import FOTO_DIR_NAME, thumbs_dir
 from foto.storage.lock import LOCK_FILE_NAME
 from foto.transfer.cli_export import main as export_main
 from foto.transfer.cli_import import main as import_main
@@ -26,7 +26,7 @@ def test_the_four_entry_points_derive_the_same_metadata_dir(tmp_path, capsys):
     # Config v1 que declara la única ubicación: la suite no debe depender de
     # la del usuario (ADR 0010: la config es la única fuente de ubicaciones).
     config = write_v1_config(tmp_path / "config.toml", root)
-    derived = foto_dir(root)
+    derived = root / FOTO_DIR_NAME
 
     # foto-index crea el directorio de metainformación derivado.
     code = index_main(
@@ -45,8 +45,8 @@ def test_the_four_entry_points_derive_the_same_metadata_dir(tmp_path, capsys):
     assert sorted(path.name for path in root.iterdir()) == [".foto", "2026"]
     assert (derived / CATALOG_FILE_NAME).is_file()
     assert (derived / LOCK_FILE_NAME).is_file()
-    assert library_file(derived) == derived / "library.toml"
-    assert library_file(derived).is_file()
+    # El descriptor ya no existe (ADR 0010, Decisión C).
+    assert not (derived / "library.toml").exists()
     assert thumbs_dir(derived) == derived / "thumbs"
 
     # foto-export lee el catálogo de esa misma .foto.

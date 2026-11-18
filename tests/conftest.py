@@ -13,7 +13,8 @@ from foto.core.hashing import hash_bytes
 from foto.core.indexing import Indexer, IndexingOptions, IndexingSummary
 from foto.core.metadata import ExtractionOutcome, PhotoMetadata
 from foto.storage.catalog import Catalog
-from foto.storage.library import ensure_library
+from foto.storage.config import DEFAULT_LOCATION_NAME, DEFAULT_LOCATION_TIER, Location
+from foto.storage.library import FOTO_DIR_NAME
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +56,28 @@ def write_v1_config(path: Path, library: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def write_v2_config(path: Path, locations: Sequence[tuple[str, Path, str]]) -> Path:
+    """Escribe un ``config.toml`` v2 con ``[[library.locations]]``."""
+    lines = ["version = 2", ""]
+    for name, target, tier in locations:
+        lines.extend(
+            [
+                "[[library.locations]]",
+                f'name = "{name}"',
+                f'path = "{target.as_posix()}"',
+                f'tier = "{tier}"',
+                "",
+            ]
+        )
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def default_location(root: Path, *, name: str = DEFAULT_LOCATION_NAME) -> Location:
+    """La ubicación ``default`` de una biblioteca de raíz única (v1)."""
+    return Location(name=name, path=root, tier=DEFAULT_LOCATION_TIER)
 
 
 class CountingHasher:
@@ -184,15 +207,24 @@ def run_index(
     extractor: FakeExtractor | None = None,
     geocoder: FakeGeocoder | None = None,
     catalog: Catalog | None = None,
+    location_name: str = DEFAULT_LOCATION_NAME,
 ) -> IndexingSummary:
-    """Ejecuta el indexador sobre una biblioteca temporal."""
-    ensure_library(root)
+    """Ejecuta el indexador sobre una biblioteca temporal de raíz única.
+
+    La raíz se declara como una única ubicación ``default`` (v1, ADR 0010);
+    la sincronización config ↔ catálogo corre dentro de ``Indexer.run``.
+    """
+    metadata_dir = root / FOTO_DIR_NAME
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    declared = (default_location(root, name=location_name),)
     own_catalog = catalog is None
-    active_catalog = catalog or Catalog.open(root / ".foto" / "catalog.sqlite")
+    active_catalog = catalog or Catalog.open(
+        metadata_dir / "catalog.sqlite", declared_locations=declared
+    )
     try:
         return Indexer(
             active_catalog,
-            root,
+            declared,
             options=options or IndexingOptions(),
             hasher=hasher,
             extractor=extractor,
@@ -204,14 +236,26 @@ def run_index(
 
 
 def read_locations(root: Path) -> dict[str, dict[str, object]]:
-    """Lee las ubicaciones del catálogo para las aserciones."""
+    """Lee las apariciones de fichero del catálogo para las aserciones."""
     catalog = Catalog.open(root / ".foto" / "catalog.sqlite")
     try:
         rows = catalog._conn.execute(
-            "SELECT rel_path, photo_hash, status, missing_since, size, mtime_ns "
-            "FROM locations ORDER BY rel_path"
+            "SELECT location_id, rel_path, photo_hash, status, missing_since, "
+            "size, mtime_ns FROM files ORDER BY rel_path"
         ).fetchall()
         return {str(row["rel_path"]): dict(row) for row in rows}
+    finally:
+        catalog.close()
+
+
+def read_named_locations(root: Path) -> dict[str, dict[str, object]]:
+    """Lee las ubicaciones con nombre del catálogo para las aserciones."""
+    catalog = Catalog.open(root / ".foto" / "catalog.sqlite")
+    try:
+        rows = catalog._conn.execute(
+            "SELECT * FROM locations ORDER BY name"
+        ).fetchall()
+        return {str(row["name"]): dict(row) for row in rows}
     finally:
         catalog.close()
 

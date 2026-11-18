@@ -258,9 +258,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         try:
             if args.dry_run:
-                catalog = Catalog.open_dry_run(catalog_path)
+                catalog = Catalog.open_dry_run(
+                    catalog_path, declared_locations=tuple(locations)
+                )
             else:
-                catalog = Catalog.open(catalog_path)
+                catalog = Catalog.open(catalog_path, declared_locations=tuple(locations))
         except CatalogError as exc:
             logger.error("No se pudo abrir el catálogo: %s", exc)
             return 2

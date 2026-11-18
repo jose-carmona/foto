@@ -20,6 +20,7 @@ from foto.storage.catalog import (
     SCHEMA_VERSION,
     Catalog,
 )
+from foto.storage.config import Location
 from tests.conftest import FakeExtractor, FakeGeocoder, read_photos, run_index, write_image
 from tests.test_geocoding import make_place
 
@@ -751,7 +752,7 @@ def test_unknown_phase_name_is_rejected_at_construction(tmp_path):
         with pytest.raises(IndexingError, match="Se desconoce"):
             Indexer(
                 catalog,
-                root,
+                (Location("default", root, "fast"),),
                 options=IndexingOptions(skip=frozenset(["poda"])),
             )
     finally:
@@ -763,13 +764,17 @@ def test_fatal_scan_error_records_geocode_as_skipped(tmp_path, monkeypatch):
     (root / ".foto").mkdir(parents=True)
     catalog = Catalog.open(root / ".foto" / "catalog.sqlite")
 
-    def broken_scan(self, summary):
+    def broken_scan(self, summary, record):
         raise CatalogError("El disco desapareció")
 
-    monkeypatch.setattr(Indexer, "_scan", broken_scan)
+    monkeypatch.setattr(Indexer, "_scan_location", broken_scan)
     try:
         with pytest.raises(CatalogError):
-            Indexer(catalog, root, options=IndexingOptions()).run()
+            Indexer(
+                catalog,
+                (Location("default", root, "fast"),),
+                options=IndexingOptions(),
+            ).run()
         rows = catalog._conn.execute(
             "SELECT run_id, phase, status, reason FROM run_phases ORDER BY id"
         ).fetchall()
