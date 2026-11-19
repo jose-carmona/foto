@@ -109,6 +109,42 @@ def test_ui_loads_photos_from_an_existing_catalog(tmp_path):
     assert photos[0].photo_hash == "sha256:" + "d" * 64
 
 
+# ----------------------------------------------------------------------
+# T1.3 — el arranque abre el catálogo solo-lectura una sola vez
+# ----------------------------------------------------------------------
+def test_load_library_opens_the_catalog_read_only_once(tmp_path, monkeypatch):
+    """Fotos, tags y ubicaciones salen de una única conexión ``mode=ro``.
+
+    Antes el arranque abría y cerraba tres conexiones solo-lectura
+    secuenciales (load_photos, load_tags, load_locations) más la RW de
+    favoritos. La conexión RW sigue aparte (escritor único del visor,
+    ADR 0006); aquí solo cuentan las aperturas de lectura.
+    """
+    from foto.storage.catalog import Catalog as catalog_cls
+    from foto.ui.app import load_library
+
+    root = tmp_path / "biblioteca"
+    write_image(root / "2024" / "una.jpg", b"visibles")
+    _seed_catalog(root, "sha256:" + "d" * 64)
+
+    original = catalog_cls.open_read_only
+    aperturas = []
+
+    def _contando(path):
+        aperturas.append(path)
+        return original(path)
+
+    monkeypatch.setattr(catalog_cls, "open_read_only", _contando)
+
+    photos, tags, locations = load_library(root)
+
+    assert len(aperturas) == 1
+    assert len(photos) == 1
+    assert len(locations) == 1
+    assert [tag.kind for tag in tags] == ["system"]  # ``fav`` sembrada
+    assert photos[0].available is True
+
+
 def test_ui_missing_catalog_raises_without_creating_a_file(tmp_path):
     root = tmp_path / "biblioteca"
     root.mkdir()

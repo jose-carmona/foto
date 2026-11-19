@@ -26,6 +26,7 @@ from foto.ui.presentation import (
     KEY_5,
     KEY_DOLLAR,
     SORT_KEYS,
+    build_search_index,
     is_group_end,
     is_group_start,
     location_banner_parts,
@@ -203,6 +204,24 @@ def test_search_document_is_lowercase_normalized():
 
     assert document == document.casefold()
     assert "cámara óptica" in document
+
+
+def test_build_search_index_matches_the_per_photo_document():
+    """El índice precalculado (T1.5) no cambia el documento: lo cachea.
+
+    Cada entrada es idéntica carácter a carácter a ``photo_search_text``;
+    el mecanismo cambia (dict consultado por ``_apply_filter``), el
+    contenido no.
+    """
+    photos = [
+        _photo("playa.jpg", "2024/costa", other_locations=("2025/copia.jpg",)),
+        _photo("Añoño.JPG", "2024", camera="Cámara Óptica"),
+        _photo("montana.jpg"),
+    ]
+
+    index = build_search_index(photos)
+
+    assert index == {photo.key: photo_search_text(photo) for photo in photos}
 
 
 # ----------------------------------------------------------------------

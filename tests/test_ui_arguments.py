@@ -145,7 +145,9 @@ def test_ui_metadata_default_is_derived_from_the_location(tmp_path, monkeypatch)
     monkeypatch.delenv("FOTO_METADATA", raising=False)
     root = tmp_path / "biblioteca"
     root.mkdir()
-    args = _parse()
+    # Config aislada: sin ella, el nivel 3 del ADR 0008 leería el
+    # config.toml real del usuario (platformdirs) y taparía el default.
+    args = _parse("--config", str(tmp_path / "config.toml"))
 
     metadata_dir = _resolve_metadata_dir(
         (Location(name="default", path=root, tier="fast"),), args

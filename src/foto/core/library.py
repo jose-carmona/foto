@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TypeVar
 
 from foto.storage.availability import AVAILABLE, UNAVAILABLE, availability_state
 from foto.storage.catalog import TIER_RANK, Catalog
 from foto.storage.tags import TagAssignment
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".heic", ".raf", ".cr2", ".nef", ".arw", ".dng", ".png", ".tif", ".tiff"}
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -168,7 +172,10 @@ def _tier_rank(tier: str | None) -> int:
     return TIER_RANK.get(tier, 1)
 
 
-def load_from_catalog(catalog: Catalog) -> list[CatalogPhoto]:
+def load_from_catalog[T](
+    catalog: Catalog,
+    factory: Callable[..., T] = CatalogPhoto,  # type: ignore[assignment]
+) -> list[T]:
     """Carga fotos desde el catálogo SQLite (solo ubicaciones activas).
 
     El catálogo es la única fuente de verdad (ADR 0010, Decisión 7): no hay
@@ -185,6 +192,12 @@ def load_from_catalog(catalog: Catalog) -> list[CatalogPhoto]:
     una ubicación disponible, la foto se sirve desde ella; si no hay
     ninguna, la foto viaja como *placeholder* (``available=False``) con sus
     metadatos, fecha y etiquetas del catálogo.
+
+    ``factory`` (T1.4 del prompt de arranque, opción b): el constructor de
+    los objetos de salida. Por defecto ``CatalogPhoto``; la UI inyecta
+    ``Photo.from_catalog`` para que los 25k objetos se materialicen una
+    sola vez, sin la copia campo a campo que hacía ``_to_ui_photo``. El
+    núcleo no conoce el modelo de UI: solo recibe el callable.
     """
     rows = catalog.list_present_files()
     grouped: dict[str, list] = {}
@@ -194,12 +207,24 @@ def load_from_catalog(catalog: Catalog) -> list[CatalogPhoto]:
     assignments = catalog.tag_assignments()
 
     # Disponibilidad por ubicación, evaluada una vez por raíz distinta.
+    # (Ojo: ``setdefault`` evalúa su argumento siempre; con 25k filas eran
+    # 25k ``is_dir()``. La guardia explícita hace lo que el comentario dice.)
     states: dict[str, str] = {}
     for row in rows:
         location_path = str(row["location_path"])
-        states.setdefault(location_path, availability_state(Path(location_path)))
+        if location_path not in states:
+            states[location_path] = availability_state(Path(location_path))
 
-    photos: list[CatalogPhoto] = []
+    # Resolución de rutas (T1.8): ``(raíz / rel_path).resolve()`` ejecuta
+    # ``realpath``, que lanza un ``lstat`` por componente —~11 por foto con
+    # 25k fotos, más que el ``stat()`` de tamaño que quitó T1.2. El padre se
+    # resuelve una vez por directorio distinto y la hoja se une por nombre:
+    # el resultado es idéntico para ficheros regulares (el caso real; una
+    # foto-hoja que fuera un enlace simbólico quedaría sin resolver, misma
+    # imagen a través del enlace) y también cuando la hoja no existe.
+    resolved_parents: dict[str, Path] = {}
+
+    photos: list[T] = []
     for photo_hash, items in grouped.items():
         items_sorted = sorted(
             items,
@@ -214,7 +239,12 @@ def load_from_catalog(catalog: Catalog) -> list[CatalogPhoto]:
 
         location_path = Path(canonical["location_path"])
         rel_path = Path(canonical["rel_path"])
-        full_path = (location_path / rel_path).resolve()
+        parent_key = str(location_path / rel_path.parent)
+        resolved_parent = resolved_parents.get(parent_key)
+        if resolved_parent is None:
+            resolved_parent = (location_path / rel_path.parent).resolve()
+            resolved_parents[parent_key] = resolved_parent
+        full_path = resolved_parent / rel_path.name
         folder = str(rel_path.parent)
         if folder == ".":
             folder = "."
@@ -225,15 +255,13 @@ def load_from_catalog(catalog: Catalog) -> list[CatalogPhoto]:
         file_type = canonical["file_type"] or ""
         fmt = file_type.upper() if file_type else extension.lstrip(".").upper() or "—"
 
-        size = ""
-        try:
-            stat = full_path.stat()
-            size = _format_size_from_bytes(stat.st_size)
-        except OSError:
-            size = _format_size_from_bytes(canonical["size"])
+        # El tamaño canónico ya vive en la BD (T1.2 del prompt de arranque):
+        # no hay ``stat()`` por foto al cargar. Su frescura es responsabilidad
+        # del indexador (``foto-index``), que la recalcula en cada pasada.
+        size = _format_size_from_bytes(canonical["size"])
 
         camera = _format_camera(canonical["camera_make"], canonical["camera_model"])
-        photo = CatalogPhoto(
+        photo = factory(
             name=rel_path.name,
             taken=_format_taken(canonical["captured_at"]),
             camera=camera,

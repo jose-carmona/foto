@@ -320,6 +320,48 @@ def test_load_from_catalog_skips_deleted_locations(tmp_path):
         catalog.close()
 
 
+# ----------------------------------------------------------------------
+# T1.2 — el tamaño canónico sale de la BD, sin ``stat()`` por foto
+# ----------------------------------------------------------------------
+def test_size_comes_from_the_catalog_even_when_the_file_grew(tmp_path):
+    """El tamaño mostrado es el del catálogo; su frescura es de ``foto-index``.
+
+    El fichero crece en disco sin reindexar: la carga del visor no lo
+    mira (ningún ``stat()`` por foto), así que presenta el valor de la
+    última pasada del indexador.
+    """
+    ssd = tmp_path / "ssd"
+    destino = ssd / "2024" / "una.jpg"
+    write_image(destino, b"x" * 2400)
+    catalog = Catalog.open_in_memory()
+    try:
+        _index(catalog, _declared(tmp_path))
+        destino.write_bytes(b"y" * 8192)
+
+        photos = load_from_catalog(catalog)
+
+        assert photos[0].size == "2,3 KB"
+    finally:
+        catalog.close()
+
+
+def test_size_comes_from_the_catalog_when_the_file_is_absent(tmp_path):
+    """Fichero borrado tras indexar: el tamaño no cae a vacío."""
+    ssd = tmp_path / "ssd"
+    destino = ssd / "2024" / "una.jpg"
+    write_image(destino, b"x" * 2400)
+    catalog = Catalog.open_in_memory()
+    try:
+        _index(catalog, _declared(tmp_path))
+        destino.unlink()
+
+        photos = load_from_catalog(catalog)
+
+        assert photos[0].size == "2,3 KB"
+    finally:
+        catalog.close()
+
+
 def test_load_from_catalog_resolves_paths_per_row(tmp_path):
     """Dos fotos en ubicaciones distintas: cada ruta sale de su ``locations.path``."""
     ssd = tmp_path / "ssd"

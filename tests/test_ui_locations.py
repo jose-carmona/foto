@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from PySide6.QtWidgets import QToolButton
 
 from foto.core.hashing import hash_bytes

@@ -192,7 +192,12 @@ def test_archive_location_default_is_a_hard_error(tmp_path):
     root = tmp_path / "usb"
 
     with pytest.raises(LibraryError, match="ubicación de archivo"):
-        resolve_metadata_dir(_single(root, name="usb", tier="archive"))
+        resolve_metadata_dir(
+            _single(root, name="usb", tier="archive"),
+            # Aislado del config.toml real del usuario (platformdirs):
+            # el nivel 3 del ADR 0008 no debe colarse en el default.
+            config_path=tmp_path / "config.toml",
+        )
 
 
 def test_archive_location_override_inside_is_a_hard_error(tmp_path):
@@ -222,7 +227,11 @@ def test_archive_location_override_outside_resolves(tmp_path):
 def test_fast_location_default_is_allowed(tmp_path):
     root = tmp_path / "ssd"
 
-    resolution = resolve_metadata_dir(_single(root, name="ssd", tier="fast"))
+    resolution = resolve_metadata_dir(
+        _single(root, name="ssd", tier="fast"),
+        # Aislado del config.toml real del usuario (platformdirs).
+        config_path=tmp_path / "config.toml",
+    )
 
     assert resolution.metadata_dir == root / ".foto"
 

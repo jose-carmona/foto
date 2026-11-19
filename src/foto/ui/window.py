@@ -43,15 +43,14 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction,
-    QDesktopServices,
     QColor,
+    QDesktopServices,
     QFont,
     QFontMetrics,
     QGuiApplication,
     QIcon,
     QImage,
     QKeySequence,
-    QPalette,
     QPainter,
     QPen,
     QPixmap,
@@ -102,6 +101,7 @@ from foto.ui.panels import MetadataPanel, StatusBar
 from foto.ui.presentation import (
     DEFAULT_SORT,
     SORT_KEYS,
+    build_search_index,
     find_tag_in_catalog,
     location_banner_parts,
     location_banner_text,
@@ -354,6 +354,12 @@ class PhotoWindow(QMainWindow):
         self.tag_catalog = tuple(tag_catalog)
         self._tag_filter: str | None = None
         self.photos = {photo.key: photo for photo in photos}
+        # Índice de búsqueda precalculado (T1.5): el documento por foto se
+        # construye una vez aquí y se revalida al cambiar la biblioteca
+        # (``set_photos``) o las etiquetas de una foto (``_toggle_favorite``).
+        # ``_apply_filter`` consulta el dict en vez de reconstruir 25k
+        # documentos en cada pulsación.
+        self._search_index = build_search_index(photos)
         self._sort_key = DEFAULT_SORT
         self.thumbnails = dict(thumbnails or {})
         self.search_text = ""
@@ -636,6 +642,8 @@ class PhotoWindow(QMainWindow):
         current = self.grid.currentItem()
         current_key = current.data(PHOTO_ROLE) if current is not None else None
         self.photos = {photo.key: photo for photo in photos}
+        # La biblioteca cambió: el índice de búsqueda se reconstruye (T1.5).
+        self._search_index = build_search_index(photos)
         if thumbnails is not None:
             self.thumbnails = dict(thumbnails)
             self._thumbnail_order = list(self.thumbnails)
@@ -1302,9 +1310,11 @@ class PhotoWindow(QMainWindow):
                 visible = True
             else:
                 # La búsqueda ``/`` y el filtro ``:tag`` se componen en AND:
-                # la foto debe cumplir ambos.
+                # la foto debe cumplir ambos. El documento sale del índice
+                # precalculado (T1.5), no de ``photo_search_text`` por foto.
                 visible = (
-                    not needle or needle in photo_search_text(photo)
+                    not needle
+                    or needle in self._search_index.get(str(photo.key), "")
                 ) and (
                     tag_filter is None
                     or photo_matches_tag_name(photo, tag_filter)
@@ -1721,6 +1731,9 @@ class PhotoWindow(QMainWindow):
             return
         updated = with_favorite_tag(photo, not photo.favorite)
         self.photos[photo.key] = updated
+        # Revalidación puntual del índice (T1.5): las etiquetas entran en
+        # el documento de búsqueda, así que la entrada de esta foto cambia.
+        self._search_index[photo.key] = photo_search_text(updated)
         item.setData(FAVORITE_ROLE, updated.favorite)
         item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
         self.viewer.canvas.set_favorite(updated.favorite)

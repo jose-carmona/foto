@@ -10,8 +10,10 @@ pantalla.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 MAP_URL = "https://www.google.com/maps?q={lat},{lon}"
 
@@ -110,3 +112,26 @@ class Photo:
     def key(self) -> str:
         """Identifica la foto aunque haya nombres repetidos en la biblioteca."""
         return str(self.path) if self.path is not None else self.name
+
+    @classmethod
+    def from_catalog(cls, *, tags: Sequence[Any] = (), **fields: Any) -> Photo:
+        """Modelo de UI desde los campos que ya calculó el catálogo (T1.4).
+
+        Fábrica inyectada en ``load_from_catalog``: recibe los argumentos
+        nombrados que ese loader prepara —los mismos campos de ``Photo``,
+        con las etiquetas como tupla de asignaciones del catálogo— y
+        construye el objeto **una sola vez**. Sustituye a la copia campo a
+        campo de ``_to_ui_photo``: la única conversión que queda es la de
+        las etiquetas (``TagAssignment`` → ``PhotoTag``), que cambia de
+        forma en la frontera núcleo/UI.
+        """
+        converted = tuple(
+            PhotoTag(
+                name=tag.tag_name,
+                kind=tag.kind,
+                status=tag.status,
+                source=tag.source,
+            )
+            for tag in tags
+        )
+        return cls(tags=converted, **fields)  # type: ignore[arg-type]

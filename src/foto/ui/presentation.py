@@ -342,6 +342,20 @@ def photo_search_text(photo: Photo) -> str:
     return " ".join(part.casefold() for part in parts if part)
 
 
+def build_search_index(photos: Sequence[Photo]) -> dict[str, str]:
+    """Índice de búsqueda precalculado: ``photo.key`` → documento (T1.5).
+
+    Un documento por foto, **idéntico carácter a carácter** al que produce
+    ``photo_search_text``: esta función no cambia el contenido, solo el
+    mecanismo —se construye una vez al cargar (y se revalida al cambiar
+    etiquetas o favoritos) para que ``_apply_filter`` no reconstruya el
+    documento de las 25k fotos en cada pulsación de tecla. Las fotos
+    nuevas entran con ``photo_search_text`` puntual; el índice nunca
+    sustituye a la función pura, la cachea.
+    """
+    return {photo.key: photo_search_text(photo) for photo in photos}
+
+
 # ---------------------------------------------------------------------------
 # Orden y grupos
 # ---------------------------------------------------------------------------
@@ -407,14 +421,28 @@ def sorted_photos(photos: list[Photo], key: str) -> list[Photo]:
     más antigua —la primera foto del grupo es la última que se tomó— y las
     sin fecha, al final del grupo: el orden base es la fecha descendente y
     el orden por grupo es estable sobre él.
+
+    T1.6: las claves se precalculan una vez por foto (antes cada pasada
+    recalculaba la suya, incluida la misma fecha dos veces cuando el
+    criterio era ``date``) y la tercera ordenación desaparece cuando el
+    criterio activo ya es la fecha —era establemente idéntica a la
+    segunda. El resultado es exactamente el de antes: las tres pasadas
+    estables en el mismo orden de prioridad (nombre, fecha, criterio).
     """
-    ordered = sorted(photos, key=lambda photo: photo.name.casefold())
-    ordered.sort(key=lambda photo: photo_sort_value(photo, "date"), reverse=True)
-    ordered.sort(
-        key=lambda photo: photo_sort_value(photo, key),
-        reverse=(key == "date"),
-    )
-    return ordered
+    decorated = [
+        (
+            photo.name.casefold(),
+            photo_sort_value(photo, "date"),
+            photo_sort_value(photo, key) if key != "date" else None,
+            photo,
+        )
+        for photo in photos
+    ]
+    decorated.sort(key=lambda entry: entry[0])
+    decorated.sort(key=lambda entry: entry[1], reverse=True)
+    if key != "date":
+        decorated.sort(key=lambda entry: entry[2])
+    return [entry[3] for entry in decorated]
 
 
 def photo_group(photo: Photo, key: str) -> tuple[str, str]:

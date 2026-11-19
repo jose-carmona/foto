@@ -14,7 +14,7 @@ from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage, QPainter, QPale
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from foto.core.errors import CatalogError, LibraryError
-from foto.core.library import CatalogPhoto, load_from_catalog
+from foto.core.library import load_from_catalog
 from foto.storage.availability import AVAILABLE, availability_state
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import (
@@ -30,7 +30,7 @@ from foto.storage.library import foto_dir, thumbs_dir
 from foto.storage.resolver import resolve_locations, resolve_metadata_dir
 from foto.storage.tags import Tag, connect_read_write
 from foto.ui.grid import THUMB_H, THUMB_W
-from foto.ui.models import LocationStatus, Photo, PhotoTag
+from foto.ui.models import LocationStatus, Photo
 from foto.ui.theme import apply_theme, ui_font
 from foto.ui.thumbnails import ThumbnailService
 from foto.ui.window import (
@@ -153,48 +153,6 @@ def _placeholder_icon(path: Path) -> QIcon:
     return QIcon(pixmap)
 
 
-def _to_ui_photo(photo: CatalogPhoto) -> Photo:
-    return Photo(
-        name=photo.name,
-        taken=photo.taken,
-        camera=photo.camera,
-        lens=photo.lens,
-        focal=photo.focal,
-        aperture=photo.aperture,
-        shutter=photo.shutter,
-        iso=photo.iso,
-        folder=photo.folder,
-        fmt=photo.fmt,
-        dimensions=photo.dimensions,
-        size=photo.size,
-        location=photo.location,
-        gps_latitude=photo.gps_latitude,
-        gps_longitude=photo.gps_longitude,
-        place_country=photo.place_country,
-        place_country_code=photo.place_country_code,
-        place_state=photo.place_state,
-        place_city=photo.place_city,
-        place_municipality=photo.place_municipality,
-        place_display_name=photo.place_display_name,
-        place_address_json=photo.place_address_json,
-        tags=tuple(
-            PhotoTag(
-                name=assignment.tag_name,
-                kind=assignment.kind,
-                status=assignment.status,
-                source=assignment.source,
-            )
-            for assignment in photo.tags
-        ),
-        path=photo.path,
-        canonical_rel_path=photo.canonical_rel_path,
-        canonical_location=photo.canonical_location,
-        available=photo.available,
-        other_locations=photo.other_locations,
-        photo_hash=photo.photo_hash,
-    )
-
-
 def _metadata_dir_for(library_path: Path, metadata_dir: Path | None) -> Path:
     """Directorio de metadatos efectivo (ADR 0008)."""
     return metadata_dir if metadata_dir is not None else foto_dir(library_path)
@@ -206,7 +164,9 @@ def load_photos(library_path: Path, metadata_dir: Path | None = None) -> list[Ph
     La UI no resuelve ubicaciones ni las lista: abre el catálogo por la
     cadena de metainformación y de la BD salen las rutas absolutas. Sin
     catálogo no hay sesión: error explícito pidiendo ``foto-index``, sin
-    crear nada.
+    crear nada. Es la variante de una sola carga (abre y cierra su
+    conexión); el arranque real usa ``load_library``, que comparte una
+    única conexión solo-lectura (T1.3).
     """
     resolved_dir = _metadata_dir_for(library_path, metadata_dir)
 
@@ -223,39 +183,34 @@ def load_photos(library_path: Path, metadata_dir: Path | None = None) -> list[Ph
         raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
 
     try:
-        catalog_photos = load_from_catalog(catalog)
+        return _photos_from(catalog)
     finally:
         catalog.close()
 
-    return [_to_ui_photo(photo) for photo in catalog_photos]
 
+def _photos_from(catalog: Catalog) -> list[Photo]:
+    """Fotos desde un ``Catalog`` ya abierto (T1.3): sin abrir conexiones.
 
-def load_locations(metadata_dir: Path) -> tuple[LocationStatus, ...]:
-    """Estado de las ubicaciones desde el catálogo (fuente de verdad, ADR 0010).
-
-    La UI no lee la declaración de la config ni la lista: la tabla
-    ``locations`` de la BD da nombre, ``tier``, ruta y estado; el nº de
-    fotos sale de ``files`` y la disponibilidad la evalúa la función pura
-    compartida de ``storage/`` al cargar —no en cada acceso a fichero.
-    Activas primero, dadas de baja al final; alfabético dentro de cada grupo.
+    Los objetos se materializan una sola vez (T1.4): la fábrica de
+    ``load_from_catalog`` es ``Photo.from_catalog``, no hay copia campo a
+    campo posterior.
     """
-    catalog_path = metadata_dir / CATALOG_FILE_NAME
-    if not catalog_path.exists():
-        raise FileNotFoundError(
-            "No hay catálogo en la metainformación de la fototeca. Ejecuta "
-            "'foto-index' para crearlo."
-        )
+    return load_from_catalog(catalog, factory=Photo.from_catalog)
 
-    try:
-        catalog = Catalog.open_read_only(catalog_path)
-    except CatalogError as exc:
-        raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
 
-    try:
-        counts = catalog.present_counts_by_location()
-        named = catalog.list_named_locations()
-    finally:
-        catalog.close()
+def _tags_from(catalog: Catalog) -> list[Tag]:
+    """Vocabulario de etiquetas desde un ``Catalog`` ya abierto (T1.3)."""
+    return catalog.tag_list()
+
+
+def _locations_from(catalog: Catalog) -> tuple[LocationStatus, ...]:
+    """Estado de las ubicaciones desde un ``Catalog`` ya abierto (T1.3).
+
+    La disponibilidad se evalúa aquí, al cargar, con la función pura de
+    ``storage/`` —nunca en cada acceso a fichero.
+    """
+    counts = catalog.present_counts_by_location()
+    named = catalog.list_named_locations()
 
     statuses = [
         LocationStatus(
@@ -280,11 +235,77 @@ def load_locations(metadata_dir: Path) -> tuple[LocationStatus, ...]:
     return (*active, *deleted)
 
 
+def load_library(
+    library_path: Path, metadata_dir: Path | None = None
+) -> tuple[list[Photo], list[Tag], tuple[LocationStatus, ...]]:
+    """Carga en una sola conexión solo-lectura fotos, tags y ubicaciones (T1.3).
+
+    El arranque del visor abre el catálogo una única vez (``mode=ro``) y
+    lee de él las tres cosas; antes eran tres aperturas secuenciales con
+    el mismo contenido. La conexión de escritura de favoritos
+    (``connect_read_write``) sigue aparte: es el escritor único del visor
+    (ADR 0006, Decisión 10) y su semántica no cambia. El catálogo de
+    entrada es el mismo fichero; no hay lock de escritor (modelo del
+    visor, ADR 0003).
+    """
+    resolved_dir = _metadata_dir_for(library_path, metadata_dir)
+
+    catalog_path = resolved_dir / CATALOG_FILE_NAME
+    if not catalog_path.exists():
+        raise FileNotFoundError(
+            "No hay catálogo en la metainformación de la fototeca. Ejecuta "
+            "'foto-index' para crearlo."
+        )
+
+    try:
+        catalog = Catalog.open_read_only(catalog_path)
+    except CatalogError as exc:
+        raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
+
+    try:
+        return (
+            _photos_from(catalog),
+            _tags_from(catalog),
+            _locations_from(catalog),
+        )
+    finally:
+        catalog.close()
+
+
+def load_locations(metadata_dir: Path) -> tuple[LocationStatus, ...]:
+    """Estado de las ubicaciones desde el catálogo (fuente de verdad, ADR 0010).
+
+    La UI no lee la declaración de la config ni la lista: la tabla
+    ``locations`` de la BD da nombre, ``tier``, ruta y estado; el nº de
+    fotos sale de ``files`` y la disponibilidad la evalúa la función pura
+    compartida de ``storage/`` al cargar —no en cada acceso a fichero.
+    Activas primero, dadas de baja al final; alfabético dentro de cada grupo.
+    Variante de una sola carga (T1.3): el arranque real usa ``load_library``.
+    """
+    catalog_path = metadata_dir / CATALOG_FILE_NAME
+    if not catalog_path.exists():
+        raise FileNotFoundError(
+            "No hay catálogo en la metainformación de la fototeca. Ejecuta "
+            "'foto-index' para crearlo."
+        )
+
+    try:
+        catalog = Catalog.open_read_only(catalog_path)
+    except CatalogError as exc:
+        raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
+
+    try:
+        return _locations_from(catalog)
+    finally:
+        catalog.close()
+
+
 def load_tags(library_path: Path, metadata_dir: Path | None = None) -> list[Tag]:
     """Carga el vocabulario de etiquetas del catálogo (ADR 0006).
 
     Solo lectura, igual que ``load_photos``: el visor exige un catálogo ya
-    creado y migrado por ``foto-index``.
+    creado y migrado por ``foto-index``. Variante de una sola carga (T1.3):
+    el arranque real usa ``load_library``.
     """
     catalog_path = _metadata_dir_for(library_path, metadata_dir) / CATALOG_FILE_NAME
     if not catalog_path.exists():
@@ -299,7 +320,7 @@ def load_tags(library_path: Path, metadata_dir: Path | None = None) -> list[Tag]
         raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
 
     try:
-        return catalog.tag_list()
+        return _tags_from(catalog)
     finally:
         catalog.close()
 
@@ -315,12 +336,10 @@ class MainWindow(PhotoWindow):
         self.config = config
         resolved_dir = _metadata_dir_for(library_path, metadata_dir)
         try:
-            photos = load_photos(library_path, resolved_dir)
-            tags = load_tags(library_path, resolved_dir)
-            # El estado de las ubicaciones también sale del catálogo (T4.2):
-            # la disponibilidad se evalúa aquí, al cargar, con la función
-            # pura de storage/ y nunca en cada acceso a fichero.
-            locations = load_locations(resolved_dir)
+            # Una sola conexión solo-lectura para las tres lecturas (T1.3):
+            # fotos, vocabulario de etiquetas y estado de ubicaciones salen
+            # del mismo catálogo abierto una vez.
+            photos, tags, locations = load_library(library_path, resolved_dir)
         except (OSError, RuntimeError) as exc:
             QMessageBox.critical(None, "foto", str(exc))
             sys.exit(1)

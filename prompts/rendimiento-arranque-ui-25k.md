@@ -30,7 +30,7 @@
 
 | Paso | Alcance | Estado |
 |---|---|---|
-| Paso 1 | Quick wins de carga (T1.1–T1.7) | Pendiente |
+| Paso 1 | Quick wins de carga (T1.1–T1.7, + T1.8 nueva) | **Completado** (2026-11-19) |
 | Paso 2 | Arranque progresivo (T2.1–T2.7) | Pendiente |
 | Paso 3 | Modelo virtualizado (condicionado, solo diseño) | Pendiente |
 
@@ -117,7 +117,7 @@ Objetivo: reducir el trabajo síncrono del arranque sin cambiar el
 comportamiento visible. Al terminar, la app arranca por el mismo camino de
 siempre pero en una fracción del tiempo.
 
-- [ ] **T1.1 — Medir el arranque base (baseline).** Crear un script o test de
+- [x] **T1.1 — Medir el arranque base (baseline).** Crear un script o test de
   referencia (en `tests/` como benchmark marcado, o un script en `scripts/`)
   que construya un catálogo sintético de 25 000 fotos en una biblioteca de
   prueba (BD real, sin ficheros de imagen en el disco: para el coste de los
@@ -127,8 +127,24 @@ siempre pero en una fracción del tiempo.
   `QT_QPA_PLATFORM=offscreen`. Deja el método documentado y reproducible
   (comando exacto), porque los pasos 1 y 2 se evalúan contra estas cifras.
   Sin ADR nuevo: es instrumentalización, no decisión de diseño.
+  > Nota (2026-11-19): hecha como script reproducible en
+  > `scripts/bench_arranque.py` (no en `tests/`, para no ralentizar la suite).
+  > Comando: `QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py`
+  > (añadir `--originales` para la condición con ficheros presentes;
+  > `--fotos`, `--repeticiones` y `--keep` son opcionales). El script siembra
+  > un catálogo real (esquema v6, con cámara, fechas, GPS, favoritos) y reporta
+  > mínimo y mediana de 3 repeticiones. **Baseline antes del paso 1** (25k,
+  > mínimo de 3):
+  > | Condición | (a) `load_photos` | (b) `_populate_grid` | (c) total hasta visible |
+  > |---|---|---|---|
+  > | sin originales | 5 729 ms | 1 032 ms | 7 041 ms |
+  > | con originales | 5 633 ms | 1 019 ms | 6 956 ms |
+  > El coste de los `stat()` previos era casi el mismo con y sin originales
+  > (syscall fallida o exitosa, 25k veces); tras T1.2 la condición deja de
+  > importar para el tamaño, y solo afecta a la evaluación de disponibilidad
+  > (una `is_dir()` por raíz, no por foto).
 
-- [ ] **T1.2 — Eliminar el `stat()` por foto en `load_from_catalog`.**
+- [x] **T1.2 — Eliminar el `stat()` por foto en `load_from_catalog`.**
   (`core/library.py`, bloque de formateo de tamaño.) El tamaño canónico ya
   viene del catálogo; úsalo siempre (`canonical["size"]`) y borra el
   `full_path.stat()` y su try/except. La frescura del tamaño es
@@ -136,8 +152,13 @@ siempre pero en una fracción del tiempo.
   pasada. Los datos de presentación (`CatalogPhoto.size`) no cambian de
   formato. Añade/ajusta tests que fijen que el tamaño sale de la BD con y sin
   el fichero presente.
+  > Nota (2026-11-19): hecha. Tests nuevos en `tests/test_multi_location.py`
+  > (`test_size_comes_from_the_catalog_even_when_the_file_grew`,
+  > `test_size_comes_from_the_catalog_when_the_file_is_absent`): el fichero
+  > crece o desaparece en disco sin reindexar y el tamaño mostrado sigue
+  > siendo el de la BD (antes el `stat()` lo tapaba con el valor fresco).
 
-- [ ] **T1.3 — Unificar las conexiones SQLite del arranque.** (`ui/app.py`.)
+- [x] **T1.3 — Unificar las conexiones SQLite del arranque.** (`ui/app.py`.)
   Hoy `load_photos`, `load_tags` y `load_locations` abren y cierran tres
   conexiones solo-lectura distintas y `connect_read_write` una cuarta.
   Refactoriza para que las tres lecturas compartan una única conexión
@@ -148,8 +169,17 @@ siempre pero en una fracción del tiempo.
   arranque, no rediseñar su API. Tests: los de carga de la UI siguen en
   verde; añade uno que verifique una sola apertura solo-lectura si es
   barato de fijar.
+  > Nota (2026-11-19): hecha. Nuevo `load_library(library_path, metadata_dir)`
+  > en `ui/app.py`: abre una única conexión `mode=ro` y de ella salen fotos,
+  > vocabulario y ubicaciones (`_photos_from`, `_tags_from`,
+  > `_locations_from`). `MainWindow.__init__` lo usa. Los loaders
+  > individuales (`load_photos`, `load_tags`, `load_locations`) se conservan
+  > con su firma para tests y usos puntuales (cada uno abre y cierra la
+  > suya). `connect_read_write` intacta. Test nuevo en
+  > `tests/test_ui_load_photos.py` (`test_load_library_opens_the_catalog_read_only_once`):
+  > espía de `Catalog.open_read_only` → 1 apertura. `storage/` no cambia.
 
-- [ ] **T1.4 — Eliminar la doble materialización de fotos.** (`ui/app.py`,
+- [x] **T1.4 — Eliminar la doble materialización de fotos.** (`ui/app.py`,
   `_to_ui_photo`; `core/library.py`.) Evita construir 25k `CatalogPhoto`
   para después copiarlos campo a campo en 25k `Photo`. Opciones aceptadas
   (elige la de menor difusión y documenta con una nota): (a) que
@@ -159,8 +189,21 @@ siempre pero en una fracción del tiempo.
   `CatalogPhoto` tiene consumidores fuera de la UI, indica la opción (b).
   Los tests que cubren `library.py` y la carga de la UI deben seguir en
   verde sin cambios de comportamiento.
+  > Nota (2026-11-19): hecha por la **opción (b)**. La opción (a) chocaba
+  > con la regla del grafo (`core/` no importa `foto.ui`, y mover el loader
+  > entero a `ui/` difunde cambios en `test_multi_location.py` y
+  > `test_ui_tolerancia.py`). Menor difusión: `load_from_catalog(catalog,
+  > factory=CatalogPhoto)` gana un parámetro de fábrica (el núcleo sigue
+  > sin conocer el modelo de UI, y los tests del núcleo no cambian: el
+  > default es `CatalogPhoto`), y `Photo.from_catalog(**campos)`
+  > (`ui/models.py`) es el constructor que recibe los campos ya formateados
+  > y materializa el objeto **una sola vez**; la única conversión restante
+  > es `TagAssignment` → `PhotoTag`, que ya era una transformación de forma
+  > real. `_to_ui_photo` queda borrada; `load_photos` inyecta
+  > `Photo.from_catalog`. Suite de `library.py` y de carga de la UI en
+  > verde sin tocar expectativas.
 
-- [ ] **T1.5 — Precalcular el documento de búsqueda.** (`ui/presentation.py`,
+- [x] **T1.5 — Precalcular el documento de búsqueda.** (`ui/presentation.py`,
   `ui/window.py`.) Hoy `photo_search_text(photo)` se invoca por foto en cada
   pulsación de tecla. Introduce un índice precalculado — p. ej.
   `build_search_index(photos) -> dict[key, str]` en `presentation.py`
@@ -169,26 +212,96 @@ siempre pero en una fracción del tiempo.
   documento debe seguir siendo idéntico carácter a carácter (tests de
   `tests/test_ui_search.py` sin cambios de expectativas, solo de mecanismo
   si hace falta).
+  > Nota (2026-11-19): hecha. `build_search_index(photos)` en
+  > `presentation.py` (puro); la ventana lo construye en `__init__` y en
+  > `set_photos`, lo consulta en `_apply_filter` y lo revalida de forma
+  > puntual en `_toggle_favorite` (las etiquetas entran en el documento).
+  > Los tests de `tests/test_ui_search.py` pasan sin cambios de
+  > expectativas; test nuevo en `tests/test_presentation.py` fija que cada
+  > entrada del índice es idéntica a `photo_search_text`. El filtro `:tag`
+  > sigue evaluándose por foto (`photo_matches_tag_name`): solo el
+  > documento de texto se cachea.
 
-- [ ] **T1.6 — Reducir los ordenamientos redundantes.** (`ui/presentation.py`,
+- [x] **T1.6 — Reducir los ordenamientos redundantes.** (`ui/presentation.py`,
   `sorted_photos`.) Evalúa las tres pasadas de ordenación: si la clave
   elegida puede computarse una vez por foto (con `casefold` ya aplicado) y
   ordenar una única vez, hazlo. Conserva el resultado exacto (los tests de
   `tests/test_presentation.py` fijan el orden). Si la mejora medible es
   marginal frente a T1.2/T1.4, registra la decisión en una nota y deja la
   simplificación solo si no degrada claridad.
+  > Nota (2026-11-19): hecha, con una salvedad documentada: una sola pasada
+  > no es posible sin cmp a nivel Python (la dirección mixta
+  > nombre-asc/fecha-desc/criterio no se expresa como tupla comparable) y
+  > `cmp_to_key` sería más lento que tres pasadas de tuplas en C. Lo que sí
+  > se ha eliminado: la tercera pasada era establemente idéntica a la
+  > segunda cuando el criterio activo es `date` (ahora se omite) y las
+  > claves se precalculan una vez por foto en lugar de recomputarse por
+  > pasada. Los tests de `tests/test_presentation.py` fijan el orden y
+  > pasan sin cambios; la mejora medible se anota en T1.7.
 
-- [ ] **T1.7 — Verificación y cierre del paso 1.** Suite completa en verde
+- [x] **T1.7 — Verificación y cierre del paso 1.** Suite completa en verde
   (`uv run pytest`, `uv run ruff check .`); re-ejecuta el benchmark de T1.1
   en las mismas condiciones y anota las cifras antes/después en este
   fichero. Smoke manual: abrir la biblioteca real y comprobar que
   rejilla, búsqueda, grupos, favoritos y degradación por ubicación no
   disponible funcionan igual que antes.
+  > Nota (2026-11-19): suite completa en verde (157 tests) y `ruff` limpio.
+  > Cifras después (mismo benchmark, 25k, mínimo de 3 repeticiones):
+  >
+  > | Métrica | Antes (sin orig.) | Después (sin orig.) | Antes (con orig.) | Después (con orig.) |
+  > |---|---|---|---|---|
+  > | (a) `load_photos` | 5 729 ms | **2 831 ms (−51 %)** | 5 633 ms | **2 827 ms** |
+  > | (b) `_populate_grid` | 1 032 ms | 1 014 ms (=) | 1 019 ms | 1 013 ms (=) |
+  > | (c) total hasta visible | 7 041 ms | **4 268 ms (−39 %)** | 6 956 ms | **4 265 ms** |
+  >
+  > Reparto de la mejora en `load_photos`: la resolución de rutas cacheada
+  > por directorio (T1.8) y la disponibilidad por raíz son la mayor parte
+  > (~2,4 s); el `stat()` de tamaño (T1.2) y la materialización única
+  > (T1.4) aportan ~0,4 s. En SSD local cálido el coste del `stat()` era
+  > menor de lo estimado en el diagnóstico; en volumen frío o USB la
+  > horquilla a favor de T1.2/T1.8 sería mayor (ahora ya no depende de la
+  > condición: ambas cifras son idénticas). `_populate_grid` no baja: su
+  > coste es la creación de 25k `QListWidgetItem` (cuello 5 del
+  > diagnóstico), que se aborda en el paso 2 (lotes) y evalúa el paso 3
+  > (modelo virtualizado). El time-to-first-pixel sigue siendo el total
+  > síncrono hasta el paso 2.
+  >
+  > Smoke offscreen automatizado sobre la biblioteca real (~29 600 fotos,
+  > `~/wrk/images` + metainformación `~/wrk/meta`, solo lectura, sin
+  > escrituras): carga y ventana visibles en 5,6 s, búsqueda `".jpg"` → 31
+  > coincidencias y recuperación a las 29 567, inexistente → 0 y
+  > recuperación, `:sort date/camera/location` con 208/53/87 grupos,
+  > banner de «iMac» no disponible con «29 434 fotos no visibles», 4
+  > favoritas del catálogo. **Pendiente del dueño:** la verificación
+  > visual manual (rejilla, visor, teclado) en la app real; el smoke
+  > offscreen no sustituye la percepción.
 
 **Criterio de fin del paso 1:** ninguna syscall de `stat` por foto en el
 arranque, una sola conexión solo-lectura, 25k objetos construidos una única
 vez, búsqueda con índice precalculado y una mejora medible y anotada del
 tiempo de `load_photos` + `_populate_grid`.
+
+- [x] **T1.8 — (nueva, 2026-11-19) Ninguna syscall de `stat` por foto: caché
+  de resolución de rutas y disponibilidad por raíz.** El perfil de
+  `load_photos` (cProfile, 25k) reveló que el criterio de fin del paso no se
+  cumplía con solo T1.2: quedaban dos costes de filesystem por foto.
+  1. `full_path = (location_path / rel_path).resolve()` en
+     `core/library.py`: `realpath` lanza un `lstat` **por componente**
+     (~275 000 llamadas para 25k fotos, ~3,4 s perfilado) —más que el
+     `stat()` de tamaño que quitó T1.2—.
+  2. `states.setdefault(path, availability_state(...))`: `setdefault`
+     evalúa su argumento siempre, así que la disponibilidad se evaluaba
+     25k veces en vez de una por raíz distinta (~0,5 s perfilado).
+  > Nota (2026-11-19): hecha. La disponibilidad usa guardia explícita
+  > (`if path not in states`) y las rutas se resuelven una vez por
+  > **directorio padre distinto** (`resolved_parents`), uniendo la hoja por
+  > nombre. Resultado idéntico para ficheros regulares —el caso real— y
+  > para hojas inexistentes; única desviación posible: una foto cuyo
+  > fichero fuese un enlace simbólico queda con la ruta del enlace en vez
+  > de la del destino (misma imagen al abrirla, misma clave dentro de la
+  > sesión, los favoritos van por `photo_hash`). Tests de rutas canónicas
+  > (`test_multi_location.py`) en verde sin cambios. Sin syscall de `stat`
+  > por foto: solo una por directorio distinto y una `is_dir()` por raíz.
 
 ---
 
