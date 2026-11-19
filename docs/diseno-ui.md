@@ -1,10 +1,13 @@
 # Diseño de la interfaz de usuario
 
 - **Estado:** vigente para el MVP
-- **Fecha:** 2026-10-29
+- **Fecha:** 2026-11-19 (revisado para la fototeca distribuida; versión
+  original 2026-10-29)
 - **Ámbito:** interfaz de `foto` en Omarchy (Arch + Hyprland/Wayland) y macOS.
-  Complementa a `README.md` y a `docs/adr/0001-configuracion.md`; no decide
-  almacenamiento ni modelo de datos.
+  Complementa a `README.md`, a `docs/adr/0001-configuracion.md` y a
+  `docs/adr/0010-fototeca-distribuida.md`; no decide almacenamiento ni modelo
+  de datos: las ubicaciones de la fototeca, su disponibilidad y la verdad del
+  catálogo siguen al ADR 0010.
 - **Audiencia:** quien implemente, revise o amplíe la UI.
 
 ## Objetivo
@@ -60,8 +63,9 @@ cambia la regla aquí o no se implementa.
   del visor es la única superficie con un gris neutro explícito.
 - **Wayland y HiDPI.** Escalado fraccional sin asumir X11. Nada de coordenadas
   globales de pantalla ni capturas de escritorio.
-- **Una instancia.** Abrir otra foto o biblioteca reutiliza la ventana; no se
-  abren ventanas nuevas. La ruta se puede pasar por CLI (`foto <ruta>`).
+- **Una instancia.** Abrir otra foto reutiliza la ventana; no se abren
+  ventanas nuevas. `foto` solo acepta `--config` y `--metadata` (ADR 0010):
+  la fototeca se declara en `config.toml` y no hay ruta por CLI.
 
 ## Modelo de interacción
 
@@ -162,7 +166,13 @@ ayuda, y `q` cierra el visor o sugiere `Ctrl+q`. Las flechas laterales (`←`,
 `→`) no hacen nada. Los dígitos `1`–`5` tampoco.
 
 La ficha agrupa los metadatos de la foto: captura, exposición, archivo,
-ubicación y etiquetas. En la ubicación, el lugar resuelto por el indexador se
+ubicación y etiquetas. En el grupo «Archivo» aparece siempre la ubicación del
+fichero: nombre y `tier` (`ssd · fast`) seguidos de la ruta absoluta compuesta
+desde el catálogo (`files.location_id` → `locations.path`, ADR 0010); la UI no
+la calcula contra la configuración.
+
+En la ubicación —el lugar, no la ubicación física del fichero—, el lugar
+resuelto por el indexador se
 muestra en formato `Municipio, País` (con las partes disponibles si falta
 alguna), seguido del detalle que guardó el servicio —calle, comarca, código
 postal y la dirección completa— y de las coordenadas EXIF exactas, que son la
@@ -247,7 +257,8 @@ igual que en la rejilla completa. Un clic en una miniatura selecciona esa foto.
 ### Búsqueda
 
 - `/` abre un filtro incremental que examina **el índice**, no solo el nombre
-  de fichero: nombre, ruta relativa (carpeta y ubicación canónica), réplicas,
+  de fichero: nombre, ruta relativa (carpeta y ubicación canónica, nombre de
+  la ubicación incluido), réplicas,
   cámara, objetivo, tipo de fichero, fecha, los nombres de las etiquetas
   visibles (incluido `fav`) y el resto de campos indexados del catálogo (ver
   ADR 0003 y ADR 0006).
@@ -273,13 +284,13 @@ Vocabulario mínimo:
 | `:q`, `:quit` | Salir de la aplicación |
 | `:sort date`, `:sort camera`, `:sort location` | Cambiar el orden de la rejilla (por defecto, fecha) |
 | `:tag` | Filtrar por etiqueta (`:tag <nombre>`; sin argumento o repetido, quita el filtro) |
-| `:locations` | Estado de las ubicaciones de la fototeca (nombre, tier, ruta, estado y nº de fotos) |
+| `:locations` | Estado de las ubicaciones de la fototeca (nombre, tier, ruta, estado y nº de fotos; ver «Panel de ubicaciones») |
 | `:help` | Abrir la ayuda |
 
 No existe `:rescan`: según ADR 0003 (enmendado), la reindexación y la
-sincronización del índice se ejecutan desde shell, servicio o cron con
-`foto-index`, y el visor muestra el catálogo actualizado al reiniciarse o al
-abrir otra biblioteca.
+sincronización de la config con el catálogo se ejecutan desde shell, servicio
+o cron con `foto-index`, y el visor muestra el catálogo actualizado al
+reiniciarse o al recargar la aplicación.
 
 Regla de extensibilidad: cualquier acción nueva que no tenga una tecla propia
 debe ser alcanzable por `:`. No se añaden botones para compensar.
@@ -527,25 +538,71 @@ Requisitos:
   revierte el cambio y se muestra un error
   persistente. Nunca se falla en silencio.
 - **Ubicaciones ausentes (ADR 0010):** si una ubicación declarada no está
-  disponible al abrir la ventana (USB desmontado), una franja banner sobre la
-  zona de rejilla lo avisa con el recuento de fotos no visibles; un clic en
-  el banner, o `:locations`, abre el panel con el estado de cada ubicación
-  (nombre, tier, ruta, estado, nº de fotos). Las fotos de esa ubicación se
-  muestran con sus datos del catálogo; las acciones que exigen el fichero
-  (abrir el visor) se desactivan con mensaje claro. El refresco es manual:
-  reabrir la aplicación.
+  disponible al abrir la ventana (USB desmontado), la ventana no se bloquea:
+  se degrada y avisa con una franja banner temporal sobre la zona de rejilla,
+  con el formato del ADR («Ubicación «usb» no disponible: /Volumes/FotoVault.
+  1 234 fotos no visibles»). La foto con copia en otra ubicación disponible
+  se sirve desde esa copia (regla de desempate canónico por `tier`, ADR 0010)
+  y se comporta con normalidad; solo quien no tiene ninguna copia disponible
+  se muestra como *placeholder* fantasma, con fecha, cámara, etiquetas y
+  favorito del catálogo y la miniatura de la caché si existe. Favoritar,
+  etiquetar y buscar siguen funcionando (todo son metadatos, ADR 0006); las
+  acciones que exigen el fichero —abrir la foto en el visor— se desactivan
+  con un mensaje claro. Un clic en el banner, o `:locations`, abre el panel
+  de ubicaciones (ver más abajo). El refresco es manual: reabrir la
+  aplicación.
 - **Mensajes:** los éxitos y las acciones habituales aparecen en la barra de
   estado durante unos 3 s. Los errores permanecen hasta que el usuario los
   descarta con `Esc`.
 - **Errores:** explican qué pasó y qué hacer, sin códigos crípticos. No usan
   diálogos modales.
-- **Indexado:** el progreso se muestra en la barra de estado con recuento. La UI
-  sigue navegable con lo ya indexado.
+- **Indexado:** la UI no indexa: el indexado y la sincronización de la config
+  con el catálogo son trabajo de `foto-index` desde shell o cron (ADR 0003 y
+  ADR 0010), y la ventana muestra el catálogo al arrancar o al recargar. El
+  progreso de una reindexación vive en el terminal que la ejecuta.
 - **Confirmaciones:** solo para acciones destructivas. En el MVP no hay ninguna.
 - **Preferencias de UI:** la ventana siempre arranca en el mismo estado: solo
   zona de rejilla y zona de estado, con ambos paneles ocultos. El estado de
   los paneles no se recuerda entre sesiones. La configuración se carga y se
   guarda fuera de la UI, según `docs/adr/0001-configuracion.md`.
+
+### Apertura de la sesión
+
+La UI abre siempre contra un único catálogo, resuelto por la cadena de
+metainformación (ADR 0008): el catálogo es la fuente de verdad de ubicaciones,
+fotos, rutas y etiquetas (ADR 0010). Cuatro estados de arranque:
+
+- **Sin config:** diálogo de primera ejecución. Pide la carpeta de la
+  fototeca y persiste `[library].path` en un fichero v1, como hoy. Nunca
+  escribe `[[library.locations]]` ni `[metadata].path`; con una config v2 el
+  diálogo no aparece.
+- **Config v1 sin `[library].path`:** el diálogo lo completa y persiste el
+  fichero v1.
+- **Config v2 sin `[[library.locations]]`:** error explícito que pide editar
+  la lista a mano en `config.toml`. Sin diálogo: la UI no puede persistir
+  ubicaciones en v2.
+- **Sin catálogo:** guard «No hay catálogo. Ejecuta foto-index», que apoya en
+  la existencia del catálogo y su esquema; sustituye al guard del descriptor
+  `library.toml`, que desapareció (ADR 0010). Sin catálogo no hay sesión.
+
+Una ubicación declarada pero ausente nunca bloquea la apertura: la sesión
+arranca y la ausencia se avisa con el banner y el panel de ubicaciones. La
+metainformación es el único error duro: sin ella no hay sesión; cualquier
+otra ubicación ausente degrada sin bloquear (ADR 0010, Decisión 6).
+
+### Panel de ubicaciones
+
+Muestra el estado de las ubicaciones de la fototeca leído del catálogo
+(nombre, `tier`, ruta, estado `available`/`unavailable` y nº de fotos por
+ubicación): la UI no resuelve ni lista la declaración de `config.toml`
+(ADR 0010). Se abre con `:locations` o con un clic en el banner de ausencia,
+y se cierra con `Esc`. Es un overlay: solo puede haber uno abierto a la vez,
+como el resto.
+
+Es de solo lectura: las ubicaciones se declaran y se editan a mano en
+`config.toml`; el panel nunca escribe la configuración. La disponibilidad se
+evalúa al abrir la sesión, no en cada acceso a fichero, y no hay watcher en
+`/Volumes` (ADR 0010): el refresco es manual, reabriendo la aplicación.
 
 ## Rendimiento percibido
 
@@ -559,19 +616,21 @@ Requisitos:
 - Al cambiar de foto, un resultado antiguo no reemplaza a la foto actual; si
   llega, se guarda en caché o se descarta.
 - Las miniaturas de la rejilla se generan en segundo plano, solo para la zona
-  visible, y se piden al lector ya escaladas. Se guardan en una caché persistente
-  en `<fototeca>/.foto/thumbs/` indexada por hash de contenido, tamaño y versión;
-  las escrituras son atómicas y un fallo de caché no impide mostrarla.
+  visible, y se piden al lector ya escaladas. Se guardan en una caché
+  persistente en el directorio de metainformación (`thumbs/`, ADR 0008): una
+  sola caché para todas las ubicaciones (ADR 0010), indexada por hash de
+  contenido, tamaño y versión; las escrituras son atómicas y un fallo de
+  caché no impide mostrarla.
 - Un cambio de foto en caché se percibe inmediato; si aún no está, se mantiene
   la miniatura, nunca un hueco blanco.
 - La UI solo toca disco en dos puntos acotados: la decodificación de
   originales, que vive en la tarea de carga del visor (`ImageLoadTask`), y la
   caché de miniaturas, que vive en `ui/thumbnails.py`. Ese acceso a disco no se
   reparte por la ventana ni por el resto de widgets.
-- La caché de miniaturas es un derivado reconstruible: borrar
-  `<fototeca>/.foto/thumbs/` solo obliga a regenerarla. Todavía no se poda ni
-  tiene un límite de tamaño, así que las fotos borradas o cambiadas pueden dejar
-  ficheros huérfanos.
+- La caché de miniaturas es un derivado reconstruible: borrar el directorio
+  `thumbs/` de la metainformación solo obliga a regenerarla. Todavía no se
+  poda ni tiene un límite de tamaño, así que las fotos borradas o cambiadas
+  pueden dejar ficheros huérfanos.
 - En memoria se conserva una ventana acotada de miniaturas (160 iconos). Al
   alejarse, las más antiguas se descartan y se vuelven a pedir desde la caché en
   disco si hace falta. La navegación usa índices de las filas visibles en vez de
