@@ -33,6 +33,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QPoint,
+    QRect,
     QSize,
     Qt,
     QThreadPool,
@@ -43,21 +44,28 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QAction,
     QDesktopServices,
+    QColor,
     QFont,
+    QFontMetrics,
     QGuiApplication,
     QIcon,
     QImage,
     QKeySequence,
     QPalette,
+    QPainter,
+    QPen,
     QPixmap,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QFrame,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QStyle,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -77,6 +85,7 @@ from foto.ui.grid import (
     PHOTO_ROLE,
     THUMB_H,
     THUMB_W,
+    UNAVAILABLE_ROLE,
     PhotoGrid,
     ThumbnailDelegate,
     default_thumbnail,
@@ -94,6 +103,7 @@ from foto.ui.presentation import (
     DEFAULT_SORT,
     SORT_KEYS,
     find_tag_in_catalog,
+    location_banner_parts,
     location_banner_text,
     location_rows,
     photo_accessible_name,
@@ -108,6 +118,8 @@ from foto.ui.theme import (
     apply_theme,
     set_muted,
     ui_font,
+    warning_background,
+    warning_color,
 )
 
 PANEL_W = 426
@@ -126,36 +138,190 @@ class ContentArea(QWidget):
         self.resized.emit()
 
 
-class LocationBanner(QLabel):
+class LocationBanner(QFrame):
     """Banner de ubicaciones no disponibles (ADR 0010, Decisión 6).
 
-    Franja superior de la zona de rejilla, solo cuando una ubicación activa
-    no está a mano. El texto lo compone ``presentation.location_banner_text``
-    (puro); un clic abre el panel de ubicaciones —y por teclado, ``:locations``.
+    Tarjeta de alerta que encabeza la zona de rejilla, solo cuando una
+    ubicación activa no está a mano: icono de advertencia, titular corto y
+    detalle (ruta y recuento de fotos degradadas) como texto secundario. La
+    app es teclado primero: el aviso se cierra con ``Esc``, con la «✕» para
+    quien use el ratón, y se autocierra a los 30 segundos; el panel de
+    ubicaciones sigue a un ``:locations`` de distancia (el clic en la
+    tarjeta hace lo mismo). Los textos son puros
+    (``presentation.location_banner_text`` y
+    ``presentation.location_banner_parts``).
     """
 
     opened = Signal()
+    #: El aviso se descarta (Esc, «✕» o autocierre): la ventana rehace el
+    #: layout y puede avisar en la barra de estado.
+    dismissed = Signal()
+    geometry_changed = Signal()
+
+    _AUTOHIDE_MS = 30_000
+    _PAD_V = 10
+    _PAD_H = 14
+    _ICON = 22
+    _TEXT_GAP = 10
+    _CLOSE_SIZE = 24
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.setAccessibleName("banner de ubicaciones no disponibles")
-        self.setWordWrap(True)
-        self.setTextInteractionFlags(Qt.NoTextInteraction)
-        self.setFont(ui_font(12))
-        self.setAutoFillBackground(True)
-        self._apply_palette()
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self._title = ""
+        self._detail = ""
+        self._full_text = ""
+        self._dismissed = False
+        self._background = QColor()
+        self._border = QColor()
 
+        self.icon_label = QLabel(self)
+        self.icon_label.setFixedSize(self._ICON, self._ICON)
+        self.icon_label.setFocusPolicy(Qt.NoFocus)
+        # Decorativo: el estado lo nombra el titular, no el icono.
+        self.icon_label.setAccessibleName("")
+        warning = self.style().standardIcon(QStyle.SP_MessageBoxWarning)
+        self.icon_label.setPixmap(warning.pixmap(self._ICON, self._ICON))
+
+        self.title_label = QLabel(self)
+        self.title_label.setFocusPolicy(Qt.NoFocus)
+        self.title_label.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.detail_label = QLabel(self)
+        self.detail_label.setFont(ui_font(12))
+        set_muted(self.detail_label)
+        self.detail_label.setFocusPolicy(Qt.NoFocus)
+        self.detail_label.setTextInteractionFlags(Qt.NoTextInteraction)
+
+        self.close_button = QToolButton(self)
+        self.close_button.setText("✕")
+        self.close_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.close_button.setAutoRaise(True)
+        self.close_button.setCursor(Qt.PointingHandCursor)
+        self.close_button.setFocusPolicy(Qt.NoFocus)
+        self.close_button.setFont(ui_font(12))
+        self.close_button.setAccessibleName("cerrar el aviso")
+        self.close_button.setToolTip("Cerrar el aviso (Esc)")
+        self.close_button.clicked.connect(self.dismiss)
+
+        # Autocierre: el aviso no es permanente; no le roba la rejilla.
+        self._autohide = QTimer(self)
+        self._autohide.setSingleShot(True)
+        self._autohide.setInterval(self._AUTOHIDE_MS)
+        self._autohide.timeout.connect(self.dismiss)
+
+        self._apply_palette()
+        self.hide()
+
+    # --- Contenido ---------------------------------------------------------
+    def set_contents(self, title: str, detail: str, full_text: str) -> None:
+        """Texto del aviso y arranque del autocierre de 30 segundos."""
+        self._title = title
+        self._detail = detail
+        self._full_text = full_text
+        self.setToolTip(full_text)
+        self.setAccessibleDescription(full_text)
+        self._relayout()
+        self._autohide.start()
+
+    def text(self) -> str:
+        """Texto completo con el formato del ADR (para pruebas y lectores)."""
+        return self._full_text
+
+    def is_dismissed(self) -> bool:
+        return self._dismissed
+
+    def dismiss(self) -> None:
+        """Cierra el aviso definitivamente (Esc, «✕» o autocierre)."""
+        if self._dismissed:
+            return
+        self._dismissed = True
+        self._autohide.stop()
+        self.hide()
+        self.geometry_changed.emit()
+        self.dismissed.emit()
+
+    # --- Presentación ------------------------------------------------------
     def _apply_palette(self) -> None:
-        palette = self.palette()
-        palette.setColor(QPalette.Window, palette.color(QPalette.AlternateBase))
-        self.setPalette(palette)
+        warning = warning_color(self)
+        self._background = warning_background(self)
+        self._border = QColor(warning)
+        self._border.setAlpha(150)
+        self.title_label.setFont(ui_font(13, QFont.DemiBold))
 
     def retheme(self) -> None:
         self._apply_palette()
+        set_muted(self.detail_label)
+        self._relayout()
         self.update()
 
+    def heightForWidth(self, width: int) -> int:
+        title_h = QFontMetrics(self.title_label.font()).height()
+        detail_h = QFontMetrics(self.detail_label.font()).height()
+        return self._PAD_V * 2 + title_h + 2 + detail_h
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._layout_children()
+
     def mousePressEvent(self, event) -> None:
+        # El clic abre el panel de ubicaciones; la «✕» se queda su clic.
         self.opened.emit()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(self._border, 1))
+        painter.setBrush(self._background)
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 8, 8)
+
+    def _relayout(self) -> None:
+        height = self.heightForWidth(max(1, self.width()))
+        if height != self.height() and self.isVisible():
+            self.resize(self.width(), height)
+        self._layout_children()
+
+    def _layout_children(self) -> None:
+        width = max(1, self.width())
+        height = max(1, self.height())
+        right = width - self._PAD_H
+        close_rect = QRect(
+            right - self._CLOSE_SIZE,
+            (height - self._CLOSE_SIZE) // 2,
+            self._CLOSE_SIZE,
+            self._CLOSE_SIZE,
+        )
+        self.close_button.setGeometry(close_rect)
+        icon_x = self._PAD_H + 2
+        self.icon_label.setGeometry(
+            icon_x, (height - self._ICON) // 2, self._ICON, self._ICON
+        )
+        text_x = icon_x + self._ICON + self._TEXT_GAP
+        text_right = close_rect.left() - self._TEXT_GAP
+        self.title_label.setFont(ui_font(13, QFont.DemiBold))
+        self.title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.title_label.setGeometry(
+            text_x,
+            self._PAD_V,
+            max(1, text_right - text_x),
+            QFontMetrics(self.title_label.font()).height(),
+        )
+        self.title_label.setText(self._title)
+        self.title_label.show()
+        detail_font_metrics = QFontMetrics(self.detail_label.font())
+        self.detail_label.setGeometry(
+            text_x,
+            self._PAD_V + self.title_label.height() + 2,
+            max(1, text_right - text_x),
+            detail_font_metrics.height(),
+        )
+        self.detail_label.setText(
+            detail_font_metrics.elidedText(
+                self._detail, Qt.ElideMiddle, max(1, text_right - text_x)
+            )
+        )
+        self.detail_label.show()
 
 
 class PhotoWindow(QMainWindow):
@@ -291,13 +457,18 @@ class PhotoWindow(QMainWindow):
         self.locations_overlay.set_locations(location_rows(self._locations))
         self.locations_overlay.hide()
 
-        # Banner de ubicaciones no disponibles (T4.2): su texto es puro
-        # (presentation.location_banner_text) y solo aparece si algo falta.
+        # Banner de ubicaciones no disponibles (T4.2): sus textos son puros
+        # (presentation.location_banner_text y location_banner_parts) y solo
+        # aparece si algo falta. No es permanente: se autocierra a los 30 s,
+        # y Esc (o la «✕») lo cierra antes; ``:locations`` reabre el panel.
         self.banner = LocationBanner(self.content)
         self.banner.opened.connect(self._toggle_locations)
+        self.banner.geometry_changed.connect(self._layout_content)
+        self.banner.dismissed.connect(self._banner_dismissed)
         self._banner_text = location_banner_text(self._locations, photos)
-        if self._banner_text:
-            self.banner.setText(self._banner_text)
+        banner_parts = location_banner_parts(self._locations, photos)
+        if self._banner_text and banner_parts is not None:
+            self.banner.set_contents(*banner_parts, self._banner_text)
             self.banner.show()
         else:
             self.banner.hide()
@@ -407,6 +578,7 @@ class PhotoWindow(QMainWindow):
             item.setData(PHOTO_ROLE, photo.key)
             item.setData(FAVORITE_ROLE, photo.favorite)
             item.setData(GROUP_ROLE, group_key)
+            item.setData(UNAVAILABLE_ROLE, not photo.available)
             item.setData(Qt.AccessibleTextRole, photo_accessible_name(photo))
             item.setSizeHint(QSize(ITEM_W, ITEM_H))
             item.setText("")
@@ -525,14 +697,20 @@ class PhotoWindow(QMainWindow):
             content_w = width
             self.panel.hide()
 
-        # El banner de ubicaciones ausentes encabeza la zona de rejilla: su
-        # altura se descuenta de la rejilla y del visor, nunca del panel.
+        # El banner de ubicaciones ausentes encabeza la zona de rejilla como
+        # una tarjeta con margen: su altura se descuenta de la rejilla y del
+        # visor, nunca del panel. Se decide por estado (_banner_text y si no
+        # está descartado), no por ``isVisible()``: la visibilidad efectiva
+        # de un hijo es falsa hasta que la ventana se muestra, y la pasada de
+        # layout del ``show()`` —la única con el tamaño real— dejaría el
+        # aviso sin componer.
         top = 0
-        if self.banner.isVisible():
-            banner_h = max(24, self.banner.heightForWidth(max(1, content_w)))
-            self.banner.setGeometry(0, 0, max(1, content_w), banner_h)
+        if self._banner_text and not self.banner.is_dismissed():
+            banner_w = max(1, content_w - 2 * GRID_MARGIN)
+            banner_h = max(28, self.banner.heightForWidth(banner_w))
+            self.banner.setGeometry(GRID_MARGIN, 4, banner_w, banner_h)
             self.banner.raise_()
-            top = banner_h
+            top = banner_h + 8
 
         if self._viewer_visible:
             if self.grid_row:
@@ -1478,6 +1656,9 @@ class PhotoWindow(QMainWindow):
             else:
                 self._close_viewer()
             return
+        if self._banner_text and not self.banner.is_dismissed():
+            self.banner.dismiss()
+            return
         if self.search_text:
             self.search_text = ""
             self._apply_filter("")
@@ -1511,6 +1692,12 @@ class PhotoWindow(QMainWindow):
             self.help_overlay.raise_()
             self.help_overlay.setFocus()
             self.status.set_help_mode(True)
+
+    def _banner_dismissed(self) -> None:
+        """El aviso se cerró (Esc, «✕» o autocierre de 30 s)."""
+        self.status.show_message(
+            "aviso de ubicaciones cerrado · :locations lo reabre", 3000
+        )
 
     def _toggle_locations(self) -> None:
         """Panel de ubicaciones: clic en el banner o comando ``:locations``."""

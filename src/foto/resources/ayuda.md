@@ -55,13 +55,17 @@ El paneo solo tiene efecto con zoom.
 
 La fototeca puede repartirse en varios discos (`[[library.locations]]` en
 `config.toml`, ADR 0010). Si uno no está conectado —por ejemplo un USB
-desmontado— la ventana lo avisa con un banner sobre la rejilla y esas fotos
-se muestran con sus datos del catálogo (fecha, cámara, etiquetas, favorito)
-aunque el fichero no esté a mano; la miniatura sale de la caché si existe.
-Favoritar y filtrar por etiqueta siguen funcionando: todo son metadatos.
-Abrir la foto en el visor, que exige el fichero, queda desactivado con un
-mensaje claro. Al volver a montar el disco, reabre `foto` para refrescar el
-estado.
+desmontado— la ventana lo avisa con una tarjeta sobre la rejilla (icono de
+advertencia, la ruta afectada y cuántas fotos no se ven). La app es
+teclado primero: la tarjeta se cierra con `Esc` —también con la «✕», y se
+cierra sola a los 30 segundos— y el panel de ubicaciones está a un
+`:locations` de distancia. Esas fotos se marcan en la rejilla solo con el
+mismo icono de aviso, y muestran sus datos del catálogo (fecha, cámara,
+etiquetas, favorito) aunque el fichero no esté a mano; la miniatura sale de
+la caché si existe. Favoritar y filtrar por etiqueta siguen funcionando:
+todo son metadatos. Abrir la foto en el visor, que exige el fichero, queda
+desactivado con un mensaje claro. Al volver a montar el disco, reabre
+`foto` para refrescar el estado.
 
 | Comando | Acción |
 | --- | --- |

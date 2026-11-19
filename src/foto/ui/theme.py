@@ -166,6 +166,28 @@ def error_color(widget: QWidget) -> QColor:
     return QColor(255, 125, 125)
 
 
+def warning_color(widget: QWidget) -> QColor:
+    """Token estado.advertencia: ámbar legible sobre la superficie actual.
+
+    La zona de advertencia (banner de ubicaciones ausentes, ADR 0010) no es
+    un error: es un estado degradado, y usa su propio tono en ambos temas.
+    """
+    if widget.palette().color(QPalette.Window).lightness() > 128:
+        return QColor(196, 128, 0)
+    return QColor(240, 190, 90)
+
+
+def warning_background(widget: QWidget, amount: float = 0.12) -> QColor:
+    """Superficie del banner: la ventana ligeramente teñida de advertencia."""
+    base = widget.palette().color(QPalette.Window)
+    warning = warning_color(widget)
+    return QColor(
+        round(base.red() * (1 - amount) + warning.red() * amount),
+        round(base.green() * (1 - amount) + warning.green() * amount),
+        round(base.blue() * (1 - amount) + warning.blue() * amount),
+    )
+
+
 # Chips de etiqueta (ADR 0006): colores fijos, iguales en ambos temas, porque
 # se pintan sobre la foto (miniatura, visor) y sobre el panel. El contenido
 # (corazón y texto) es blanco sobre cualquiera de los dos; el agujero de la

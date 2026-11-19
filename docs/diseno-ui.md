@@ -539,18 +539,25 @@ Requisitos:
   persistente. Nunca se falla en silencio.
 - **Ubicaciones ausentes (ADR 0010):** si una ubicación declarada no está
   disponible al abrir la ventana (USB desmontado), la ventana no se bloquea:
-  se degrada y avisa con una franja banner temporal sobre la zona de rejilla,
-  con el formato del ADR («Ubicación «usb» no disponible: /Volumes/FotoVault.
-  1 234 fotos no visibles»). La foto con copia en otra ubicación disponible
-  se sirve desde esa copia (regla de desempate canónico por `tier`, ADR 0010)
-  y se comporta con normalidad; solo quien no tiene ninguna copia disponible
-  se muestra como *placeholder* fantasma, con fecha, cámara, etiquetas y
-  favorito del catálogo y la miniatura de la caché si existe. Favoritar,
-  etiquetar y buscar siguen funcionando (todo son metadatos, ADR 0006); las
-  acciones que exigen el fichero —abrir la foto en el visor— se desactivan
-  con un mensaje claro. Un clic en el banner, o `:locations`, abre el panel
-  de ubicaciones (ver más abajo). El refresco es manual: reabrir la
-  aplicación.
+  se degrada y avisa con una tarjeta de alerta sobre la zona de rejilla:
+  icono de advertencia, titular corto («Ubicación «usb» no disponible»),
+  detalle como texto secundario (ruta · «1 234 fotos no visibles»). La app
+  es teclado primero: la tarjeta no tiene acciones de ratón obligatorias —
+  se cierra con ``Esc`` (o la «✕», y se autocierra a los 30 segundos) y el
+  panel de ubicaciones está a un ``:locations`` de distancia; el clic en la
+  tarjeta también lo abre. Al cerrarse, el espacio vuelve a la rejilla y la
+  barra de estado recuerda ``:locations``. Las fotos fantasma se marcan en
+  la rejilla solo con el icono de advertencia en su esquina, el mismo que
+  precede a «no disponible · ubicación «usb»» en la fila «Disponibilidad»
+  del panel de metadatos. La foto con copia en otra ubicación disponible se
+  sirve desde esa copia (regla de desempate canónico por `tier`, ADR 0010)
+  y se comporta con normalidad; solo quien no tiene ninguna copia
+  disponible se muestra como *placeholder* fantasma, con fecha, cámara,
+  etiquetas y favorito del catálogo y la miniatura de la caché si existe.
+  Favoritar, etiquetar y buscar siguen funcionando (todo son metadatos,
+  ADR 0006); las acciones que exigen el fichero —abrir la foto en el
+  visor— se desactivan con un mensaje claro. El refresco es manual: reabrir
+  la aplicación.
 - **Mensajes:** los éxitos y las acciones habituales aparecen en la barra de
   estado durante unos 3 s. Los errores permanecen hasta que el usuario los
   descarta con `Esc`.

@@ -12,6 +12,7 @@ from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontMetrics,
     QIcon,
     QPainter,
     QPainterPath,
@@ -21,6 +22,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QListWidget,
     QStyle,
     QStyledItemDelegate,
@@ -41,6 +43,8 @@ PHOTO_ROLE = Qt.UserRole + 1
 FAVORITE_ROLE = Qt.UserRole + 2
 GROUP_ROLE = Qt.UserRole + 3
 HEADER_ROLE = Qt.UserRole + 4
+#: ``True`` en las fotos fantasma (ADR 0010): el fichero no está a mano.
+UNAVAILABLE_ROLE = Qt.UserRole + 5
 
 THUMB_W = 400
 THUMB_H = 247
@@ -104,6 +108,22 @@ def _paint_selection_shadow(
     painter.restore()
 
 
+def _paint_unavailable(
+    painter: QPainter, palette: QPalette, rect: QRect
+) -> None:
+    """Marca de foto fantasma (ADR 0010): solo el icono de aviso.
+
+    La celda conserva su miniatura de caché o su ``placeholder`` tal cual:
+    la única marca es el icono de advertencia —el mismo del banner y del
+    panel de metadatos— en la esquina superior izquierda (la de favorito,
+    con corazón, está en la opuesta).
+    """
+    icon = QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning)
+    side = 22
+    margin = 10
+    painter.drawPixmap(rect.left() + margin, rect.top() + margin, icon.pixmap(side, side))
+
+
 class ThumbnailDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         painter.save()
@@ -141,6 +161,9 @@ class ThumbnailDelegate(QStyledItemDelegate):
         else:
             super().paint(painter, option, index)
         painter.restore()
+
+        if index.data(UNAVAILABLE_ROLE):
+            _paint_unavailable(painter, option.palette, icon_rect)
 
         if selected:
             border = (

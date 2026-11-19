@@ -9,8 +9,9 @@ zona de estado: la línea de comandos ``:`` con historial y completado de
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QPainter, QPalette
+from PySide6.QtGui import QFont, QIcon, QPainter, QPalette
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QSizePolicy,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -159,16 +161,23 @@ class MetadataPanel(QFrame):
             self.show_empty("Sin selección")
             return
 
-        file_rows: list[tuple[str, str]] = []
+        file_rows: list[tuple[str, str, QIcon | None]] = []
         if not photo.available:
             # T4.3: el fichero que sirve la foto no está a mano (USB
-            # desmontado). La ficha sigue mostrando los datos del catálogo.
+            # desmontado). La ficha sigue mostrando los datos del catálogo,
+            # con el mismo icono de aviso del banner y de la rejilla.
             where = (
                 f" · ubicación «{photo.canonical_location}»"
                 if photo.canonical_location
                 else ""
             )
-            file_rows.append(("Disponibilidad", f"no disponible{where}"))
+            file_rows.append(
+                (
+                    "Disponibilidad",
+                    f"no disponible{where}",
+                    QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning),
+                )
+            )
         if photo.fmt:
             file_rows.append(("Formato", photo.fmt))
         if photo.dimensions:
@@ -223,7 +232,15 @@ class MetadataPanel(QFrame):
 
         rendered = False
         for title, rows in sections:
-            visible_rows = [(label, value) for label, value in rows if value]
+            visible_rows = [
+                (
+                    row[0],
+                    row[1],
+                    row[2] if len(row) > 2 else None,
+                )
+                for row in rows
+                if row[1]
+            ]
             if not visible_rows:
                 continue
             rendered = True
@@ -239,7 +256,9 @@ class MetadataPanel(QFrame):
         layout.addStretch(1)
         self._replace_content(content)
 
-    def _section(self, title: str, rows: list[tuple[str, str]]) -> QWidget:
+    def _section(
+        self, title: str, rows: list[tuple[str, str, QIcon | None]]
+    ) -> QWidget:
         section = QWidget()
         layout = QVBoxLayout(section)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -257,7 +276,7 @@ class MetadataPanel(QFrame):
         grid.setColumnMinimumWidth(0, 96)
         grid.setColumnStretch(1, 1)
 
-        for row, (label, value) in enumerate(rows):
+        for row, (label, value, icon) in enumerate(rows):
             key = QLabel(label)
             key.setFont(ui_font(11))
             set_muted(key)
@@ -274,7 +293,24 @@ class MetadataPanel(QFrame):
             text.setAlignment(Qt.AlignLeft | Qt.AlignTop)
 
             grid.addWidget(key, row, 0, Qt.AlignTop)
-            grid.addWidget(text, row, 1)
+            if icon is not None:
+                # Estado degradado (foto fantasma, ADR 0010): el mismo icono
+                # de aviso del banner y de la rejilla delante del texto.
+                holder = QWidget()
+                holder.setFocusPolicy(Qt.NoFocus)
+                row_layout = QHBoxLayout(holder)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(6)
+                icon_label = QLabel()
+                icon_label.setFocusPolicy(Qt.NoFocus)
+                icon_label.setAccessibleName("")
+                icon_label.setPixmap(icon.pixmap(16, 16))
+                icon_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+                row_layout.addWidget(icon_label)
+                row_layout.addWidget(text, 1)
+                grid.addWidget(holder, row, 1)
+            else:
+                grid.addWidget(text, row, 1)
 
         layout.addLayout(grid)
         return section

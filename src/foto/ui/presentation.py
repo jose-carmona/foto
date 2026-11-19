@@ -164,6 +164,24 @@ def location_rows(
     )
 
 
+def _ghost_counts(photos: Sequence[Photo] | None) -> dict[str, int]:
+    """Fotos fantasma por ubicación canónica (cada una sabe quién la sirve)."""
+    ghosts: dict[str, int] = {}
+    if photos is not None:
+        for photo in photos:
+            if not photo.available and photo.canonical_location:
+                ghosts[photo.canonical_location] = (
+                    ghosts.get(photo.canonical_location, 0) + 1
+                )
+    return ghosts
+
+
+def _degraded_count_label(count: int) -> str:
+    noun = "foto" if count == 1 else "fotos"
+    participle = "no visible" if count == 1 else "no visibles"
+    return f"{_format_count(count)} {noun} {participle}"
+
+
 def location_banner_text(
     locations: Sequence[LocationStatus],
     photos: Sequence[Photo] | None = None,
@@ -176,25 +194,52 @@ def location_banner_text(
     (cada una sabe qué ubicación la sirve); sin fotos no hay recuento.
     ``None`` cuando todo está a mano: sin banner.
     """
-    ghosts: dict[str, int] = {}
-    if photos is not None:
-        for photo in photos:
-            if not photo.available and photo.canonical_location:
-                ghosts[photo.canonical_location] = (
-                    ghosts.get(photo.canonical_location, 0) + 1
-                )
+    ghosts = _ghost_counts(photos)
     lines: list[str] = []
     for location in unavailable_locations(locations):
         line = f"Ubicación «{location.name}» no disponible: {location.path}"
         count = ghosts.get(location.name, 0)
         if count:
-            noun = "foto" if count == 1 else "fotos"
-            participle = "no visible" if count == 1 else "no visibles"
-            line = f"{line}. {_format_count(count)} {noun} {participle}"
+            line = f"{line}. {_degraded_count_label(count)}"
         lines.append(line)
     if not lines:
         return None
     return "\n".join(lines)
+
+
+def location_banner_parts(
+    locations: Sequence[LocationStatus],
+    photos: Sequence[Photo] | None = None,
+) -> tuple[str, str] | None:
+    """Textos del banner: (titular, detalle).
+
+    El titular nombra el problema en una línea corta y el detalle (ruta,
+    recuento de fotos degradadas) queda como texto secundario. ``None``
+    cuando todo está a mano: sin banner.
+    """
+    missing = unavailable_locations(locations)
+    if not missing:
+        return None
+    ghosts = _ghost_counts(photos)
+    if len(missing) == 1:
+        location = missing[0]
+        details: list[str] = []
+        if location.path:
+            details.append(str(location.path))
+        count = ghosts.get(location.name, 0)
+        if count:
+            details.append(_degraded_count_label(count))
+        return (
+            f"Ubicación «{location.name}» no disponible",
+            " · ".join(details),
+        )
+    names = ", ".join(location.name for location in missing)
+    total = sum(ghosts.get(location.name, 0) for location in missing)
+    detail = _degraded_count_label(total) if total else ""
+    return (
+        f"{len(missing)} ubicaciones no disponibles: {names}",
+        detail,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +247,8 @@ def location_banner_text(
 # ---------------------------------------------------------------------------
 def photo_accessible_name(photo: Photo) -> str:
     parts = [photo.name]
+    if not photo.available:
+        parts.append("no disponible")
     if photo.favorite:
         parts.append("favorito")
     return ", ".join(parts)

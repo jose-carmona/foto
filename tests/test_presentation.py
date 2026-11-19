@@ -28,6 +28,7 @@ from foto.ui.presentation import (
     SORT_KEYS,
     is_group_end,
     is_group_start,
+    location_banner_parts,
     location_banner_text,
     location_rows,
     location_state_label,
@@ -787,6 +788,50 @@ def test_unavailable_locations_only_lists_active_missing_roots():
     )
 
     assert [row.name for row in unavailable_locations(locations)] == ["usb"]
+
+
+def test_banner_parts_summarize_one_location_with_path_and_count():
+    locations = (_location("usb", available=False),)
+    photos = (_ghost("a.jpg", "usb"), _ghost("b.jpg", "usb"))
+
+    parts = location_banner_parts(locations, photos)
+
+    assert parts == (
+        "Ubicación «usb» no disponible",
+        "/Volumes/usb · 2 fotos no visibles",
+    )
+
+
+def test_banner_parts_omit_the_count_when_nothing_is_degraded():
+    locations = (_location("usb", available=False),)
+
+    parts = location_banner_parts(locations, [])
+
+    assert parts == (
+        "Ubicación «usb» no disponible",
+        "/Volumes/usb",
+    )
+
+
+def test_banner_parts_join_locations_and_count_in_plural():
+    locations = (
+        _location("usb", available=False),
+        _location("nas", available=False),
+    )
+    photos = (_ghost("a.jpg", "usb"), _ghost("b.jpg", "nas"))
+
+    parts = location_banner_parts(locations, photos)
+
+    assert parts == (
+        "2 ubicaciones no disponibles: usb, nas",
+        "2 fotos no visibles",
+    )
+
+
+def test_banner_parts_are_none_when_every_location_is_available():
+    locations = (_location("ssd", tier="fast"),)
+
+    assert location_banner_parts(locations, []) is None
 
 
 def test_location_rows_orders_active_first_and_labels_states():

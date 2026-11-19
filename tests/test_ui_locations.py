@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from PySide6.QtWidgets import QToolButton
+
 from foto.core.hashing import hash_bytes
 from foto.storage.catalog import Catalog
 from foto.storage.config import Location
@@ -148,6 +150,80 @@ def test_banner_is_hidden_when_every_location_is_available(qapp, library):
     window.show()
 
     assert not window.banner.isVisible()
+    window.close()
+
+
+def test_banner_has_no_mouse_only_actions_and_keeps_the_adr_text(qapp, library):
+    window = _window(qapp, library)
+    window.show()
+
+    # La app es teclado primero: sin botones que exijan el ratón para
+    # revisar o cerrar; ``:locations`` abre el panel y Esc cierra el aviso.
+    buttons = [
+        button
+        for button in window.banner.findChildren(QToolButton)
+        if button.isVisible()
+    ]
+    assert [button.text() for button in buttons] == ["✕"]    # El texto completo del ADR queda disponible (tooltip, accesibilidad,
+    # pruebas) aunque la tarjeta muestre el titular y el detalle por partes.
+    text = window.banner.text()
+    assert "Ubicación «usb» no disponible" in text
+    assert "1 foto no visible" in text
+    assert window.banner.accessibleDescription() == text
+    window.close()
+
+
+def test_escape_dismisses_the_banner(qapp, library):
+    window = _window(qapp, library)
+    window.show()
+
+    assert window.banner.isVisible()
+    window._dispatch("escape")
+    assert window.banner.is_dismissed()
+    assert not window.banner.isVisible()
+    window.close()
+
+
+def test_banner_auto_hides_after_30_seconds(qapp, library):
+    window = _window(qapp, library)
+    window.show()
+
+    # El autocierre usa el temporizador interno: lo disparamos directamente
+    # (30 s reales no caben en una prueba).
+    window.banner._autohide.timeout.emit()
+    assert window.banner.is_dismissed()
+    assert not window.banner.isVisible()
+    window.close()
+
+
+def test_close_button_dismisses_the_banner(qapp, library):
+    window = _window(qapp, library)
+    window.show()
+
+    window.banner.close_button.clicked.emit()
+    assert window.banner.is_dismissed()
+    assert not window.banner.isVisible()
+    window.close()
+
+
+def test_ghost_cells_carry_the_unavailable_role(qapp, library):
+    from PySide6.QtCore import Qt
+
+    from foto.ui.grid import UNAVAILABLE_ROLE
+
+    window = _window(qapp, library)
+    window.show()
+
+    ghosts = [photo for photo in window.photos.values() if not photo.available]
+    available = [photo for photo in window.photos.values() if photo.available]
+    assert ghosts and available
+    for photo in ghosts:
+        item = window._grid_items[photo.key]
+        assert item.data(UNAVAILABLE_ROLE) is True
+        assert "no disponible" in str(item.data(Qt.AccessibleTextRole))
+    for photo in available:
+        item = window._grid_items[photo.key]
+        assert item.data(UNAVAILABLE_ROLE) is False
     window.close()
 
 
