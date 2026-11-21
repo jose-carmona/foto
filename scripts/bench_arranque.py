@@ -1,29 +1,33 @@
 """Benchmark de arranque de la UI con un catálogo sintético de 25 000 fotos.
 
 Instrumentalización del prompt ``prompts/rendimiento-arranque-ui-25k.md``
-(T1.1): construye una biblioteca de prueba con catálogo SQLite real y mide
-el pipeline síncrono de arranque. No es un test de pytest: es un script de
+(T1.1 y T2.7): construye una biblioteca de prueba con catálogo SQLite real y
+mide el pipeline de arranque. No es un test de pytest: es un script de
 medición reproducible.
 
 Condiciones medidas (cada una con repetición, se reporta el mínimo):
 
 (a) ``load_photos`` completo: catálogo → ``load_from_catalog`` → ``Photo``.
 (b) ``PhotoWindow._populate_grid`` con la lista ya cargada, sobre una
-    ventana construida vacía (mide solo el populate de la rejilla).
-(c) Total hasta ventana visible: la secuencia del arranque real
-    (``MainWindow``: carga de fotos/tags/ubicaciones + conexión RW +
-    populate + ``show()`` + ``processEvents``), sin contar la construcción
-    del catálogo ni la importación de módulos (coste fijo, no del pipeline).
+    ventana construida vacía (mide solo el populate síncrono de la rejilla;
+    el umbral del populate por lotes se sube para forzar el camino
+    monolítico y que la cifra sea comparable con la del paso 1).
+(c) Arranque progresivo (T2.2–T2.5, ADR 0011) con la secuencia real del
+    ``MainWindow``: tiempo hasta el **primer píxel** (ventana visible con
+    el estado de carga, sin datos), hasta el **primer lote navegable**
+    (primeros ítems en la rejilla) y hasta el **populate completo**. La
+    carga corre en el hilo worker y el bucle de eventos se bombea como en
+    la app real. No se cuentan la construcción del catálogo ni la
+    importación de módulos (coste fijo, no del pipeline).
 
-Condiciones del filesystem, documentadas (afectan al coste de los ``stat()``):
+Condiciones del filesystem, documentadas (afectan a las rutas y a la
+disponibilidad):
 
 - **Sin originales** (por defecto): el catálogo existe pero ningún fichero
   de imagen está en el disco. Es la condición fría (USB en frío, volumen
-  grande): los ``stat()`` de ``load_from_catalog`` fallan rápido y el
-  tamaño cae al valor del catálogo. La disponibilidad se evalúa igual.
+  grande): los ``stat()`` de disponibilidad fallan rápido.
 - **Con originales** (``--originales``): se escriben ficheros mínimos
-  (bytes sin decodificar; nadie los decodifica aquí) para que los
-  ``stat()`` tengan éxito. Mide el coste del caso normal.
+  (bytes sin decodificar; nadie los decodifica aquí) para el caso normal.
 
 Uso exacto::
 
@@ -193,41 +197,58 @@ def main() -> None:
         print(f"(a) load_photos ({len(photos)} fotos):")
         _reportar(tiempos)
 
-        # (b) _populate_grid sobre una ventana construida vacía.
-
+        # (b) _populate_grid síncrono sobre una ventana construida vacía.
+        # El umbral del populate por lotes (T2.4) se sube para forzar el
+        # camino monolítico y que la cifra siga siendo la del paso 1.
         app = QApplication.instance() or QApplication([])
+        from foto.ui import window as window_module
         from foto.ui.app import _placeholder_icon
         from foto.ui.window import PhotoWindow
 
-        ventana_vacia = PhotoWindow([], placeholder_icon=_placeholder_icon(Path()))
-        tiempos = _medir(
-            args.repeticiones, lambda: ventana_vacia._populate_grid(photos)
-        )
+        limite_original = window_module.POPULATE_SYNC_LIMIT
+        window_module.POPULATE_SYNC_LIMIT = 10**9
+        try:
+            ventana_vacia = PhotoWindow([], placeholder_icon=_placeholder_icon(Path()))
+            tiempos = _medir(
+                args.repeticiones, lambda: ventana_vacia._populate_grid(photos)
+            )
+        finally:
+            window_module.POPULATE_SYNC_LIMIT = limite_original
         print(f"(b) _populate_grid ({len(photos)} items):")
         _reportar(tiempos)
 
-        # (c) Arranque real hasta ventana visible: MainWindow (carga +
-        # populate) y show() + processEvents, segmentado.
+        # (c) Arranque progresivo (T2.7): primer píxel (ventana visible con
+        # estado de carga), primer lote navegable y populate completo.
+        esperado = len(photos)
+
         def _arranque() -> tuple[float, float, float]:
             t0 = time.perf_counter()
             window = MainWindow(raiz, _config(raiz), metadata)
-            t1 = time.perf_counter()
             window.show()
             app.processEvents()
+            t1 = time.perf_counter()
+            while not window._grid_items:
+                app.processEvents()
+                time.sleep(0.001)
             t2 = time.perf_counter()
+            while window._populate_active or len(window._grid_items) < esperado:
+                app.processEvents()
+                time.sleep(0.001)
+            t3 = time.perf_counter()
             window.close()
-            return t1 - t0, t2 - t1, t2 - t0
+            app.processEvents()
+            return t1 - t0, t2 - t0, t3 - t0
 
-        construir, mostrar, total = [], [], []
+        primer_pixel, primer_lote, completo = [], [], []
         for _ in range(args.repeticiones):
-            c, m, t = _arranque()
-            construir.append(c)
-            mostrar.append(m)
-            total.append(t)
-        print("(c) arranque real hasta ventana visible:")
-        print(f"  MainWindow (carga + populate): {_linea(construir)}")
-        print(f"  show() + processEvents:        {_linea(mostrar)}")
-        print(f"  TOTAL hasta visible:           {_linea(total)}")
+            a, b, c = _arranque()
+            primer_pixel.append(a)
+            primer_lote.append(b)
+            completo.append(c)
+        print("(c) arranque progresivo hasta ventana visible:")
+        print(f"  primer píxel (ventana + estado de carga): {_linea(primer_pixel)}")
+        print(f"  primer lote navegable:                    {_linea(primer_lote)}")
+        print(f"  populate completo ({esperado} fotos):      {_linea(completo)}")
     finally:
         if args.keep:
             print(f"\nbiblioteca conservada en: {raiz}")

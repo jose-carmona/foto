@@ -14,6 +14,7 @@ import os
 import re
 
 import pytest
+from PySide6.QtGui import QFont, QFontInfo
 from PySide6.QtWidgets import QApplication, QWidget
 
 from foto.ui.grid import PhotoGrid
@@ -25,8 +26,10 @@ from foto.ui.theme import (
     HELP_BODY_QSS,
     PANEL_SCROLL_QSS,
     PROMPT_QSS,
+    _apply_system_font,
     apply_dark_palette,
     apply_light_palette,
+    apply_theme,
 )
 
 
@@ -82,3 +85,54 @@ def test_retheme_keeps_the_template_intact(qapp, apply_palette):
     _same_sheet(panel.scroll.styleSheet(), PANEL_SCROLL_QSS)
     _same_sheet(popup.styleSheet(), COMPLETION_QSS)
     _same_sheet(overlay.body.styleSheet(), HELP_BODY_QSS)
+
+
+# ----------------------------------------------------------------------
+# T2.8 — la fuente de la aplicación resuelve a una familia real
+# ----------------------------------------------------------------------
+def test_apply_theme_leaves_a_font_that_resolves_to_itself(qapp):
+    """Tras ``apply_theme`` la fuente de la app no depende de un alias roto.
+
+    Qt nace con «Sans Serif» —familia inexistente— cuando la plataforma no
+    le impone la suya: su primera resolución dispara el calentamiento de la
+    tabla de alias de fuentes (el propio Qt lo avisa). Tras el tema, la
+    fuente de la aplicación debe resolver a sí misma (T2.8).
+    """
+    apply_theme(qapp)
+
+    current = qapp.font()
+    resolved = QFontInfo(current).family()
+    assert resolved
+    assert resolved == current.family()
+
+
+def test_apply_system_font_replaces_a_missing_family(qapp):
+    """Una familia inexistente se sustituye por la que la plataforma resuelve.
+
+    Conserva el resto de propiedades (tamaño, peso) de la fuente vigente y
+    el resultado resuelve a sí misma.
+    """
+    original = qapp.font()
+    try:
+        missing = QFont("Fuente-Inexistente-Foto-XYZ", 12)
+        missing.setWeight(QFont.Weight.DemiBold)
+        qapp.setFont(missing)
+
+        _apply_system_font(qapp)
+
+        current = qapp.font()
+        assert current.family() != "Fuente-Inexistente-Foto-XYZ"
+        assert QFontInfo(current).family() == current.family()
+        assert current.weight() == QFont.Weight.DemiBold
+    finally:
+        qapp.setFont(original)
+
+
+def test_apply_system_font_is_idempotent(qapp):
+    """Una segunda pasada no encuentra sustitución y no cambia la fuente."""
+    _apply_system_font(qapp)
+    family = qapp.font().family()
+
+    _apply_system_font(qapp)
+
+    assert qapp.font().family() == family

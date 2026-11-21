@@ -54,7 +54,12 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
 - El visor **consume el catálogo** (`ADR 0003`): lee solo desde
   `<fototeca>/.foto/catalog.sqlite` (apariciones `present` de ubicaciones
   activas; las rutas absolutas salen del join con `locations.path`, ADR
-  0010). Si no existe el catálogo, la app avisa y se cierra. Con una
+  0010). El arranque es **progresivo** ([ADR
+  0011](docs/adr/0011-arranque-progresivo.md)): la ventana se muestra
+  inmediatamente con un estado de carga, la carga corre en un hilo worker
+  con cancelación cooperativa (`should_continue` →
+  `LibraryLoadCancelled`) y la rejilla se popular por lotes de 500 ítems
+  con coherencia de búsqueda, favoritos y navegación a medio populate. Si no existe el catálogo, la app avisa y se cierra. Con una
   ubicación declarada no disponible (USB desmontado) la ventana se degrada
   y avisa: banner sobre la rejilla, panel de ubicaciones (`:locations` o
   clic en el banner) y fotos fantasma con los datos del catálogo; el visor

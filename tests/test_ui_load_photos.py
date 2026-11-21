@@ -17,8 +17,6 @@ from foto.ui.app import load_photos
 from tests.conftest import write_image
 
 NOW = "2026-10-30T12:00:00+00:00"
-
-
 def _seed_catalog(root, photo_hash: str) -> None:
     (root / ".foto").mkdir(parents=True, exist_ok=True)
     declared = (Location("default", root, "fast"),)

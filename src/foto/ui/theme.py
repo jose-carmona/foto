@@ -13,7 +13,7 @@ estilo: consumen esta capa.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QPalette
+from PySide6.QtGui import QColor, QFont, QFontInfo, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from foto.ui.presentation import muted_rgb
@@ -24,6 +24,31 @@ def ui_font(size: int, weight: QFont.Weight = QFont.Normal) -> QFont:
     font.setPixelSize(size)
     font.setWeight(weight)
     return font
+
+
+def _apply_system_font(app: QApplication) -> None:
+    """Fuente del sistema real como fuente de la aplicación (T2.8).
+
+    Qt arranca con «Sans Serif» como fuente por defecto cuando la plataforma
+    no le impone la suya (plataformas sin tema, como la ``offscreen`` de
+    pruebas): es una familia inexistente, y su primera resolución dispara el
+    calentamiento de la tabla de alias de fuentes (el propio Qt lo avisa:
+    «Replace uses of missing font family "Sans Serif"»). Si la fuente
+    vigente no resuelve a sí misma, se fija la familia que la plataforma
+    resuelve para ella —la «tipografía del sistema» del diseño, sin
+    empaquetar familias ni imponer un tema—; se conservan el resto de
+    propiedades (tamaño, peso) de la fuente que había. En las plataformas
+    que ya fijan su fuente (cocoa: ``.AppleSystemUIFont``) la comprobación
+    es un no-op de pocos ms. Idempotente: una segunda pasada no encuentra
+    sustitución.
+    """
+    current = app.font()
+    resolved = QFontInfo(current).family()
+    if not resolved or resolved == current.family():
+        return
+    fixed = QFont(current)
+    fixed.setFamily(resolved)
+    app.setFont(fixed)
 
 
 def _luminance(color: QColor) -> float:
@@ -141,6 +166,10 @@ def apply_dark_palette(app: QApplication) -> None:
 
 
 def apply_theme(app: QApplication) -> None:
+    # La fuente del sistema va primero: la resolución de familias que hace
+    # ``QFontInfo`` es el mismo calentamiento que pagaría el primer texto
+    # pintado; hacerlo aquí lo deja resuelto para todos los widgets.
+    _apply_system_font(app)
     scheme = QGuiApplication.styleHints().colorScheme()
     if scheme == Qt.ColorScheme.Dark:
         apply_dark_palette(app)

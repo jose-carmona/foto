@@ -78,6 +78,9 @@ forma de publicación o compartición.
     - [ ] Poda y límite de tamaño de la caché
   - [ ] Endurecer el rendimiento para bibliotecas grandes
     - [x] Ventana de miniaturas en memoria y navegación con índices O(1)
+    - [x] Arranque progresivo: ventana visible de inmediato con estado de
+      carga, catálogo en hilo worker y rejilla popular por lotes
+      ([ADR 0011](docs/adr/0011-arranque-progresivo.md))
     - [ ] Evaluar un modelo/vista si el número de elementos empieza a pesar
   - [x] Integración del visor con el catálogo ([ADR 0003](docs/adr/0003-consumo-del-indice-desde-el-visor.md))
   - [x] Búsqueda incremental `/` contra el índice (nombre, ruta, cámara,

@@ -18,6 +18,18 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".heic", ".raf", ".cr2", ".nef", ".arw", ".
 T = TypeVar("T")
 
 
+class LibraryLoadCancelled(Exception):
+    """Señal de control de la carga del catálogo (T2.3 del prompt de arranque,
+    ADR 0011).
+
+    No es un error del catálogo: ``load_from_catalog`` la lanza cuando el
+    parámetro ``should_continue`` deja de ser cierto y corta sin resultados
+    parciales. Nadie debe mostrarla al usuario: el llamador (el worker del
+    arranque progresivo) la usa para detener el hilo de carga limpiamente
+    cuando la ventana se cierra a mitad.
+    """
+
+
 @dataclass(frozen=True)
 class CatalogPhoto:
     """Foto cargada desde el catálogo para la UI."""
@@ -175,6 +187,7 @@ def _tier_rank(tier: str | None) -> int:
 def load_from_catalog[T](
     catalog: Catalog,
     factory: Callable[..., T] = CatalogPhoto,  # type: ignore[assignment]
+    should_continue: Callable[[], bool] | None = None,
 ) -> list[T]:
     """Carga fotos desde el catálogo SQLite (solo ubicaciones activas).
 
@@ -198,6 +211,11 @@ def load_from_catalog[T](
     ``Photo.from_catalog`` para que los 25k objetos se materialicen una
     sola vez, sin la copia campo a campo que hacía ``_to_ui_photo``. El
     núcleo no conoce el modelo de UI: solo recibe el callable.
+
+    ``should_continue`` (T2.3, ADR 0011): guardia de cancelación cooperativa,
+    comprobada por foto. Cuando devuelve ``False`` se corta con
+    ``LibraryLoadCancelled`` y no se devuelve lista parcial. Es un callable
+    puro: el núcleo sigue sin conocer Qt ni a la UI.
     """
     rows = catalog.list_present_files()
     grouped: dict[str, list] = {}
@@ -226,6 +244,8 @@ def load_from_catalog[T](
 
     photos: list[T] = []
     for photo_hash, items in grouped.items():
+        if should_continue is not None and not should_continue():
+            raise LibraryLoadCancelled
         items_sorted = sorted(
             items,
             key=lambda r: (

@@ -7,14 +7,15 @@ import logging
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from foto.core.errors import CatalogError, LibraryError
-from foto.core.library import load_from_catalog
+from foto.core.library import LibraryLoadCancelled, load_from_catalog
 from foto.storage.availability import AVAILABLE, availability_state
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import (
@@ -188,14 +189,19 @@ def load_photos(library_path: Path, metadata_dir: Path | None = None) -> list[Ph
         catalog.close()
 
 
-def _photos_from(catalog: Catalog) -> list[Photo]:
+def _photos_from(
+    catalog: Catalog, should_continue: Callable[[], bool] | None = None
+) -> list[Photo]:
     """Fotos desde un ``Catalog`` ya abierto (T1.3): sin abrir conexiones.
 
     Los objetos se materializan una sola vez (T1.4): la fábrica de
     ``load_from_catalog`` es ``Photo.from_catalog``, no hay copia campo a
-    campo posterior.
+    campo posterior. ``should_continue`` (T2.3) reenvía la guardia de
+    cancelación del arranque progresivo (ADR 0011).
     """
-    return load_from_catalog(catalog, factory=Photo.from_catalog)
+    return load_from_catalog(
+        catalog, factory=Photo.from_catalog, should_continue=should_continue
+    )
 
 
 def _tags_from(catalog: Catalog) -> list[Tag]:
@@ -236,7 +242,10 @@ def _locations_from(catalog: Catalog) -> tuple[LocationStatus, ...]:
 
 
 def load_library(
-    library_path: Path, metadata_dir: Path | None = None
+    library_path: Path,
+    metadata_dir: Path | None = None,
+    *,
+    should_continue: Callable[[], bool] | None = None,
 ) -> tuple[list[Photo], list[Tag], tuple[LocationStatus, ...]]:
     """Carga en una sola conexión solo-lectura fotos, tags y ubicaciones (T1.3).
 
@@ -247,6 +256,12 @@ def load_library(
     (ADR 0006, Decisión 10) y su semántica no cambia. El catálogo de
     entrada es el mismo fichero; no hay lock de escritor (modelo del
     visor, ADR 0003).
+
+    ``should_continue`` (T2.3, ADR 0011): guardia de cancelación
+    cooperativa del arranque progresivo. Se comprueba entre la fase de
+    fotos y la de etiquetas y se reenvía a ``load_from_catalog``, que la
+    comprueba por foto; al cortar se lanza ``LibraryLoadCancelled`` y la
+    conexión se cierra igualmente en el ``finally``.
     """
     resolved_dir = _metadata_dir_for(library_path, metadata_dir)
 
@@ -263,8 +278,11 @@ def load_library(
         raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
 
     try:
+        photos = _photos_from(catalog, should_continue)
+        if should_continue is not None and not should_continue():
+            raise LibraryLoadCancelled
         return (
-            _photos_from(catalog),
+            photos,
             _tags_from(catalog),
             _locations_from(catalog),
         )
@@ -325,6 +343,58 @@ def load_tags(library_path: Path, metadata_dir: Path | None = None) -> list[Tag]
         catalog.close()
 
 
+class LibraryLoadWorker(QObject):
+    """Carga del catálogo fuera del hilo de UI (T2.3, ADR 0011).
+
+    El worker vive en la capa de UI (``core/`` y ``storage/`` siguen sin
+    Qt) y entrega el resultado por señales: solo datos puros cruzan el
+    hilo (`Photo`, `Tag`, `LocationStatus`), nunca objetos Qt. La conexión
+    solo-lectura del catálogo la abre y la cierra el propio worker dentro
+    de su hilo (modelo del visor, ADR 0003); la RW de favoritos queda en
+    el hilo de UI, como dueño la ventana (ADR 0006).
+
+    Cancelación (T2.6): ``cancel()`` marca la carga como descartada; la
+    guardia ``should_continue`` corta el recorrido con
+    ``LibraryLoadCancelled`` en la foto siguiente y el worker vuelve sin
+    emitir nada. Cerrar la ventana a mitad no deja resultados parciales ni
+    escrituras pendientes (la lectura es ``mode=ro``).
+    """
+
+    #: ``(fotos, etiquetas, ubicaciones)``: datos puros listos para la ventana.
+    loaded = Signal(object, object, object)
+    #: Mensaje de error fatal de arranque (mismo guard que antes del show).
+    failed = Signal(str)
+
+    def __init__(self, library_path: Path, metadata_dir: Path) -> None:
+        super().__init__()
+        self._library_path = library_path
+        self._metadata_dir = metadata_dir
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Descarta el resultado de la carga en curso (T2.6)."""
+        self._cancelled = True
+
+    @Slot()
+    def load(self) -> None:
+        """Ejecuta la carga completa y la entrega por señal."""
+        try:
+            photos, tags, locations = load_library(
+                self._library_path,
+                self._metadata_dir,
+                should_continue=lambda: not self._cancelled,
+            )
+        except LibraryLoadCancelled:
+            return
+        except (OSError, RuntimeError) as exc:
+            if not self._cancelled:
+                self.failed.emit(str(exc))
+            return
+        if self._cancelled:
+            return
+        self.loaded.emit(photos, tags, locations)
+
+
 class MainWindow(PhotoWindow):
     def __init__(
         self,
@@ -335,51 +405,133 @@ class MainWindow(PhotoWindow):
         self.library_path = library_path
         self.config = config
         resolved_dir = _metadata_dir_for(library_path, metadata_dir)
-        try:
-            # Una sola conexión solo-lectura para las tres lecturas (T1.3):
-            # fotos, vocabulario de etiquetas y estado de ubicaciones salen
-            # del mismo catálogo abierto una vez.
-            photos, tags, locations = load_library(library_path, resolved_dir)
-        except (OSError, RuntimeError) as exc:
-            QMessageBox.critical(None, "foto", str(exc))
-            sys.exit(1)
-
-        try:
-            # Conexión RW dedicada del visor para los favoritos (ADR 0006,
-            # Decisión 10): no toma index.lock y WAL serializa con el
-            # indexador. Sin ella los favoritos no persisten, así que un
-            # fallo al abrirla es un error de arranque, no un aviso.
-            tag_connection = connect_read_write(resolved_dir / CATALOG_FILE_NAME)
-        except (CatalogError, OSError) as exc:
-            QMessageBox.critical(None, "foto", str(exc))
-            sys.exit(1)
+        self._catalog_path = resolved_dir / CATALOG_FILE_NAME
 
         service = ThumbnailService(
             QSize(THUMB_W, THUMB_H),
             cache_dir=thumbs_dir(resolved_dir),
         )
+        # Arranque progresivo (T2.2, ADR 0011): la ventana nace vacía con su
+        # estado de carga y aparece antes de tocar el catálogo; fotos,
+        # etiquetas y ubicaciones llegan después por señal desde el worker.
+        # La conexión RW de favoritos también se abre al llegar la carga
+        # (``_on_library_loaded``): sin catálogo no hay sesión y todos los
+        # errores fatales comparten la misma vía de aviso y cierre, con el
+        # mensaje del guard de ``load_library`` (ahora tras el show).
         super().__init__(
-            photos,
+            photos=[],
             thumbnails={},
             placeholder_icon=_placeholder_icon(Path()),
             thumbnail_loader=service.load_visible,
             title=self._window_title(),
             initial_panel_visible=False,
             grid_row=True,
-            tag_connection=tag_connection,
-            tag_catalog=tags,
-            locations=locations,
+            tag_catalog=(),
+            locations=(),
         )
         self._thumbnail_service = service
         service.setParent(self)
         service.loaded.connect(self._on_thumbnail_loaded)
         service.failed.connect(self._on_thumbnail_failed)
+        # Estado de carga (T2.2): texto discreto en la rejilla y aviso
+        # persistente en la barra; ``set_photos`` retira el fijado al
+        # entrar los datos del worker.
+        self.set_library_loading(True)
+        self.status.set_pinned("cargando el catálogo…")
+        self._load_cancelled = False
+        self._start_library_load(library_path, resolved_dir)
+
+    def _start_library_load(self, library_path: Path, metadata_dir: Path) -> None:
+        """Carga del catálogo en un hilo worker propio (T2.3, ADR 0011)."""
+        self._loader = LibraryLoadWorker(library_path, metadata_dir)
+        self._loader_thread = QThread(self)
+        self._loader.moveToThread(self._loader_thread)
+        self._loader.loaded.connect(self._on_library_loaded)
+        self._loader.failed.connect(self._on_library_failed)
+        self._loader_thread.started.connect(self._loader.load)
+        self._loader_thread.finished.connect(self._loader.deleteLater)
+        app = QApplication.instance()
+        if app is not None:
+            # Salida limpia en toda vía de cierre (T2.6): Ctrl+q, ``:q`` y
+            # ⌘Q salen del bucle de eventos sin pasar por el ``closeEvent``
+            # de la ventana, así que el apagado del trabajo en fondo se
+            # cuelga también de ``aboutToQuit``, que Qt emite en toda
+            # salida del ``exec()``. Sin ello, el ``QThread`` moría en plena
+            # carga al destruirse los widgets («Destroyed while thread is
+            # still running»).
+            app.aboutToQuit.connect(self._shutdown_background_work)
+        self._loader_thread.start()
+
+    def _shutdown_background_work(self) -> None:
+        """Cancela y espera todo el trabajo en fondo, en toda vía de salida.
+
+        Idempotente: ``closeEvent`` y ``aboutToQuit`` pueden invocarlo en
+        cualquier orden. Cubre el worker de carga (cancelación cooperativa
+        con espera acotada), el servicio de miniaturas (descarta la cola y
+        espera a las tareas activas) y el trabajo en fondo de la ventana
+        (timers del populate, pool de decodificación del visor).
+
+        Antes solo cubría el worker de carga y el servicio de miniaturas
+        quedaba solo en el ``closeEvent``: al salir con ``Ctrl+q``
+        mientras se cargaban miniaturas, las tareas en vuelo emitían hacia
+        objetos ya destruidos («RuntimeError: Signal source has been
+        deleted»). Las esperas van acotadas y los emits residuales quedan
+        bajo el guardia de cada tarea.
+        """
+        self._load_cancelled = True
+        loader = getattr(self, "_loader", None)
+        thread = getattr(self, "_loader_thread", None)
+        if loader is not None:
+            loader.cancel()
+        if thread is not None and thread.isRunning():
+            thread.quit()
+            thread.wait(10_000)
+        service = getattr(self, "_thumbnail_service", None)
+        if service is not None:
+            service.shutdown()
+        super().shutdown_background_work()
+
+    def _on_library_loaded(self, photos, tags, locations) -> None:
+        """Resultado de la carga: la biblioteca entra de una vez (T2.3)."""
+        if self._load_cancelled:
+            return
+        try:
+            # Conexión RW dedicada del visor para los favoritos (ADR 0006,
+            # Decisión 10): no toma index.lock y WAL serializa con el
+            # indexador. Se abre aquí, en el hilo de UI y solo si hubo
+            # catálogo que leer: sin ella los favoritos no persisten, así
+            # que un fallo al abrirla sigue siendo un error de arranque,
+            # con el mismo aviso y cierre que antes.
+            tag_connection = connect_read_write(self._catalog_path)
+        except (CatalogError, OSError) as exc:
+            QMessageBox.critical(None, "foto", str(exc))
+            self.close()
+            QApplication.exit(1)
+            return
+        self.tag_connection = tag_connection
+        self.set_library(photos, tags=tags, locations=locations)
+
+    def _on_library_failed(self, message: str) -> None:
+        """Error fatal de arranque tras el show (T2.2, ADR 0011).
+
+        Mismo mensaje y cierre con código 1 que el guard previo al show de
+        antes; ahora llega por señal, ya con la ventana visible.
+        """
+        if self._load_cancelled:
+            return
+        self.set_library_loading(False)
+        QMessageBox.critical(None, "foto", message)
+        self.close()
+        QApplication.exit(1)
 
     def _window_title(self) -> str:
         return f"foto — {self.library_path.name}"
 
     def closeEvent(self, event):
-        self._thumbnail_service.shutdown()
+        # Cierre a mitad de carga o con miniaturas en vuelo (T2.6): mismo
+        # apagado del trabajo en fondo que ``aboutToQuit`` —``Ctrl+q``,
+        # ``:q`` y ⌘Q salen del bucle sin pasar por este evento—.
+        self._shutdown_background_work()
         super().closeEvent(event)
 
     def _on_thumbnail_loaded(self, key: str, image: QImage) -> None:

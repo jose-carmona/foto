@@ -31,8 +31,8 @@
 | Paso | Alcance | Estado |
 |---|---|---|
 | Paso 1 | Quick wins de carga (T1.1–T1.7, + T1.8 nueva) | **Completado** (2026-11-19) |
-| Paso 2 | Arranque progresivo (T2.1–T2.7) | Pendiente |
-| Paso 3 | Modelo virtualizado (condicionado, solo diseño) | Pendiente |
+| Paso 2 | Arranque progresivo (T2.1–T2.8 y T2.10 hechas; T2.9 nueva, pendiente) | **Completado** (2026-11-19; pendiente la verificación visual del dueño) |
+| Paso 3 | Modelo virtualizado (condicionado, solo diseño) | Pendiente de autorización del dueño |
 
 ---
 
@@ -311,7 +311,7 @@ Objetivo: aunque el trabajo total baje (paso 1), mientras sea síncrono el
 usuario ve un proceso congelado. Aquí la ventana aparece de inmediato, la
 carga corre en un hilo worker y la rejilla se popular por lotes.
 
-- [ ] **T2.1 — Decidir y documentar el mecanismo de concurrencia.** Un ADR
+- [x] **T2.1 — Decidir y documentar el mecanismo de concurrencia.** Un ADR
   corto (o una enmienda al ADR 0003 con nota de origen) que fije: hilo
   worker (`QThread` + objeto worker, sin `QThreadPool` global), comunicación
   por señales (lista de `Photo` lista → señal al hilo de UI), propiedad del
@@ -319,8 +319,18 @@ carga corre en un hilo worker y la rejilla se popular por lotes.
   modelo actual del visor) y qué pasa si la carga falla o el usuario cierra
   la ventana a mitad (worker cancelable o ignorado, sin escrituras
   pendientes). Sin Qt en `core/`/`storage/`: el worker vive en `ui/`.
+  > Nota (2026-11-19): ADR nuevo `docs/adr/0011-arranque-progresivo.md`.
+  > Worker `QThread` + objeto worker (`LibraryLoadWorker`, en `ui/app.py`),
+  > señales con datos puros (`loaded(fotos, etiquetas, ubicaciones)` /
+  > `failed(mensaje)`), catálogo solo-lectura abierto y cerrado dentro del
+  > hilo del worker, y cancelación **cooperativa** (no solo «ignorado»):
+  > `load_from_catalog`/`load_library` aceptan un `should_continue` puro que
+  > corta con `LibraryLoadCancelled` (excepción de control en
+  > `core/library.py`, sin Qt). La RW de favoritos sigue en el hilo de UI.
+  > Verificación: `tests/test_multi_location.py` (núcleo, sin Qt) y
+  > `tests/test_ui_progressive.py` (worker).
 
-- [ ] **T2.2 — Ventana inmediata con estado de carga.** (`ui/app.py`,
+- [x] **T2.2 — Ventana inmediata con estado de carga.** (`ui/app.py`,
   `ui/window.py`.) `main()` crea la `MainWindow` vacía y la muestra antes de
   cargar nada. Durante la carga, la rejilla muestra un estado de carga
   (texto u overlay discreto conforme a `docs/diseno-ui.md`; nada de
@@ -328,14 +338,39 @@ carga corre en un hilo worker y la rejilla se popular por lotes.
   existente. Si no hay catálogo o hay error fatal, el camino de aviso y
   cierre actual se conserva (mismo mensaje, quizá ahora tras el show:
   decide y documenta la nota).
+  > Nota (2026-11-19): hecha. `MainWindow.__init__` construye la ventana
+  > vacía y `main()` la muestra; el estado de carga reutiliza el estado
+  > vacío (`empty_label` «Cargando el catálogo…», texto discreto sin
+  > spinner) y la barra fija «cargando el catálogo…» con el patrón
+  > `set_pinned` existente, que `set_photos` retira al entrar los datos.
+  > **Decisión documentada sobre el guard**: el aviso de error fatal
+  > (catálogo ausente, esquema sin migrar, catálogo ilegible) ocurre ahora
+  > **tras el show** —la señal `failed` del worker muestra el mismo
+  > `QMessageBox.critical` y cierra con `QApplication.exit(1)`—, conservando
+  > el mensaje exacto del guard anterior. Motivo: es la excepción, y a
+  > cambio la ventana siempre aparece en décimas. La conexión RW de
+  > favoritos se abre al llegar la carga (mismo hilo de UI): sin catálogo
+  > no hay sesión y todos los errores fatales comparten la vía de la señal
+  > (antes se abría antes de cargar y un catálogo ausente daba un error
+  > críptico de `mode=rw`). Test:
+  > `tests/test_ui_progressive.py::test_main_window_reports_a_missing_catalog_after_the_show`.
 
-- [ ] **T2.3 — Carga del catálogo en el worker.** (`ui/app.py`,
+- [x] **T2.3 — Carga del catálogo en el worker.** (`ui/app.py`,
   `ui/window.py`.) Mover `load_photos` (+ tags, ubicaciones y disponibilidad,
   ya unificadas por T1.3) al worker. La señal entrega la lista de `Photo` al
   hilo de UI. Ningún objeto Qt cruz el hilo (solo datos); los iconos
   quedan, como hoy, en el servicio de miniaturas del hilo de UI.
+  > Nota (2026-11-19): hecha. `LibraryLoadWorker.load()` ejecuta
+  > `load_library` (T1.3: una sola conexión `mode=ro`) en el hilo worker y
+  > emite `loaded(fotos, etiquetas, ubicaciones)` con dataclasses puros;
+  > `MainWindow._on_library_loaded` abre la conexión RW y llama a
+  > `PhotoWindow.set_library` (nuevo), que recompone el vocabulario de
+  > etiquetas, el panel de ubicaciones y el banner (ADR 0010) y delega el
+  > populate en `set_photos`. Los loaders individuales (`load_photos`,
+  > `load_tags`, `load_locations`) quedan intactos para tests y usos
+  > puntuales. Iconos y miniaturas intactos en el hilo de UI.
 
-- [ ] **T2.4 — Populate de la rejilla por lotes.** (`ui/window.py`,
+- [x] **T2.4 — Populate de la rejilla por lotes.** (`ui/window.py`,
   `_populate_grid`.) Sustituir la inserción monolítica por lotes de ~500
   ítems procesados con un `QTimer` de disparo cero (o patrón equivalente)
   para que el hilo de UI respire entre lotes: tras el primer lote la rejilla
@@ -344,31 +379,249 @@ carga corre en un hilo worker y la rejilla se popular por lotes.
   favoritos deben funcionar incluso a medio populate o, como mínimo,
   esperarse a que termine: decide y documenta en una nota). El cálculo de
   orden y grupos se hace una vez antes del primer lote.
+  > Nota (2026-11-19): hecha. `_populate_grid` ordena y calcula grupos una
+  > vez y devuelve `True` si aplazó el trabajo en lotes de
+  > `POPULATE_BATCH_SIZE = 500` (un `QTimer` de disparo cero por lote);
+  > por debajo de `POPULATE_SYNC_LIMIT = 1000` (demo, pruebas,
+  > bibliotecas pequeñas) el camino es el monolítico de siempre. Los
+  > llamadores (`set_photos`, `_sort_grid`, el `__init__`) difieren su
+  > trabajo post-populate vía `on_done`, que `_finish_populate` ejecuta al
+  > terminar el último lote. **Decisión de coherencia documentada**: la
+  > ventana funciona a medio populate, no espera al final — cada ítem nace
+  > ya oculto o visible con el filtro vigente, evaluado en el momento de
+  > insertarlo (un cambio de búsqueda/``:tag`` a medio populate también
+  > alcanza a los lotes siguientes), las cabeceras de grupo nacen ocultas
+  > y se desocultan con su primera foto visible, y `_grid_items`, la caché
+  > de visibles (`_visible_keys_cache`, posiciones y
+  > `PhotoGrid.append_visible_rows`, nuevo) y los recuentos de la barra se
+  > mantienen al día lote a lote; `_finish_populate` normaliza con una
+  > pasada de `_apply_filter`. El cálculo de visibilidad compartido está
+  > en `_matches_filter` (misma regla que `_apply_filter`, T1.5).
+  > Tests: `tests/test_ui_progressive.py` (lotes, búsqueda a medio
+  > populate, `:sort` a medio populate, cola diferida).
 
-- [ ] **T2.5 — Miniaturas y visibilidad durante el populate.** El mecanismo
+- [x] **T2.5 — Miniaturas y visibilidad durante el populate.** El mecanismo
   actual (viewport + debounce + cola reemplazable) ya es correcto: verifica
   solo que no se dispare contra la rejilla a medio llenar (p. ej. ignorar
   peticiones de ítems aún no insertados) y que al terminar el populate la
   primera tanda de miniaturas del viewport sale sin jitter. No cambies
   `ui/thumbnails.py` salvo que la verificación lo exija.
+  > Nota (2026-11-19): verificada sin tocar `ui/thumbnails.py`. Las
+  > peticiones salen de `_visible_photo_keys`, que recorre la rejilla real:
+  > un ítem aún no insertado no puede entrar en la cola (test
+  > `test_visible_thumbnail_requests_ignore_uninserted_items`). Cada lote
+  > programa la petición (el debounce de 60 ms existente agrupa) para que
+  > el primer viewport pida miniatura cuanto antes, y `_finish_populate`
+  > reprograma al terminar: la primera tanda sale con el mismo camino de
+  > siempre, sin jitter añadido.
 
-- [ ] **T2.6 — Cancelación y cierre limpio.** Si el usuario cierra la ventana
+- [x] **T2.6 — Cancelación y cierre limpio.** Si el usuario cierra la ventana
   durante la carga o el populate: el worker se detiene (o su resultado se
   descarta), no quedan timers de populate vivos y la app sale sin
   traceback. Tests con `QT_QPA_PLATFORM=offscreen` del ciclo completo:
   ventana vacía → señal → populate por lotes → cierre a mitad sin errores.
+  > Nota (2026-11-19): hecha, con una **regresión real corregida durante la
+  > verificación manual**: `Ctrl+q` (y ``:q``, ⌘Q) salen del bucle de
+  > eventos **sin pasar por el `closeEvent`** de la ventana, y el
+  > `QThread` moría en plena carga («QThread: Destroyed while thread is
+  > still running»). La cancelación y la espera viven ahora en
+  > `MainWindow._shutdown_library_load` (idempotente) y se cuelgan tanto
+  > del `closeEvent` como de `aboutToQuit`, que Qt emite en toda salida
+  > del `exec()`; el `closeEvent` de `PhotoWindow` detiene además el timer
+  > del populate (`_cancel_populate`). La espera va acotada (10 s) y en la
+  > práctica es corta: el corte cooperativo ocurre en la foto siguiente,
+  > y el único tramo no interrumpible es el `fetchall` inicial. Tests:
+  > `test_close_mid_populate_leaves_no_live_timers`,
+  > `test_main_window_close_mid_load_cancels_cleanly` y
+  > `test_quit_mid_load_cancels_the_worker_about_to_quit` (regresión, con
+  > `exec()` real y `quit()`).
+  > Nota (2026-11-19, T2.10): el método se renombra a
+  > `MainWindow._shutdown_background_work` y pasa a cubrir también el
+  > servicio de miniaturas y el pool del visor (ver T2.10).
 
-- [ ] **T2.7 — Verificación y cierre del paso 2.** Suite completa en verde;
+- [x] **T2.7 — Verificación y cierre del paso 2.** Suite completa en verde;
   re-ejecuta el benchmark de T1.1 midiendo ahora el **time-to-first-pixel**
   (ventana visible) y el time-to-navigable (primer lote navegable) además
   del time-to-complete. Anota las cifras. Smoke manual en la biblioteca
   real: arranque, scroll durante la carga (si procede), búsqueda a medio
   populate, favoritos, y cierre a mitad de carga.
+  > Nota (2026-11-19): suite completa en verde (174 tests, 17 nuevos en
+  > `tests/test_ui_progressive.py`) y `ruff` limpio. Benchmark
+  > (`QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py`,
+  > 25k sintético, mínimo de 3 repeticiones; (b) con el umbral de lotes
+  > subido para forzar el camino síncrono y que la cifra sea comparable):
+  >
+  > | Métrica | Antes (paso 1) | Después (sin orig.) | Después (con orig.) |
+  > |---|---|---|---|
+  > | (a) `load_photos` | 2 831 ms | 2 873 ms | 2 971 ms |
+  > | (b) `_populate_grid` síncrono | 1 014 ms | 1 136 ms | 1 121 ms |
+  > | (c) primer píxel (ventana + estado de carga) | — | **50 ms** | **51 ms** |
+  > | (c) primer lote navegable | — | 3 404 ms | 3 416 ms |
+  > | (c) populate completo | — | 5 086 ms | 5 037 ms |
+  > | (c) «total hasta visible» del paso 1 (referencia) | 4 268 ms | — | — |
+  >
+  > Lectura de las cifras:
+  > - **Primer píxel: 4 268 ms → 50 ms** (−99 %): la ventana aparece con su
+  >   estado de carga antes de tocar el catálogo; el criterio «visible en
+  >   cuestiones de décimas» se cumple de sobra en el sintético.
+  > - **Primer lote navegable: 3,4 s.** No alcanza el «~1 s» del criterio:
+  >   el primer lote no puede preceder a la carga, y `load_photos` sigue en
+  >   ~2,9 s (trabajo del paso 1) más el orden (una pasada, ~0,2 s) y el
+  >   primer lote. Bajarlo exigiría emisiones parciales desde el worker
+  >   (descartada en el ADR 0011 por duplicar el contrato de señales) o más
+  >   reducción de `load_from_catalog` (fuera del paso 2).
+  > - **Populate completo: ~5,1 s** frente a los 4,3 s del camino síncrono
+  >   anterior: el populate por lotes añade ~0,9 s al total (insertar con el
+  >   bucle de eventos respirando entre lotes de 500 ≈ 23 ms cuesta más que
+  >   el monolítico de 1,1 s; con lotes mayores el sobrecoste baja, p. ej.
+  >   ~0,1 s con lote de 1 000, a costa de frames por encima del
+  >   presupuesto de 50 ms). Es el trade-off deliberado del paso 2: ventana
+  >   a los 0,05 s y rejilla navegable mucho antes del total, a cambio de
+  >   terminar ~0,8 s más tarde. Medido ad-hoc con un perfil de lotes
+  >   (500/1 000/2 000/5 000) sobre el mismo catálogo sintético.
+  >
+  > Smoke offscreen automatizado sobre la biblioteca real (~29 567 fotos,
+  > copia del catálogo de `~/wrk/meta` en un directorio temporal, solo
+  > lectura de los originales, sin tocar la metainformación real): primer
+  > píxel en 626 ms —incluye ~0,43 s de **calentamiento único del
+  > subsistema de fuentes de Qt** en la primera pintura de texto del
+  > proceso, que el arranque síncrono anterior también pagaba; sin él,
+  > ~0,19 s—, primer lote a los 4,6 s y populate completo a los 6,6 s;
+  > búsqueda «.jpg» → 31 coincidencias y recuperación a las 29 567,
+  > inexistente → 0 y recuperación, `:sort date/camera/location` con
+  > 208/53/87 grupos y 29 567 visibles en los tres, 4 favoritas del
+  > catálogo, banner de «iMac» no disponible, y cierre tras la carga y a
+  > mitad de carga limpios (worker cancelado, hilo parado, sin timers).
+  > **Pendiente del dueño:** la verificación visual manual (arranque,
+  > scroll durante la carga, búsqueda a medio populate, favoritos, cierre
+  > a mitad) en la app real; el smoke offscreen no sustituye la percepción.
+  >
+  > Corrección (2026-11-19, T2.8): el desglose de fuentes de este smoke se
+  > midió en plataforma offscreen; en la plataforma real (cocoa) el
+  > calentamiento inevitable es ~0,2 s (población de la base de fuentes)
+  > porque Qt ya fija la fuente del sistema y no hay coste de alias. Ver
+  > T2.8. Y corrección de recuento: la suite son **988 ítems** de test
+  > (con parametrizaciones), no 174.
 
 **Criterio de fin del paso 2:** con 25k fotos, la ventana es visible en
 cuestiones de décimas y la rejilla navegable en ~1 s, medido con el
 benchmark; el comportamiento final (rejilla completa, búsqueda, grupos,
 favoritos, degradación) es indistinguible del actual.
+
+- [x] **T2.8 — (nueva, 2026-11-19) Calentamiento de fuentes de Qt en el
+  primer pintado.** Hallazgo del perfilado del arranque progresivo: la
+  primera pintura de texto del proceso cuesta ~0,43 s en macOS —~0,18 s
+  poblando alias de la familia por defecto «Sans Serif», que no existe (el
+  propio Qt lo avisa: «Replace uses of missing font family "Sans Serif"»),
+  y ~0,25 s poblando la base de fuentes—; la segunda pintura cuesta
+  1–6 ms. Está dentro del primer píxel por inevitable (el estado de carga
+  ya pinta texto) y el arranque síncrono anterior lo pagaba igualmente
+  dentro de su total. Sustituir «Sans Serif» por una familia existente
+  bajaría la primera pintura a ~0,23 s. Es una tarea de `ui/theme.py`
+  (tipografía del sistema, multiplataforma: no hardcodear una familia de
+  macOS) y queda fuera del paso 2; el dueño decide si la quiere.
+  > Nota (2026-11-19): hecha, con el diagnóstico corregido al medirlo.
+  > **Corrección de diagnóstico:** los ~0,43 s son coste de la plataforma
+  > **offscreen**. En la plataforma real (cocoa) Qt ya fija la fuente del
+  > sistema (`.AppleSystemUIFont`) como fuente de la aplicación: no hay
+  > coste de alias y el calentamiento inevitable del primer texto pintado
+  > es ~0,2 s (población de la base de fuentes, que cualquier primera
+  > pintura con texto paga, también la del arranque síncrono anterior).
+  >
+  > **Implementación** (`ui/theme.py`, `_apply_system_font`, llamada desde
+  > `apply_theme`): si la fuente de la aplicación no resuelve a sí misma
+  > (detección con `QFontInfo`, sin sentinelas de nombres internos de Qt),
+  > se fija la familia que la propia plataforma resuelve para ella,
+  > conservando tamaño y peso del resto de la fuente. Sin familias
+  > empaquetadas ni temas propios: es la «tipografía del sistema» del
+  > diseño puesta explícita. Idempotente. Efecto: en plataformas sin tema
+  > (offscreen, y cualquier escritorio que no imponga fuente) la app deja
+  > de depender de la familia inexistente «Sans Serif» —desaparece el
+  > aviso de Qt y el coste de alias—; en cocoa es un no-op de pocos ms
+  > (la comprobación) tras el primer arranque.
+  >
+  > **Cifras medidas:**
+  > - cocoa: `apply_theme` 194 ms (la enumeración de la base de fuentes
+  >   vía `QFontInfo`, antes pagada en la primera pintura), primera
+  >   pintura de texto 26 ms (antes 201 ms), fuente `.AppleSystemUIFont`
+  >   sin cambios. **El total hasta el primer píxel no cambia** (~0,45 s
+  >   con construcción y show): la enumeración debe ocurrir en algún
+  >   punto del camino, y adelantarla no lo quita.
+  > - offscreen (biblioteca real, smoke del paso): `apply_theme` 424 ms
+  >   (alias + base de fuentes), resto del primer píxel 198 ms → total
+  >   0,62 s, igual que antes del guardia (626 ms): mismo trabajo,
+  >   adelantado, pero ahora con una familia real (`.AppleSystemUIFont`)
+  >   y sin depender del alias roto.
+  > - Reducción real del primer píxel descartada: exigiría que la primera
+  >   pintura no tuviera texto (aplazar el texto del estado de carga un
+  >   frame), con orden no determinista (expose del compositor frente al
+  >   timer) y un flash visible de chrome vacío; el presupuesto del
+  >   diseño (visible < 500 ms) ya se cumple en la plataforma real.
+  >
+  > Tests nuevos en `tests/test_ui_styles.py`:
+  > `test_apply_theme_leaves_a_font_that_resolves_to_itself`,
+  > `test_apply_system_font_replaces_a_missing_family` (familia
+  > inexistente → sustituida conservando peso/tamaño) y
+  > `test_apply_system_font_is_idempotent`.
+
+**Criterio de fin del paso 2:** con 25k fotos, la ventana es visible en
+cuestiones de décimas y la rejilla navegable en ~1 s, medido con el
+benchmark; el comportamiento final (rejilla completa, búsqueda, grupos,
+favoritos, degradación) es indistinguible del actual.
+
+- [ ] **T2.9 — (nueva, 2026-11-19) Segfault intermitente al terminar el
+  proceso tras la suite completa.** Observado dos veces en ~20 corridas
+  (las demás limpias, incluidas 13 corridas completas seguidas sin
+  reproducirlo): tras el `[100 %]` de pytest, el proceso muere con
+  «Fatal Python error: Segmentation fault» en el teardown del
+  intérprete (Python 3.15.1 x86_64 + PySide6; el dump de faulthandler
+  queda cortado y no muestra el hilo culpable). Los tests en sí pasan
+  todos (988 ítems, 0 fallos): es solo salida del proceso. No es
+  reproducible a demanda; los tests de worker de carga asertan el hilo
+  parado, así que no es el camino conocido de «QThread destruido en
+  ejecución». Pendiente: reproducirlo con dump completo (faulthandler
+  sin truncar) y decidir si es un problema del entorno (Python 3.15 +
+  PySide6 en teardown) o algo que la suite deja suelto.
+  > Nota (2026-11-19, T2.10): el reporte del dueño al salir con ``Ctrl+q``
+  > durante la carga de miniaturas destapó el mismo camino de clase
+  > (objetos de señales de tareas ``QRunnable`` destruidos con tareas en
+  > vuelo), arreglado en T2.10; es el candidato natural de este segfault.
+  > Re-evaluar tras usar la app un tiempo: si el segfault desaparece,
+  > cerrar esta tarea sin más.
+
+- [x] **T2.10 — (nueva, 2026-11-19) Salida con miniaturas en vuelo:
+  «RuntimeError: Signal source has been deleted».** Reportado por el
+  dueño al pulsar ``Ctrl+q`` mientras se cargaban miniaturas: el
+  ``QRunnable`` de una miniatura en vuelo emitía hacia un objeto de
+  señales ya destruido. Dos agujeros combinados: ``quit()`` sale del
+  bucle sin ``closeEvent`` (el único sitio donde se apagaba el servicio
+  de miniaturas), y ``shutdown()`` espera a las tareas activas con un
+  límite de 2 s que una decodificación grande puede superar.
+  > Nota (2026-11-19): hecha, por las dos vías.
+  > 1. **El apagado de fondo cubre todo** (T2.6): `_shutdown_library_load`
+  >    renombrada a `MainWindow._shutdown_background_work` y extendida —
+  >    además de cancelar y esperar al worker de carga, apaga el servicio
+  >    de miniaturas (`shutdown()`, ya idempotente) y drena el pool del
+  >    visor (nuevo `PhotoWindow.shutdown_background_work`, que detiene
+  >    además los timers del populate). Se cuelga de `closeEvent` y de
+  >    `aboutToQuit`, así que toda vía de salida apaga el mismo orden de
+  >    cosas.
+  > 2. **Guardia en el emit** (`ui/thumbnails.py` y `ui/canvas.py`,
+  >    `_emit_if_alive`): las tareas ``QRunnable`` de miniaturas y de
+  >    decodificación del visor emiten bajo guardia —si su objeto de
+  >    señales (sin padre) ya fue destruido porque la tarea superó la
+  >    espera acotada del apagado, el resultado es descartable y
+  >    ``run()`` acaba sin excepción—. ``ui/thumbnails.py`` se toca solo
+  >    en el emit: la cola, la caché y el mecanismo de ADR 0004 siguen
+  >    intactos.
+  > Tests nuevos en `tests/test_ui_progressive.py`:
+  > `test_quit_shuts_the_thumbnail_service_down_about_to_quit`
+  > (``exec()`` real: tras el ``quit`` el pool está drenado y la
+  > generación del servicio avanzada) y las de tareas con el objeto de
+  > señales ya destruido
+  > (`test_thumbnail_task_discards_the_result_when_the_source_is_gone`,
+  > `test_image_task_discards_the_result_when_the_source_is_gone`).
+  > Suite completa en verde (991 ítems) y `ruff` limpio.
 
 ---
 

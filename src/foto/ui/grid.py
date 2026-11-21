@@ -239,6 +239,19 @@ class PhotoGrid(QListWidget):
         self._visible_rows = rows
         self._visible_positions = {row: index for index, row in enumerate(rows)}
 
+    def append_visible_rows(self, rows: list[int]) -> None:
+        """Extiende la caché de filas visibles con las recién insertadas.
+
+        Populate por lotes (T2.4): recalcular todas las filas en cada lote
+        sería O(n) por lote; las filas ya insertadas no cambian de sitio
+        (la inserción es siempre al final), así que basta con extender la
+        lista y completar las posiciones de forma incremental.
+        """
+        base = len(self._visible_rows)
+        self._visible_rows.extend(rows)
+        for offset, row in enumerate(rows):
+            self._visible_positions[row] = base + offset
+
     def retheme(self) -> None:
         palette = app_palette()
         palette.setColor(QPalette.Base, palette.color(QPalette.Window))

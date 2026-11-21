@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 import pytest
 
 from foto.core.indexing import Indexer, IndexingOptions
-from foto.core.library import load_from_catalog
+from foto.core.library import LibraryLoadCancelled, load_from_catalog
 from foto.storage.availability import (
     AVAILABLE,
     UNAVAILABLE,
@@ -358,6 +358,57 @@ def test_size_comes_from_the_catalog_when_the_file_is_absent(tmp_path):
         photos = load_from_catalog(catalog)
 
         assert photos[0].size == "2,3 KB"
+    finally:
+        catalog.close()
+
+
+# ----------------------------------------------------------------------
+# T2.3 — cancelación cooperativa de la carga (ADR 0011)
+# ----------------------------------------------------------------------
+def test_load_from_catalog_cancellation_cuts_without_partial_results(tmp_path):
+    """``should_continue`` falso corta la carga con la excepción de control.
+
+    El worker del arranque progresivo (ADR 0011) pasa esta guardia para
+    detener el hilo cuando la ventana se cierra a mitad de carga: no hay
+    lista parcial y la excepción no es un error del catálogo.
+    """
+    ssd = tmp_path / "ssd"
+    write_image(ssd / "una.jpg", b"x" * 2400)
+    write_image(ssd / "dos.jpg", b"y" * 2400)
+    catalog = Catalog.open_in_memory()
+    try:
+        _index(catalog, _declared(tmp_path, with_usb=False))
+
+        with pytest.raises(LibraryLoadCancelled):
+            load_from_catalog(catalog, should_continue=lambda: False)
+
+        photos = load_from_catalog(catalog, should_continue=lambda: True)
+        assert len(photos) == 2
+    finally:
+        catalog.close()
+
+
+def test_load_from_catalog_cancellation_checks_every_photo(tmp_path):
+    """La guardia se consulta por foto: corta en la iteración siguiente.
+
+    Con dos fotos y una guardia que solo deja pasar la primera, la carga
+    corta en la segunda: el coste de cancelar es una iteración, no la
+    carga completa.
+    """
+    ssd = tmp_path / "ssd"
+    write_image(ssd / "una.jpg", b"x" * 2400)
+    write_image(ssd / "dos.jpg", b"y" * 2400)
+    catalog = Catalog.open_in_memory()
+    try:
+        _index(catalog, _declared(tmp_path, with_usb=False))
+
+        # ``list_present_files`` ordena por rel_path: ``dos.jpg`` y
+        # ``una.jpg``; la guardia permite exactamente una foto.
+        permitidas = iter([True, False, False])
+        with pytest.raises(LibraryLoadCancelled):
+            load_from_catalog(
+                catalog, should_continue=lambda: next(permitidas)
+            )
     finally:
         catalog.close()
 

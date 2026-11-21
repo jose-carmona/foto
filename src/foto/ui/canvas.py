@@ -7,6 +7,7 @@ fuera del hilo de UI para alimentar la caché LRU de la ventana.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -31,6 +32,24 @@ from foto.ui.theme import muted_color, ui_font
 CANVAS_MARGIN = 8
 
 
+def _emit_if_alive(emit: Callable[[], None]) -> None:
+    """Emite el resultado de una tarea si su objeto de señales sigue vivo.
+
+    Al cerrar la aplicación con una decodificación del visor en vuelo, el
+    hilo de UI puede destruir el objeto de señales (sin padre) antes de
+    que la tarea acabe: el acceso a la señal de un ``QObject`` ya
+    destruido lanza ``RuntimeError`` («Signal source has been deleted»).
+    El resultado es descartable en ese caso —nadie lo espera ya— y el
+    cierre debe ser silencioso. El pool del visor se drena en el apagado
+    (``PhotoWindow.shutdown_background_work``); este guardia cubre el
+    residual: una decodificación que supere la espera acotada.
+    """
+    try:
+        emit()
+    except RuntimeError:
+        pass
+
+
 class ImageLoaderSignals(QObject):
     loaded = Signal(str, QImage)
     failed = Signal(str, str)
@@ -50,19 +69,20 @@ class ImageLoadTask(QRunnable):
             reader = QImageReader(str(self.path))
             reader.setAutoTransform(True)
             if not reader.canRead():
-                self.signals.failed.emit(
+                _emit_if_alive(lambda: self.signals.failed.emit(
                     self.key, reader.errorString() or "formato no soportado"
-                )
+                ))
                 return
             image = reader.read()
             if image.isNull():
-                self.signals.failed.emit(
+                _emit_if_alive(lambda: self.signals.failed.emit(
                     self.key, reader.errorString() or "imagen no válida"
-                )
+                ))
                 return
-            self.signals.loaded.emit(self.key, image)
+            _emit_if_alive(lambda: self.signals.loaded.emit(self.key, image))
         except Exception as exc:  # noqa: BLE001  # pragma: no cover - plugins de imagen
-            self.signals.failed.emit(self.key, str(exc))
+            message = str(exc)
+            _emit_if_alive(lambda: self.signals.failed.emit(self.key, message))
 
 
 class PhotoCanvas(QWidget):

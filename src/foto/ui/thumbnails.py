@@ -6,7 +6,7 @@ import logging
 import os
 import tempfile
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal
@@ -18,6 +18,25 @@ logger = logging.getLogger(__name__)
 
 MAX_ACTIVE_THUMBNAILS = 3
 CACHE_JPEG_QUALITY = 90
+
+
+def _emit_if_alive(emit: Callable[[], None]) -> None:
+    """Emite el resultado de una tarea si su objeto de señales sigue vivo.
+
+    Al cerrar la aplicación con tareas de miniaturas en vuelo, el hilo de
+    UI puede destruir el objeto de señales (sin padre) antes de que la
+    tarea acabe: el acceso a la señal de un ``QObject`` ya destruido lanza
+    ``RuntimeError`` («Signal source has been deleted»). El resultado es
+    descartable en ese caso —nadie lo espera ya— y el cierre debe ser
+    silencioso. La cola está al día antes del cierre en el camino normal
+    (``ThumbnailService.shutdown`` espera a las tareas activas); este
+    guardia cubre el residual: una decodificación que supere la espera
+    acotada del apagado.
+    """
+    try:
+        emit()
+    except RuntimeError:
+        pass
 
 
 def read_thumbnail(path: Path, target: QSize) -> QImage:
@@ -181,9 +200,14 @@ class ThumbnailTask(QRunnable):
                 cache=self.cache,
             )
         except Exception as exc:  # noqa: BLE001  # pragma: no cover - plugins de imagen
-            self.signals.failed.emit(self.generation, self.key, str(exc))
+            message = str(exc)
+            _emit_if_alive(lambda: self.signals.failed.emit(
+                self.generation, self.key, message
+            ))
             return
-        self.signals.loaded.emit(self.generation, self.key, image)
+        _emit_if_alive(lambda: self.signals.loaded.emit(
+            self.generation, self.key, image
+        ))
 
 
 class ThumbnailService(QObject):

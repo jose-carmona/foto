@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -128,6 +129,37 @@ IMAGE_CACHE_SIZE = 3
 # Ventana de miniaturas en memoria. Cada icono de 400×247 ocupa ~395 KB; 160
 # cubre de sobra un viewport 4K y limita la memoria a unos 63 MB.
 THUMBNAIL_CACHE_SIZE = 160
+# Populate por lotes (T2.4): por debajo del límite la inserción es la
+# síncrona de siempre (demo, pruebas, bibliotecas pequeñas) y el
+# comportamiento es idéntico al anterior; por encima, los ítems entran en
+# lotes de este tamaño procesados con un QTimer de disparo cero para que el
+# hilo de UI respire entre lotes.
+POPULATE_SYNC_LIMIT = 1000
+POPULATE_BATCH_SIZE = 500
+
+
+@dataclass
+class _PopulateState:
+    """Sesión de populate por lotes (T2.4).
+
+    El cálculo de orden y grupos se hace una vez antes del primer lote;
+    los campos ``index``/``row``/``current_group`` conservan el avance
+    entre lotes y ``headers`` guarda las cabeceras ya insertadas para
+    poder desocultarlas cuando llegue su primera foto visible. La
+    visibilidad de cada ítem se evalúa **en el momento de insertarlo**
+    contra el filtro vigente (búsqueda ``/`` y ``:tag``), de modo que un
+    cambio de filtro a medio populate también alcanza a los lotes
+    siguientes; ``on_done`` es el trabajo post-populate que el llamador
+    difirió.
+    """
+
+    ordered: list[Photo]
+    groups: list[tuple[str, str]]
+    index: int = 0
+    row: int = 0
+    current_group: str | None = None
+    headers: dict[str, QListWidgetItem] = field(default_factory=dict)
+    on_done: Callable[[], None] | None = None
 
 
 class ContentArea(QWidget):
@@ -391,6 +423,17 @@ class PhotoWindow(QMainWindow):
         self._visible_timer.setSingleShot(True)
         self._visible_timer.setInterval(60)
         self._visible_timer.timeout.connect(self._request_visible_thumbnails)
+        # Populate por lotes (T2.4): un QTimer de disparo cero reparte la
+        # inserción de ítems y deja respirar el hilo de UI entre lotes. La
+        # sesión en curso vive en ``_populate_state``; ``_populate_active``
+        # la marca para que los llamadores difieran su trabajo post-populate.
+        self._library_loading = False
+        self._populate_active = False
+        self._populate_state: _PopulateState | None = None
+        self._populate_timer = QTimer(self)
+        self._populate_timer.setSingleShot(True)
+        self._populate_timer.setInterval(0)
+        self._populate_timer.timeout.connect(self._populate_next_batch)
 
         self.setWindowTitle(title or "foto")
         self.resize(1280, 960)
@@ -508,10 +551,12 @@ class PhotoWindow(QMainWindow):
         self.addAction(quit_action)
 
         self.status.set_counts(len(photos), len(photos), photos[0].name if photos else "")
-        if photos and self._visible_keys_cache:
-            first = self._grid_items.get(self._visible_keys_cache[0])
-            if first is not None:
-                self.grid.setCurrentItem(first)
+        if self._populate_grid(photos):
+            # Populate por lotes (T2.4): la primera selección y los recuentos
+            # esperan al último lote.
+            self._populate_state.on_done = self._select_first_visible
+        else:
+            self._select_first_visible()
         self._layout_content()
         QTimer.singleShot(0, self._focus_current_view)
         QTimer.singleShot(
@@ -555,24 +600,88 @@ class PhotoWindow(QMainWindow):
             apply_theme(app)
             self.retheme()
 
-    def _add_group_header(self, group_key: str, label: str) -> None:
+    def _add_group_header(
+        self, group_key: str, label: str, *, hidden: bool = False
+    ) -> QListWidgetItem:
         item = QListWidgetItem(label)
         item.setData(HEADER_ROLE, True)
         item.setData(GROUP_ROLE, group_key)
         item.setData(Qt.AccessibleTextRole, f"grupo {label}")
         item.setFlags(Qt.NoItemFlags)
         item.setSizeHint(QSize(max(1, self.grid.viewport().width()), GROUP_HEADER_H))
+        item.setHidden(hidden)
         self.grid.addItem(item)
+        return item
 
-    def _populate_grid(self, photos: list[Photo]) -> None:
+    def _populate_grid(self, photos: list[Photo]) -> bool:
+        """Ordena una vez e inserta la rejilla: síncrona o por lotes (T2.4).
+
+        Por debajo de ``POPULATE_SYNC_LIMIT`` (demo, pruebas y bibliotecas
+        pequeñas) hace la inserción monolítica de siempre y los pases
+        finales en la misma llamada, con el comportamiento intacto. Por
+        encima, los ítems entran en lotes de ``POPULATE_BATCH_SIZE``
+        procesados con un ``QTimer`` de disparo cero para que el hilo de
+        UI respire: tras el primer lote la rejilla ya es visible y
+        navegable y los siguientes se insertan en fondo. El cálculo de
+        orden y grupos se hace una vez antes del primer lote; cada ítem
+        nace ya oculto o visible según el filtro vigente en el momento
+        de insertarlo, de modo que búsqueda, favoritos y navegación
+        funcionan a medio populate, y ``_grid_items`` y la caché de
+        visibles se mantienen coherentes lote a lote.
+
+        Devuelve ``True`` si el populate quedó aplazado en lotes: el
+        llamador debe diferir su trabajo post-populate asignándolo a
+        ``self._populate_state.on_done`` (``_finish_populate`` lo ejecuta
+        al terminar el último lote).
+        """
+        self._cancel_populate()
         self.grid.clear()
         self._grid_items.clear()
-        current_group: str | None = None
-        for index, photo in enumerate(sorted_photos(photos, self._sort_key)):
-            group_key, group_label = photo_group(photo, self._sort_key)
-            if group_key != current_group:
-                self._add_group_header(group_key, group_label)
-                current_group = group_key
+        # Una sola pasada de orden y una de grupos antes del primer lote
+        # (T2.4); la visibilidad se evalúa por ítem al insertarlo, contra
+        # el filtro vigente en ese momento.
+        ordered = sorted_photos(photos, self._sort_key)
+        groups = [photo_group(photo, self._sort_key) for photo in ordered]
+        state = _PopulateState(ordered=ordered, groups=groups)
+        self._populate_state = state
+        self._populate_active = True
+        if len(ordered) <= POPULATE_SYNC_LIMIT:
+            self._populate_range(len(ordered))
+            self._finish_populate()
+            return False
+        self._populate_timer.start()
+        return True
+
+    def _populate_range(self, count: int) -> None:
+        """Inserta los siguientes ``count`` ítems de la sesión en curso (T2.4).
+
+        Cada lote deja ``_grid_items`` y la caché de visibles al día (y a la
+        rejilla, con ``append_visible_rows``), de modo que búsqueda,
+        favoritos y navegación son coherentes también a medio populate. Las
+        filas visibles de este lote se registran incrementalmente: la
+        recalculación completa ocurre solo al terminar, en
+        ``_refresh_visible_cache``.
+        """
+        state = self._populate_state
+        if state is None:
+            return
+        end = min(state.index + count, len(state.ordered))
+        # El filtro se lee al empezar el lote: solo puede cambiar entre
+        # lotes (el bucle de eventos no corre en medio de este bucle).
+        needle = self.search_text.strip().casefold()
+        tag_filter = self._tag_filter
+        rows: list[int] = []
+        keys: list[str] = []
+        while state.index < end:
+            index = state.index
+            photo = state.ordered[index]
+            group_key, group_label = state.groups[index]
+            visible = self._matches_filter(photo, needle, tag_filter)
+            if group_key != state.current_group:
+                header = self._add_group_header(group_key, group_label, hidden=True)
+                state.headers[group_key] = header
+                state.current_group = group_key
+                state.row += 1
             item = QListWidgetItem()
             icon = self.thumbnails.get(photo.key)
             if icon is None or icon.isNull():
@@ -588,12 +697,98 @@ class PhotoWindow(QMainWindow):
             item.setData(Qt.AccessibleTextRole, photo_accessible_name(photo))
             item.setSizeHint(QSize(ITEM_W, ITEM_H))
             item.setText("")
+            item.setHidden(not visible)
             self.grid.addItem(item)
             self._grid_items[photo.key] = item
+            state.row += 1
+            if visible:
+                # La cabecera del grupo nace oculta y se desoculta con su
+                # primera foto visible; una pasada de filtro a medio
+                # populate puede haberla vuelto a ocultar si aún no tenía
+                # ninguna (el pase final normaliza el resto).
+                header = state.headers.get(group_key)
+                if header is not None and header.isHidden():
+                    header.setHidden(False)
+                rows.append(state.row - 1)
+                keys.append(photo.key)
+            state.index += 1
+        if rows:
+            self.grid.append_visible_rows(rows)
+            base = len(self._visible_keys_cache)
+            self._visible_keys_cache.extend(keys)
+            for offset, key in enumerate(keys):
+                self._visible_positions_by_key[key] = base + offset
+
+    def _populate_next_batch(self) -> None:
+        """Lote del populate progresivo (T2.4)."""
+        state = self._populate_state
+        if state is None or not self._populate_active:
+            return
+        self._populate_range(POPULATE_BATCH_SIZE)
         self.grid.update_header_widths()
-        self._update_group_headers()
-        self._refresh_visible_cache()
+        self._update_empty_state()
+        # Recuentos al día lote a lote: la barra refleja lo visible durante
+        # el populate (T2.4).
+        photo = self._current_photo()
+        self.status.set_counts(
+            self._visible_count(), len(self.photos), photo.name if photo else ""
+        )
+        if state.index >= len(state.ordered):
+            self._finish_populate()
+            return
+        # Los ítems del viewport empiezan a pedir miniatura también a medio
+        # populate (T2.5): el debounce existente agrupa las peticiones y solo
+        # se piden los ítems ya insertados, que son los únicos que existen.
         self._schedule_visible_thumbnails()
+        self._populate_timer.start()
+
+    def _finish_populate(self) -> None:
+        """Pases finales del populate, síncrono o por lotes (T2.4)."""
+        state = self._populate_state
+        self._populate_timer.stop()
+        self._populate_state = None
+        self._populate_active = False
+        # Con la rejilla completa ya no hay nada que cargar: el estado de
+        # carga del arranque progresivo acaba aquí (T2.2).
+        self._library_loading = False
+        self.grid.update_header_widths()
+        # Normalización final del filtro (T2.4): cada ítem nace con la
+        # visibilidad del filtro de su lote; esta pasada íntegra garantiza
+        # cabeceras, caché de visibles y recuentos coherentes al terminar.
+        self._apply_filter(self.search_text)
+        self._schedule_visible_thumbnails()
+        self._update_empty_state()
+        if state is not None and state.on_done is not None:
+            state.on_done()
+
+    def _cancel_populate(self) -> None:
+        """Cancela cualquier populate por lotes en curso (T2.4, T2.6).
+
+        El ``on_done`` de la sesión cancelada no llega a ejecutarse: la
+        nueva sesión lo sustituye (o el cierre de la ventana lo hace
+        innecesario).
+        """
+        self._populate_timer.stop()
+        self._populate_state = None
+        self._populate_active = False
+        self._visible_keys_cache = []
+        self._visible_positions_by_key = {}
+        self.grid.set_visible_rows([])
+
+    def _matches_filter(
+        self, photo: Photo, needle: str, tag_filter: str | None
+    ) -> bool:
+        """Visibilidad de una foto con el filtro vigente.
+
+        La búsqueda ``/`` y el filtro ``:tag`` se componen en AND: la foto
+        debe cumplir ambos. El documento sale del índice precalculado
+        (T1.5), no de ``photo_search_text`` por foto. La consulta única de
+        ``_apply_filter`` y la precomputación del populate por lotes (T2.4)
+        comparten esta regla para que ambas sean idénticas.
+        """
+        return (
+            not needle or needle in self._search_index.get(photo.key, "")
+        ) and (tag_filter is None or photo_matches_tag_name(photo, tag_filter))
 
     def _update_group_headers(self) -> None:
         """Oculta las cabeceras de grupos sin fotos visibles."""
@@ -626,6 +821,46 @@ class PhotoWindow(QMainWindow):
         self.row_header.setText(label)
         self.row_header.setVisible(bool(label))
 
+    def set_library_loading(self, loading: bool) -> None:
+        """Estado de carga del catálogo (T2.2, arranque progresivo).
+
+        Mientras no hay nada en la rejilla, el estado vacío muestra el
+        texto discreto «Cargando el catálogo…» (sin spinner ni animación,
+        conforme a docs/diseno-ui.md). En cuanto el primer lote deja ítems
+        visibles, el texto se retira y la rejilla manda.
+        """
+        self._library_loading = loading
+        self._update_empty_state()
+
+    def set_library(
+        self,
+        photos: list[Photo],
+        *,
+        tags: Sequence[Tag] = (),
+        locations: Sequence[LocationStatus] = (),
+    ) -> None:
+        """Sustituye la biblioteca cargada por el worker (T2.3, ADR 0011).
+
+        Recibe de una vez el vocabulario de etiquetas y el estado de
+        ubicaciones del catálogo, recompone el banner de ubicaciones no
+        disponibles (ADR 0010, Decisión 6) con las mismas funciones puras
+        de presentación y el panel de ubicaciones, y delega el populate en
+        ``set_photos``. Es la vía del arranque progresivo: durante la
+        carga la ventana solo tuvo el estado de carga (T2.2).
+        """
+        self.tag_catalog = tuple(tags)
+        self._locations = tuple(locations)
+        self.locations_overlay.set_locations(location_rows(self._locations))
+        self._banner_text = location_banner_text(self._locations, photos)
+        banner_parts = location_banner_parts(self._locations, photos)
+        if self._banner_text and banner_parts is not None:
+            self.banner.set_contents(*banner_parts, self._banner_text)
+            self.banner.show()
+        else:
+            self.banner.hide()
+        self._layout_content()
+        self.set_photos(photos)
+
     def set_photos(
         self,
         photos: list[Photo],
@@ -654,19 +889,56 @@ class PhotoWindow(QMainWindow):
         self.grid.blockSignals(True)
         try:
             self._populate_grid(photos)
-            self.grid.setCurrentRow(-1)
-
-            target = self._grid_items.get(current_key) if current_key else None
-            if target is None and self._visible_keys_cache:
-                target = self._grid_items.get(self._visible_keys_cache[0])
-            if target is not None:
-                self.grid.setCurrentItem(target)
-                self.grid.scrollToItem(target, QAbstractItemView.EnsureVisible)
+            if self._populate_active:
+                # Populate por lotes (T2.4): la restauración de la selección
+                # y el resto del trabajo post-populate esperan al último
+                # lote (los ejecuta ``_finish_populate`` vía ``on_done``).
+                self._populate_state.on_done = (
+                    lambda: self._after_set_photos(current_key, viewer_was_visible)
+                )
             else:
-                self.panel.show_empty("Sin selección")
+                self.grid.setCurrentRow(-1)
+                self._restore_after_populate(current_key)
         finally:
             self.grid.blockSignals(False)
+        if not self._populate_active:
+            self._after_set_photos_tail(viewer_was_visible)
 
+    def _select_first_visible(self) -> None:
+        """Primera foto visible con cursor y recuentos al día (T2.4).
+
+        Sirve tanto al populate síncrono inicial (comportamiento de siempre)
+        como al por lotes, donde la ejecuta ``_finish_populate`` al terminar.
+        """
+        if self.photos and self._visible_keys_cache:
+            first = self._grid_items.get(self._visible_keys_cache[0])
+            if first is not None:
+                self.grid.setCurrentItem(first)
+        photo = self._current_photo()
+        self.status.set_counts(
+            self._visible_count(), len(self.photos), photo.name if photo else ""
+        )
+
+    def _restore_after_populate(self, current_key: str | None) -> None:
+        """Restaura la foto actual tras un populate, conservándola si sigue."""
+        target = self._grid_items.get(current_key) if current_key else None
+        if target is None and self._visible_keys_cache:
+            target = self._grid_items.get(self._visible_keys_cache[0])
+        if target is not None:
+            self.grid.setCurrentItem(target)
+            self.grid.scrollToItem(target, QAbstractItemView.EnsureVisible)
+        else:
+            self.panel.show_empty("Sin selección")
+
+    def _after_set_photos(
+        self, current_key: str | None, viewer_was_visible: bool
+    ) -> None:
+        """Selección y cola de ``set_photos`` al terminar el populate (T2.4)."""
+        self._restore_after_populate(current_key)
+        self._after_set_photos_tail(viewer_was_visible)
+
+    def _after_set_photos_tail(self, viewer_was_visible: bool) -> None:
+        """Trabajo post-populate de ``set_photos`` (idéntico al de siempre)."""
         self.status.clear_error()
         photo = self._current_photo()
         filename = photo.name if photo else ""
@@ -1274,6 +1546,22 @@ class PhotoWindow(QMainWindow):
         )
 
     def _update_empty_state(self) -> None:
+        if self._library_loading:
+            # Estado de carga del arranque progresivo (T2.2): texto
+            # discreto en la rejilla mientras no hay nada que mostrar.
+            # Con el primer lote visible la rejilla manda y el texto cesa.
+            if self._visible_count() == 0:
+                self.empty_label.setText("Cargando el catálogo…")
+                self.empty_label.show()
+                self._position_empty_label()
+                self.empty_label.raise_()
+                if self.panel_visible:
+                    self.panel.raise_()
+                if self.content_blocker.isVisible():
+                    self.content_blocker.raise_()
+            else:
+                self.empty_label.hide()
+            return
         if self._visible_count() == 0:
             if self.status.prompt_mode == "search":
                 self.empty_label.setText("Sin coincidencias\nEsc cancela la búsqueda")
@@ -1311,14 +1599,10 @@ class PhotoWindow(QMainWindow):
             else:
                 # La búsqueda ``/`` y el filtro ``:tag`` se componen en AND:
                 # la foto debe cumplir ambos. El documento sale del índice
-                # precalculado (T1.5), no de ``photo_search_text`` por foto.
-                visible = (
-                    not needle
-                    or needle in self._search_index.get(str(photo.key), "")
-                ) and (
-                    tag_filter is None
-                    or photo_matches_tag_name(photo, tag_filter)
-                )
+                # precalculado (T1.5), no de ``photo_search_text`` por foto;
+                # la regla es la misma que aplica el populate por lotes
+                # (T2.4) al crear cada ítem.
+                visible = self._matches_filter(photo, needle, tag_filter)
             item.setHidden(not visible)
             if visible:
                 visible_items.append(item)
@@ -1459,20 +1743,27 @@ class PhotoWindow(QMainWindow):
         if current is not None and current.data(HEADER_ROLE):
             current_key = None
 
-        self._sort_key = key
-        self.grid.blockSignals(True)
-        try:
-            self._populate_grid(list(self.photos.values()))
+        def _after_sort() -> None:
             self.grid.setCurrentRow(-1)
             target = self._grid_items.get(current_key) if current_key else None
             if target is not None:
                 self.grid.setCurrentItem(target)
+            self._apply_filter(self.search_text)
+            self._on_current_changed(self.grid.currentItem(), None)
+            self.status.show_message(f"ordenado por {key}", 3000)
+
+        self._sort_key = key
+        self.grid.blockSignals(True)
+        try:
+            self._populate_grid(list(self.photos.values()))
+            if self._populate_active:
+                # Populate por lotes (T2.4): el filtro y la restauración del
+                # cursor esperan al último lote.
+                self._populate_state.on_done = _after_sort
+            else:
+                _after_sort()
         finally:
             self.grid.blockSignals(False)
-
-        self._apply_filter(self.search_text)
-        self._on_current_changed(self.grid.currentItem(), None)
-        self.status.show_message(f"ordenado por {key}", 3000)
 
     # ------------------------------------------------------------------
     # Registro de acciones y dispatcher único (P1.5, fase 2)
@@ -1761,7 +2052,25 @@ class PhotoWindow(QMainWindow):
             return
         self.status.show_message(message, 2000)
 
+    def shutdown_background_work(self) -> None:
+        """Detiene el trabajo en fondo de la ventana (T2.6, cierre limpio).
+
+        Idempotente. ``MainWindow`` lo cuelga también de ``aboutToQuit``:
+        ``Ctrl+q``, ``:q`` y ⌘Q salen del bucle de eventos sin pasar por el
+        ``closeEvent``, y los timers del populate por lotes y el pool de
+        decodificación del visor deben quedar muertos en toda vía de
+        salida. El ``waitForDone`` va acotado: una tarea que lo supere
+        acaba su emit bajo el guardia de su módulo (descarta el resultado).
+        """
+        self._cancel_populate()
+        self._loader_pool.clear()
+        self._loader_pool.waitForDone(2000)
+
     def closeEvent(self, event):
+        # Trabajo en fondo (T2.6): sin timers de populate ni tareas del
+        # visor vivas al cerrar. ``MainWindow`` repite la llamada en
+        # ``aboutToQuit`` para las salidas que no pasan por este evento.
+        self.shutdown_background_work()
         # La conexión RW de etiquetas es propiedad de la ventana: la app real
         # la crea en MainWindow y aquí se cierra al salir.
         if self.tag_connection is not None:

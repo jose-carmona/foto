@@ -518,7 +518,10 @@ Requisitos:
 - Contraste mínimo 4,5:1 en texto normal y 3:1 en texto grande y elementos de
   interfaz. El foco también debe alcanzar 3:1.
 - Tipografía del sistema. Escala base de 13 px; mínimo 11 px; títulos de 15 y
-  20 px. Interlineado 1,4.
+  20 px. Interlineado 1,4. La fuente del sistema la resuelve la capa de tema
+  al aplicar el tema (`ui/theme.py`, `_apply_system_font`): si la plataforma
+  no impone ninguna, se fija la que la propia plataforma resuelve —sin
+  empaquetar familias ni imponer un tema—.
 - Peso 400 y 600, nada intermedio. Sin mayúsculas sostenidas salvo siglas y el
   indicador de modo (`NORMAL`, `AYUDA`).
 - Cifras tabulares en los metadatos (ISO, apertura, velocidad, focal).
@@ -591,6 +594,17 @@ fotos, rutas y etiquetas (ADR 0010). Cuatro estados de arranque:
 - **Sin catálogo:** guard «No hay catálogo. Ejecuta foto-index», que apoya en
   la existencia del catálogo y su esquema; sustituye al guard del descriptor
   `library.toml`, que desapareció (ADR 0010). Sin catálogo no hay sesión.
+
+El arranque es progresivo ([ADR
+0011](adr/0011-arranque-progresivo.md)): la ventana aparece de inmediato y,
+mientras el catálogo carga en un hilo worker, la rejilla muestra el texto
+discreto «Cargando el catálogo…» en el estado vacío (sin spinner ni
+animación) y la barra lo repite como texto fijado; en cuanto el primer lote
+deja ítems visibles, la rejilla manda. Durante el populate por lotes la
+búsqueda, los favoritos y la navegación funcionan sobre lo ya insertado, y
+los recuentos reflejan el avance. Un error fatal de arranque (catálogo
+ausente o ilegible) muestra el mismo guard de siempre tras el show y cierra
+la aplicación.
 
 Una ubicación declarada pero ausente nunca bloquea la apertura: la sesión
 arranca y la ausencia se avisa con el banner y el panel de ubicaciones. La
