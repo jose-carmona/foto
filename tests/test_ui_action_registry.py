@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication
 
 from foto.ui.keybindings import TABLE
 from foto.ui.window import PhotoWindow
+from tests.ui_factories import make_photo
 
 # Únicas acciones que llegan al dispatcher sin producirse por una tecla:
 # ``:help`` desde la línea de comandos. ``COMMAND_REACHABLE`` debe ampliarse
@@ -25,28 +26,9 @@ from foto.ui.window import PhotoWindow
 COMMAND_REACHABLE = {"help"}
 
 
-def _photo(name: str, taken: str) -> object:
-    from foto.ui.models import Photo
-
-    return Photo(
-        name=name,
-        taken=taken,
-        camera="Nikon Z 6",
-        lens="Nikkor 35mm",
-        focal="35 mm",
-        aperture="f/1,8",
-        shutter="1/250 s",
-        iso="200",
-        folder="2024",
-        fmt="JPEG",
-        dimensions="6000 × 4000",
-        size="2 MB",
-        location="",
-        photo_hash=f"sha256:{name}",
-    )
-
-
-PHOTOS = [_photo(f"un-{index}.jpg", f"2024-06-{index + 1:02d} 08:00") for index in range(4)]
+PHOTOS = [
+    make_photo(f"un-{index}.jpg", f"2024-06-{index + 1:02d} 08:00") for index in range(4)
+]
 
 
 @pytest.fixture(scope="module")

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QListWidgetItem
 
 from foto.core.errors import CatalogError
 from foto.core.library import LibraryLoadCancelled
@@ -26,37 +26,18 @@ from foto.storage.tags import connect_read_write
 from foto.ui import app as app_module
 from foto.ui import window as window_module
 from foto.ui.canvas import ImageLoadTask
-from foto.ui.grid import THUMB_H, THUMB_W
+from foto.ui.grid import GROUP_ROLE, HEADER_ROLE, PHOTO_ROLE, THUMB_H, THUMB_W
 from foto.ui.models import LocationStatus, Photo, PhotoTag
+from foto.ui.presentation import photo_group
 from foto.ui.thumbnails import ThumbnailTask
 from foto.ui.window import PhotoWindow
+from tests.ui_factories import make_photo
 
 NOW = "2026-11-19T09:00:00+00:00"
 
 
-def _photo(name: str, taken: str, **overrides) -> Photo:
-    fields: dict = {
-        "name": name,
-        "taken": taken,
-        "camera": "Nikon Z 6",
-        "lens": "Nikkor 35mm",
-        "focal": "35 mm",
-        "aperture": "f/1,8",
-        "shutter": "1/250 s",
-        "iso": "200",
-        "folder": "2024",
-        "fmt": "JPEG",
-        "dimensions": "6000 × 4000",
-        "size": "2 MB",
-        "location": "",
-        "photo_hash": f"sha256:{name}",
-    }
-    fields.update(overrides)
-    return Photo(**fields)
-
-
 FIVE_PHOTOS = [
-    _photo(f"{letra}.jpg", f"2024-05-0{indice} 08:00")
+    make_photo(f"{letra}.jpg", f"2024-05-0{indice} 08:00")
     for indice, letra in enumerate("abcde", start=1)
 ]
 
@@ -279,9 +260,9 @@ def test_tag_filter_mid_populate_keeps_live_filter(qapp, progresivo):
     """``:tag`` a medio populate compone con la consulta viva (A3)."""
     fav = PhotoTag(name="fav", kind="system", status="confirmed", source="manual")
     photos = [
-        _photo("a.jpg", "2024-05-01 08:00", tags=(fav,)),
-        _photo("b.jpg", "2024-05-02 08:00", tags=(fav,)),
-        _photo("c.jpg", "2024-05-03 08:00"),
+        make_photo("a.jpg", "2024-05-01 08:00", tags=(fav,)),
+        make_photo("b.jpg", "2024-05-02 08:00", tags=(fav,)),
+        make_photo("c.jpg", "2024-05-03 08:00"),
     ]
     window = _ventana(qapp, photos)
     try:
@@ -312,6 +293,110 @@ def test_sort_mid_populate_does_not_lose_the_cursor(qapp, progresivo):
         assert len(window._grid_items) == 5
         assert window._visible_count() == 5
         assert window.grid.currentItem() is not None
+    finally:
+        window.close()
+
+
+# ----------------------------------------------------------------------
+# R9 — los grupos se calculan dentro del lote, no antes del primer lote
+# ----------------------------------------------------------------------
+def test_no_upfront_group_materialization(qapp, progresivo, monkeypatch):
+    """Nada se materializa de grupos antes del primer lote (R9).
+
+    El contador de ``photo_group`` sigue a cero cuando ``_populate_grid``
+    vuelve (el primer ``QTimer`` aún no disparó) y al terminar el
+    populate suma una llamada por foto.
+    """
+    llamadas: list[Photo] = []
+    original = window_module.photo_group
+
+    def contada(photo, key):
+        llamadas.append(photo)
+        return original(photo, key)
+
+    monkeypatch.setattr(window_module, "photo_group", contada)
+    window = _ventana(qapp, FIVE_PHOTOS)
+    try:
+        assert window._populate_active is True
+        assert llamadas == []
+
+        assert _bombear(qapp, lambda: not window._populate_active)
+        assert len(llamadas) == len(FIVE_PHOTOS)
+    finally:
+        window.close()
+
+
+def test_groups_and_headers_survive_mid_populate(qapp, progresivo):
+    """Cabeceras, grupos y visibles coherentes a mitad de populate (R9).
+
+    Biblioteca con varios grupos por fecha (dos meses) y por lugar
+    (cuatro países más una foto sin lugar): a mitad del populate por
+    fecha y al terminar el repoblado por ``:sort location`` cada foto
+    insertada lleva el grupo que dicta ``photo_group``, su cabecera está
+    desocultada si tiene fotos visibles y la caché de visibles coincide
+    con la rejilla.
+    """
+    photos = [
+        make_photo(
+            "paris.jpg", "2024-05-01 08:00", place_country="Francia", place_city="París"
+        ),
+        make_photo(
+            "madrid.jpg",
+            "2024-05-02 08:00",
+            place_country="España",
+            place_city="Madrid",
+        ),
+        make_photo("roma.jpg", "2024-06-01 08:00", place_country="Italia", place_city="Roma"),
+        make_photo(
+            "sevilla.jpg",
+            "2024-06-02 08:00",
+            place_country="España",
+            place_city="Sevilla",
+        ),
+        make_photo("sin-lugar.jpg", "2024-05-03 08:00"),
+    ]
+
+    def comprobar(window) -> None:
+        cabeceras: list[str] = []
+        cabecera_por_grupo: dict[str, QListWidgetItem] = {}
+        grupos: list[tuple[str, str]] = []
+        visibles: list[str] = []
+        for row in range(window.grid.count()):
+            item = window.grid.item(row)
+            if item.data(HEADER_ROLE):
+                cabeceras.append(item.text())
+                cabecera_por_grupo.setdefault(item.data(GROUP_ROLE), item)
+            else:
+                clave = item.data(PHOTO_ROLE)
+                grupo = photo_group(window.photos[clave], window._sort_key)
+                assert item.data(GROUP_ROLE) == grupo[0]
+                grupos.append(grupo)
+                if not item.isHidden():
+                    visibles.append(clave)
+        # Las cabeceras parten la rejilla en bloques consecutivos: hay
+        # una por grupo distinto, en el mismo orden y con la etiqueta
+        # que dicta ``photo_group``.
+        por_grupo: dict[str, str] = {}
+        for clave_grupo, etiqueta in grupos:
+            por_grupo.setdefault(clave_grupo, etiqueta)
+        assert cabeceras == list(por_grupo.values())
+        # Sin filtro activo, todo grupo con fotos tiene su cabecera a la vista.
+        for clave_grupo in por_grupo:
+            assert not cabecera_por_grupo[clave_grupo].isHidden()
+        # La caché de visibles coincide con lo visible en la rejilla.
+        assert window._visible_keys_cache == visibles
+
+    window = _ventana(qapp, photos)
+    try:
+        assert _bombear(qapp, lambda: len(window._grid_items) >= 2)
+        assert window._populate_active is True
+        comprobar(window)
+
+        window._sort_grid("location")
+        assert _bombear(qapp, lambda: not window._populate_active)
+        comprobar(window)
+        assert len(window._grid_items) == len(photos)
+        assert window._visible_count() == len(photos)
     finally:
         window.close()
 
@@ -867,7 +952,7 @@ def test_set_library_rebuilds_the_unavailable_locations_banner(qapp):
         assert window._banner_text is None
         assert window.banner.isHidden()
 
-        fantasma = _photo(
+        fantasma = make_photo(
             "fantasma.jpg",
             "2024-05-01 08:00",
             canonical_location="usb",

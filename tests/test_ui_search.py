@@ -13,42 +13,8 @@ import pytest
 from PySide6.QtWidgets import QListWidgetItem
 
 from foto.ui.grid import HEADER_ROLE, PHOTO_ROLE
-from foto.ui.models import Photo
 from foto.ui.window import PhotoWindow
-
-
-def _photo(
-    name: str,
-    folder: str = "2024",
-    *,
-    taken: str = "2024-05-01 12:34",
-    camera: str = "Nikon Z 6",
-    lens: str = "Nikkor 35mm",
-    fmt: str = "JPEG",
-    iso: str = "200",
-    canonical_rel_path: str | None = None,
-    other_locations: tuple[str, ...] = (),
-) -> Photo:
-    return Photo(
-        name=name,
-        taken=taken,
-        camera=camera,
-        lens=lens,
-        focal="35 mm",
-        aperture="f/1,8",
-        shutter="1/250 s",
-        iso=iso,
-        folder=folder,
-        fmt=fmt,
-        dimensions="6000 × 4000",
-        size="2 MB",
-        location="",
-        canonical_rel_path=(
-            canonical_rel_path if canonical_rel_path is not None else f"{folder}/{name}"
-        ),
-        other_locations=other_locations,
-        photo_hash=f"sha256:{abs(hash(name)) % 100000:08d}",
-    )
+from tests.ui_factories import make_photo
 
 
 @pytest.fixture(scope="module")
@@ -63,17 +29,31 @@ def qapp():
 @pytest.fixture()
 def window(qapp):
     photos = [
-        _photo("bosque.jpg", "2024/parque"),
-        _photo(
+        make_photo(
+            "bosque.jpg",
+            "2024-05-01 12:34",
+            folder="2024/parque",
+            canonical_rel_path="2024/parque/bosque.jpg",
+        ),
+        make_photo(
             "playa.jpg",
-            "2024/costa",
+            "2023-07-02 08:00",
             camera="Canon EOS R5",
             lens="RF 50mm",
             fmt="RAW (CR3)",
-            taken="2023-07-02 08:00",
+            folder="2024/costa",
+            canonical_rel_path="2024/costa/playa.jpg",
             other_locations=("2025/copia.jpg", "sigmar/replica.jpg"),
         ),
-        _photo("ciudad.jpg", "2025/centro", fmt="TIFF", iso="800"),    ]
+        make_photo(
+            "ciudad.jpg",
+            "2024-05-01 12:34",
+            folder="2025/centro",
+            canonical_rel_path="2025/centro/ciudad.jpg",
+            fmt="TIFF",
+            iso="800",
+        ),
+    ]
     return PhotoWindow(
         photos,
         thumbnails={},
@@ -208,17 +188,19 @@ def test_filter_keeps_headers_and_counts_in_one_pass(qapp):
 
     base = datetime(2024, 5, 1, tzinfo=UTC)
     photos = [
-        _photo(
+        make_photo(
             f"mayo-{indice}.jpg",
-            "2024/mayo",
-            taken=(base + timedelta(days=indice)).strftime("%Y-%m-%d %H:%M"),
+            (base + timedelta(days=indice)).strftime("%Y-%m-%d %H:%M"),
+            folder="2024/mayo",
+            canonical_rel_path=f"2024/mayo/mayo-{indice}.jpg",
         )
         for indice in range(3)
     ] + [
-        _photo(
+        make_photo(
             f"junio-{indice}.jpg",
-            "2024/junio",
-            taken=(base + timedelta(days=31 + indice)).strftime("%Y-%m-%d %H:%M"),
+            (base + timedelta(days=31 + indice)).strftime("%Y-%m-%d %H:%M"),
+            folder="2024/junio",
+            canonical_rel_path=f"2024/junio/junio-{indice}.jpg",
         )
         for indice in range(2)
     ]

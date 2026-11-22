@@ -145,8 +145,9 @@ POPULATE_BATCH_SIZE = 500
 class _PopulateState:
     """Sesión de populate por lotes (T2.4).
 
-    El cálculo de orden y grupos se hace una vez antes del primer lote;
-    los campos ``index``/``row``/``current_group`` conservan el avance
+    El cálculo de orden se hace una vez antes del primer lote y el grupo
+    de cada foto se calcula dentro de su lote, al insertarla (R9); los
+    campos ``index``/``row``/``current_group`` conservan el avance
     entre lotes y ``headers`` guarda las cabeceras ya insertadas para
     poder desocultarlas cuando llegue su primera foto visible. La
     visibilidad de cada ítem se evalúa **en el momento de insertarlo**
@@ -157,7 +158,6 @@ class _PopulateState:
     """
 
     ordered: list[Photo]
-    groups: list[tuple[str, str]]
     index: int = 0
     row: int = 0
     current_group: str | None = None
@@ -628,8 +628,10 @@ class PhotoWindow(QMainWindow):
         encima, los ítems entran en lotes de ``POPULATE_BATCH_SIZE``
         procesados con un ``QTimer`` de disparo cero para que el hilo de
         UI respire: tras el primer lote la rejilla ya es visible y
-        navegable y los siguientes se insertan en fondo. El cálculo de
-        orden y grupos se hace una vez antes del primer lote; cada ítem
+        navegable y los siguientes se insertan en fondo. El orden se
+        calcula una vez antes del primer lote y el grupo de cada foto
+        dentro de su lote, al insertarla (R9): el primer lote navegable
+        no espera al materializado de todos los grupos; cada ítem
         nace ya oculto o visible según el filtro vigente en el momento
         de insertarlo, de modo que búsqueda, favoritos y navegación
         funcionan a medio populate, y ``_grid_items`` y la caché de
@@ -643,12 +645,12 @@ class PhotoWindow(QMainWindow):
         self._cancel_populate()
         self.grid.clear()
         self._grid_items.clear()
-        # Una sola pasada de orden y una de grupos antes del primer lote
-        # (T2.4); la visibilidad se evalúa por ítem al insertarlo, contra
-        # el filtro vigente en ese momento.
+        # Una sola pasada de orden antes del primer lote; los grupos se
+        # calculan por foto dentro de cada lote (R9). La visibilidad se
+        # evalúa por ítem al insertarlo, contra el filtro vigente en ese
+        # momento.
         ordered = sorted_photos(photos, self._sort_key)
-        groups = [photo_group(photo, self._sort_key) for photo in ordered]
-        state = _PopulateState(ordered=ordered, groups=groups)
+        state = _PopulateState(ordered=ordered)
         self._populate_state = state
         self._populate_active = True
         if len(ordered) <= POPULATE_SYNC_LIMIT:
@@ -682,7 +684,10 @@ class PhotoWindow(QMainWindow):
         while state.index < end:
             index = state.index
             photo = state.ordered[index]
-            group_key, group_label = state.groups[index]
+            # El grupo de cada foto se calcula una vez, al insertarla
+            # (R9): ``_sort_key`` no puede cambiar en mitad de un
+            # populate (``_sort_grid`` cancela y repuebla).
+            group_key, group_label = photo_group(photo, self._sort_key)
             visible = self._matches_filter(photo, needle, tag_filter)
             if group_key != state.current_group:
                 header = self._add_group_header(group_key, group_label, hidden=True)
@@ -1768,6 +1773,12 @@ class PhotoWindow(QMainWindow):
         self._apply_filter(self._filter_text)
 
     def _sort_grid(self, key: str) -> None:
+        # Repetir la misma clave no repuebla: la rejilla ya está en ese
+        # orden (R10). El mensaje es el mismo que el del reordenado hecho.
+        if key == self._sort_key:
+            self.status.show_message(f"ordenado por {key}", 3000)
+            return
+
         current = self.grid.currentItem()
         current_key = current.data(PHOTO_ROLE) if current else None
         if current is not None and current.data(HEADER_ROLE):

@@ -18,37 +18,17 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from foto.ui.grid import GRID_MARGIN, GROUP_HEADER_H, ITEM_H
-from foto.ui.models import Photo
 from foto.ui.panels import BAR_H
 from foto.ui.window import (
     PANEL_W,
     PhotoWindow,
 )
-
-
-def _photo(name: str, taken: str, camera: str = "Nikon Z 6") -> Photo:
-    return Photo(
-        name=name,
-        taken=taken,
-        camera=camera,
-        lens="Nikkor 35mm",
-        focal="35 mm",
-        aperture="f/1,8",
-        shutter="1/250 s",
-        iso="200",
-        folder="2024",
-        fmt="JPEG",
-        dimensions="6000 × 4000",
-        size="2 MB",
-        location="",
-        photo_hash=f"sha256:{name}",
-    )
-
+from tests.ui_factories import make_photo
 
 # La ordenación es de más reciente a más antiguo: la foto más antigua
 # («foto-00») queda al final de la rejilla, fuera de la vista con la ventana
 # de 900 × 500.
-PHOTOS = [_photo(f"foto-{index:02d}.jpg", f"2024-05-{index + 1:02d} 08:00") for index in range(30)]
+PHOTOS = [make_photo(f"foto-{index:02d}.jpg", f"2024-05-{index + 1:02d} 08:00") for index in range(30)]
 
 FIRST_PHOTO = "foto-00.jpg"  # la más antigua: la última celda de la rejilla
 LAST_PHOTO = "foto-29.jpg"  # la más reciente: la primera celda

@@ -41,45 +41,22 @@ from foto.ui.models import Photo
 from foto.ui.window import (
     PhotoWindow,
 )
+from tests.ui_factories import make_photo
 
 _DOC_UI = Path("docs/diseno-ui.md")
-
-
-def _photo(
-    name: str,
-    taken: str,
-    *,
-    camera: str = "Nikon Z 6",
-) -> Photo:
-    return Photo(
-        name=name,
-        taken=taken,
-        camera=camera,
-        lens="Nikkor 35mm",
-        focal="35 mm",
-        aperture="f/1,8",
-        shutter="1/250 s",
-        iso="200",
-        folder="2024",
-        fmt="JPEG",
-        dimensions="6000 × 4000",
-        size="2 MB",
-        location="",
-        photo_hash=f"sha256:{name}",
-    )
 
 
 # Dos grupos de fecha (junio y mayo de 2024) y cámaras alternadas para que
 # ``0``/``$``, el reordenado y los límites de lista se ejerzan con datos reales.
 PHOTOS = [
-    _photo(
+    make_photo(
         f"junio-{index}.jpg",
         f"2024-06-{index + 1:02d} 08:00",
         camera="Canon EOS R5" if index % 2 else "Nikon Z 6",
     )
     for index in range(5)
 ] + [
-    _photo(
+    make_photo(
         f"mayo-{index}.jpg",
         f"2024-05-{index + 1:02d} 08:00",
         camera="Canon EOS R5" if index % 2 else "Nikon Z 6",
@@ -88,9 +65,9 @@ PHOTOS = [
 ]
 
 CAMERA_PHOTOS = [
-    _photo("a.jpg", "2024-05-03 08:00", camera="Canon EOS R5"),
-    _photo("b.jpg", "2024-05-02 08:00"),
-    _photo("c.jpg", "2024-05-01 08:00", camera="Canon EOS R5"),
+    make_photo("a.jpg", "2024-05-03 08:00", camera="Canon EOS R5"),
+    make_photo("b.jpg", "2024-05-02 08:00"),
+    make_photo("c.jpg", "2024-05-01 08:00", camera="Canon EOS R5"),
 ]
 
 # Dos ciudades de países distintos más una foto sin lugar resuelto: con

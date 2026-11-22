@@ -28,43 +28,19 @@ from foto.ui.keybindings import CTRL_MASK
 from foto.ui.models import Photo
 from foto.ui.panels import PanelScroll
 from foto.ui.window import PhotoWindow
-
-
-def _photo(
-    name: str,
-    taken: str,
-    *,
-    camera: str = "Nikon Z 6",
-) -> Photo:
-    return Photo(
-        name=name,
-        taken=taken,
-        camera=camera,
-        lens="Nikkor 35mm",
-        focal="35 mm",
-        aperture="f/1,8",
-        shutter="1/250 s",
-        iso="200",
-        folder="2024",
-        fmt="JPEG",
-        dimensions="6000 × 4000",
-        size="2 MB",
-        location="",
-        photo_hash=f"sha256:{name}",
-    )
-
+from tests.ui_factories import make_photo
 
 # Dos grupos de fecha (junio y mayo de 2024) para ejercitar los límites de
 # grupo con datos reales, igual que la suite de contrato.
 PHOTOS = [
-    _photo(
+    make_photo(
         f"junio-{index}.jpg",
         f"2024-06-{index + 1:02d} 08:00",
         camera="Canon EOS R5" if index % 2 else "Nikon Z 6",
     )
     for index in range(5)
 ] + [
-    _photo(
+    make_photo(
         f"mayo-{index}.jpg",
         f"2024-05-{index + 1:02d} 08:00",
         camera="Canon EOS R5" if index % 2 else "Nikon Z 6",

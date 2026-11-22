@@ -15,37 +15,17 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from foto.ui.grid import PhotoGrid
-from foto.ui.models import Photo
 from foto.ui.window import PhotoWindow
-
-
-def _photo(name: str, taken: str, camera: str = "Nikon Z 6") -> Photo:
-    return Photo(
-        name=name,
-        taken=taken,
-        camera=camera,
-        lens="Nikkor 35mm",
-        focal="35 mm",
-        aperture="f/1,8",
-        shutter="1/250 s",
-        iso="200",
-        folder="2024",
-        fmt="JPEG",
-        dimensions="6000 × 4000",
-        size="2 MB",
-        location="",
-        photo_hash=f"sha256:{name}",
-    )
-
+from tests.ui_factories import make_photo
 
 # Tres grupos por mes: mayo (3), junio (2), julio (1). Ordenados por fecha.
 PHOTOS = [
-    _photo("amanece.jpg", "2024-05-01 08:00"),
-    _photo("bruma.jpg", "2024-05-02 08:00"),
-    _photo("claros.jpg", "2024-05-03 08:00"),
-    _photo("duna.jpg", "2024-06-01 08:00"),
-    _photo("estuario.jpg", "2024-06-02 08:00"),
-    _photo("farol.jpg", "2024-07-01 08:00"),
+    make_photo("amanece.jpg", "2024-05-01 08:00"),
+    make_photo("bruma.jpg", "2024-05-02 08:00"),
+    make_photo("claros.jpg", "2024-05-03 08:00"),
+    make_photo("duna.jpg", "2024-06-01 08:00"),
+    make_photo("estuario.jpg", "2024-06-02 08:00"),
+    make_photo("farol.jpg", "2024-07-01 08:00"),
 ]
 
 
@@ -265,6 +245,44 @@ def test_layout_cache_is_invalidated_on_resize_filter_and_sort(
     assert _current(window) != window.photos[origen].name
     assert window._current_photo().key in window._visible_keys_cache
     window.close()
+
+
+# ----------------------------------------------------------------------
+# ``:sort`` con la misma clave: no-op barato (R10)
+# ----------------------------------------------------------------------
+def test_same_sort_key_does_not_repopulate(qapp, window, monkeypatch):
+    """Repetir ``:sort`` con la clave vigente muestra el mensaje y no repuebla."""
+    llamadas: list = []
+    original = PhotoWindow._populate_grid
+
+    def espia(self, photos):
+        llamadas.append(1)
+        return original(self, photos)
+
+    monkeypatch.setattr(PhotoWindow, "_populate_grid", espia)
+
+    window._sort_grid(window._sort_key)
+
+    assert llamadas == []
+    assert window._sort_key == "date"
+    assert "ordenado por date" in window.status.message_label.text()
+
+
+def test_different_sort_key_still_repopulates(qapp, window, monkeypatch):
+    """Cambiar de clave sí repuebla, como siempre."""
+    llamadas: list = []
+    original = PhotoWindow._populate_grid
+
+    def espia(self, photos):
+        llamadas.append(1)
+        return original(self, photos)
+
+    monkeypatch.setattr(PhotoWindow, "_populate_grid", espia)
+
+    window._sort_grid("camera")
+
+    assert llamadas == [1]
+    assert window._sort_key == "camera"
 
 
 def test_vertical_navigation_after_filter_uses_the_new_rows(qapp, window):

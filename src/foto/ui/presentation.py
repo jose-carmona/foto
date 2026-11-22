@@ -192,11 +192,16 @@ def location_banner_text(
     «Ubicación «usb» no disponible: /Volumes/FotoVault. 1 234 fotos no
     visibles». El recuento de fotos degradadas sale de las fotos cargadas
     (cada una sabe qué ubicación la sirve); sin fotos no hay recuento.
-    ``None`` cuando todo está a mano: sin banner.
+    Con todo disponible no se recorre la biblioteca: el recuento solo se
+    calcula cuando hay ubicaciones caídas. ``None`` cuando todo está a
+    mano: sin banner.
     """
+    missing = unavailable_locations(locations)
+    if not missing:
+        return None
     ghosts = _ghost_counts(photos)
     lines: list[str] = []
-    for location in unavailable_locations(locations):
+    for location in missing:
         line = f"Ubicación «{location.name}» no disponible: {location.path}"
         count = ghosts.get(location.name, 0)
         if count:

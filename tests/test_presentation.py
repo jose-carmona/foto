@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from foto.ui import presentation
 from foto.ui.models import LocationStatus, Photo, PhotoTag
 from foto.ui.presentation import (
     KEY_0,
@@ -851,6 +852,47 @@ def test_banner_parts_are_none_when_every_location_is_available():
     locations = (_location("ssd", tier="fast"),)
 
     assert location_banner_parts(locations, []) is None
+
+
+def test_banner_text_skips_ghost_counts_when_all_available(monkeypatch):
+    """Todo disponible: el banner no existe y no recorre las fotos (R8)."""
+    llamadas = {"n": 0}
+    original = presentation._ghost_counts
+
+    def contada(photos):
+        llamadas["n"] += 1
+        return original(photos)
+
+    monkeypatch.setattr(presentation, "_ghost_counts", contada)
+    locations = (_location("ssd", tier="fast"), _location("usb"))
+
+    assert location_banner_text(locations, []) is None
+    assert llamadas["n"] == 0
+
+
+def test_banner_text_counts_ghosts_only_with_missing_location(monkeypatch):
+    """Con una ubicación caída, el recuento sigue siendo el correcto (R8)."""
+    llamadas = {"n": 0}
+    original = presentation._ghost_counts
+
+    def contada(photos):
+        llamadas["n"] += 1
+        return original(photos)
+
+    monkeypatch.setattr(presentation, "_ghost_counts", contada)
+    locations = (_location("ssd", tier="fast"), _location("usb", available=False))
+    photos = (_ghost("a.jpg", "usb"), _ghost("b.jpg", "usb"), _ghost("c.jpg", "ssd"))
+
+    text = location_banner_text(locations, photos)
+
+    assert llamadas["n"] == 1
+    assert text == (
+        "Ubicación «usb» no disponible: /Volumes/usb. 2 fotos no visibles"
+    )
+    assert location_banner_parts(locations, photos) == (
+        "Ubicación «usb» no disponible",
+        "/Volumes/usb · 2 fotos no visibles",
+    )
 
 
 def test_location_rows_orders_active_first_and_labels_states():

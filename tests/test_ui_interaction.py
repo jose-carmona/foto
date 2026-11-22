@@ -21,32 +21,7 @@ from PySide6.QtWidgets import QApplication
 from foto.ui.canvas import ImageLoadTask
 from foto.ui.models import Photo
 from foto.ui.window import PhotoWindow
-
-
-def _photo(
-    name: str,
-    taken: str,
-    *,
-    camera: str = "Nikon Z 6",
-    path: Path | None = None,
-) -> Photo:
-    return Photo(
-        name=name,
-        taken=taken,
-        camera=camera,
-        lens="Nikkor 35mm",
-        focal="35 mm",
-        aperture="f/1,8",
-        shutter="1/250 s",
-        iso="200",
-        folder="2024",
-        fmt="JPEG",
-        dimensions="6000 × 4000",
-        size="2 MB",
-        location="",
-        photo_hash=f"sha256:{name}",
-        path=path,
-    )
+from tests.ui_factories import make_photo
 
 
 def _valid_image(path: Path) -> Path:
@@ -58,9 +33,9 @@ def _valid_image(path: Path) -> Path:
 
 
 SEARCH_PHOTOS = [
-    _photo("bosque.jpg", "2024-05-03 08:00"),
-    _photo("playa.jpg", "2024-05-02 08:00"),
-    _photo("ciudad.jpg", "2024-05-01 08:00"),
+    make_photo("bosque.jpg", "2024-05-03 08:00"),
+    make_photo("playa.jpg", "2024-05-02 08:00"),
+    make_photo("ciudad.jpg", "2024-05-01 08:00"),
 ]
 
 
@@ -119,8 +94,8 @@ def test_image_task_emits_loaded_with_a_non_null_image(qapp, tmp_path):
 
 def test_viewer_opens_and_shows_the_loaded_original(qapp, tmp_path):
     photos = [
-        _photo("a.jpg", "2024-05-02 08:00", path=_valid_image(tmp_path / "a.png")),
-        _photo("b.jpg", "2024-05-01 08:00", path=_valid_image(tmp_path / "b.png")),
+        make_photo("a.jpg", "2024-05-02 08:00", path=_valid_image(tmp_path / "a.png")),
+        make_photo("b.jpg", "2024-05-01 08:00", path=_valid_image(tmp_path / "b.png")),
     ]
     window = _make_window(qapp, photos)
     expected = photos[0].key
@@ -179,8 +154,8 @@ def _current_key(window: PhotoWindow) -> str | None:
 def test_failed_original_keeps_the_thumbnail_and_does_not_retry(qapp, tmp_path):
     _valid_image(tmp_path / "bien.png")  # otra imagen válida en la biblioteca
     photos = [
-        _photo("rota.jpg", "2024-05-02 08:00", path=tmp_path / "no-existe.png"),
-        _photo("bien.jpg", "2024-05-01 08:00", path=tmp_path / "bien.png"),
+        make_photo("rota.jpg", "2024-05-02 08:00", path=tmp_path / "no-existe.png"),
+        make_photo("bien.jpg", "2024-05-01 08:00", path=tmp_path / "bien.png"),
     ]
     window = _make_window(qapp, photos)
     failed_key = photos[0].key
@@ -222,7 +197,7 @@ def test_failed_original_keeps_the_thumbnail_and_does_not_retry(qapp, tmp_path):
 def test_invalid_original_fails_without_breaking_the_viewer(qapp, tmp_path):
     roto = tmp_path / "roto.jpg"
     roto.write_bytes(b"esto no es una imagen")
-    photos = [_photo("rota.jpg", "2024-05-01 08:00", path=roto)]
+    photos = [make_photo("rota.jpg", "2024-05-01 08:00", path=roto)]
     window = _make_window(qapp, photos)
 
     window._open_viewer()
@@ -317,9 +292,9 @@ def test_colon_opens_the_command_prompt(qapp):
 
 def test_sort_commands_reorder_the_grid(qapp):
     photos = [
-        _photo("a.jpg", "2024-05-03 08:00", camera="Canon EOS R5"),
-        _photo("b.jpg", "2024-05-02 08:00"),
-        _photo("c.jpg", "2024-05-01 08:00", camera="Canon EOS R5"),
+        make_photo("a.jpg", "2024-05-03 08:00", camera="Canon EOS R5"),
+        make_photo("b.jpg", "2024-05-02 08:00"),
+        make_photo("c.jpg", "2024-05-01 08:00", camera="Canon EOS R5"),
     ]
     window = _make_window(qapp, photos)
 

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QApplication
 from foto.ui import window as window_module
 from foto.ui.models import Photo, map_url
 from foto.ui.window import PhotoWindow
+from tests.ui_factories import make_photo
 
 
 # ----------------------------------------------------------------------
@@ -57,35 +58,13 @@ class _DesktopDouble:
         return _DesktopDouble.result
 
 
-def _photo(
-    name: str,
-    taken: str,
-    *,
-    lat: float | None = None,
-    lon: float | None = None,
-) -> Photo:
-    return Photo(
-        name=name,
-        taken=taken,
-        camera="Nikon Z 6",
-        lens="Nikkor 35mm",
-        focal="35 mm",
-        aperture="f/1,8",
-        shutter="1/250 s",
-        iso="200",
-        folder="2024",
-        fmt="JPEG",
-        dimensions="6000 × 4000",
-        size="2 MB",
-        location="",
-        gps_latitude=lat,
-        gps_longitude=lon,
-        photo_hash=f"sha256:{name}",
-    )
-
-
-MADRID = _photo("madrid.jpg", "2024-06-01 08:00", lat=40.4168, lon=-3.7038)
-SIN_GPS = _photo("sin-gps.jpg", "2024-05-01 08:00")
+MADRID = make_photo(
+    "madrid.jpg",
+    "2024-06-01 08:00",
+    gps_latitude=40.4168,
+    gps_longitude=-3.7038,
+)
+SIN_GPS = make_photo("sin-gps.jpg", "2024-05-01 08:00")
 
 
 @pytest.fixture(scope="module")
