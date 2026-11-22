@@ -593,7 +593,7 @@ def test_worker_reports_unexpected_errors(qapp, tmp_path, monkeypatch):
 # ----------------------------------------------------------------------
 # T2.2/T2.3 — MainWindow: ventana inmediata, carga por señal
 # ----------------------------------------------------------------------
-def _seed_catalog(root: Path, photo_hash: str) -> Path:
+def _seed_catalog(root: Path, photo_hash: str, *extra_hashes: str) -> Path:
     (root / ".foto").mkdir(parents=True, exist_ok=True)
     declared = (Location("default", root, "fast"),)
     catalog = Catalog.open(root / ".foto" / CATALOG_FILE_NAME, declared_locations=declared)
@@ -601,17 +601,19 @@ def _seed_catalog(root: Path, photo_hash: str) -> Path:
         location_id = catalog.insert_named_location(
             name="default", path=root, tier="fast", now=NOW
         )
-        catalog.insert_photo(photo_hash, ".jpg", "JPEG", NOW)
-        catalog.insert_file(
-            location_id=location_id,
-            rel_path="2024/una.jpg",
-            photo_hash=photo_hash,
-            size=5,
-            mtime_ns=1,
-            inode=1,
-            device=1,
-            now=NOW,
-        )
+        for indice, a_hash in enumerate((photo_hash, *extra_hashes)):
+            rel_path = "2024/una.jpg" if indice == 0 else f"2024/extra{indice}.jpg"
+            catalog.insert_photo(a_hash, ".jpg", "JPEG", NOW)
+            catalog.insert_file(
+                location_id=location_id,
+                rel_path=rel_path,
+                photo_hash=a_hash,
+                size=5,
+                mtime_ns=1,
+                inode=1,
+                device=1,
+                now=NOW,
+            )
         catalog.commit()
     finally:
         catalog.close()
@@ -709,6 +711,43 @@ def test_main_window_shows_a_loading_state_and_then_the_library(qapp, tmp_path):
         assert window._library_loading is False
         assert window.empty_label.isHidden()
         assert window.status._pinned == ""
+    finally:
+        window.close()
+
+
+def test_main_window_opens_with_the_fav_tag_filter(qapp, tmp_path):
+    """Historia de usuario: la app abre con «:tag fav» ya aplicado.
+
+    Con favoritas en el catálogo, la biblioteca entra con el filtro de
+    etiqueta activo antes del populate: solo las favoritas quedan visibles
+    y el indicador «etiqueta: fav» queda fijado en la barra. Una biblioteca
+    sin favoritas arranca sin filtro: el filtro dejaría la app vacía.
+    """
+    from foto.storage.tags import toggle_favorite
+    from tests.conftest import write_image
+
+    root = tmp_path / "biblioteca"
+    write_image(root / "2024" / "fav.jpg", b"favorita")
+    write_image(root / "2024" / "extra1.jpg", b"normal")
+    metadata = _seed_catalog(root, "sha256:" + "d" * 64, "sha256:" + "e" * 64)
+
+    connection = connect_read_write(metadata / CATALOG_FILE_NAME)
+    try:
+        toggle_favorite(connection, "sha256:" + "d" * 64, now=NOW)
+    finally:
+        connection.close()
+
+    window = app_module.MainWindow(root, _config(root), metadata)
+    try:
+        window.show()
+        qapp.processEvents()
+        cargada = lambda: len(window.photos) == 2 and not window._populate_active
+        assert _bombear(qapp, cargada), "la carga no terminó"
+        assert window._tag_filter == "fav"
+        assert window.status._pinned == "etiqueta: fav"
+        favorita = next(p for p in window.photos.values() if p.favorite)
+        assert window._visible_keys_cache == [favorita.key]
+        assert len(window._grid_items) == 2
     finally:
         window.close()
 
@@ -994,6 +1033,28 @@ def test_set_library_clears_the_banner_when_everything_is_available(qapp):
         assert window._banner_text is None
         assert window.banner.isHidden()
         assert window._visible_count() == 1
+    finally:
+        window.close()
+
+
+def test_set_library_applies_the_initial_tag_filter(qapp):
+    """El filtro inicial rige el populate: las que no cumplen nacen ocultas.
+
+    La app real abre con ``fav`` (historia de usuario); la vía es la misma
+    del filtro vivo a medio populate (A3), solo que entra antes del primer
+    lote.
+    """
+    fav = PhotoTag(name="fav", kind="system", status="confirmed", source="manual")
+    favorita = make_photo("fav.jpg", "2024-05-01 08:00", tags=(fav,))
+    window = _ventana(qapp, [])
+    try:
+        window.set_library([favorita, *FIVE_PHOTOS], initial_tag_filter="fav")
+
+        assert window._tag_filter == "fav"
+        assert window.status._pinned == "etiqueta: fav"
+        assert window._visible_keys_cache == [favorita.key]
+        # La biblioteca completa está en la rejilla: las demás, ocultas.
+        assert len(window._grid_items) == 6
     finally:
         window.close()
 

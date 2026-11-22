@@ -561,6 +561,24 @@ def test_set_photos_clears_the_tag_filter(qapp, library):
     assert len(window._visible_keys_cache) == 2
 
 
+def test_set_photos_can_start_with_a_tag_filter(qapp, library):
+    """El filtro de etiqueta de arranque rige el populate (historia de usuario).
+
+    La app real abre con ``fav``: los ítems nacen ya ocultos o visibles
+    según el filtro vigente al insertarlos (T2.4), no se filtran después
+    de poblar la rejilla completa.
+    """
+    window = _window(qapp, library)
+
+    window.set_photos(load_photos(library), tag_filter="fav")
+
+    assert window._tag_filter == "fav"
+    assert window.status._pinned == "etiqueta: fav"
+    assert window._visible_keys_cache == [_photo_by_name(window, "a.jpg").key]
+    # La biblioteca completa está en la rejilla: las no favoritas, ocultas.
+    assert len(window._grid_items) == 2
+
+
 def test_empty_result_of_tag_filter_explains_itself(qapp, library):
     window = _window(qapp, library)
 

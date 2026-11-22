@@ -29,9 +29,10 @@ from foto.storage.config import (
 )
 from foto.storage.library import foto_dir, thumbs_dir
 from foto.storage.resolver import resolve_locations, resolve_metadata_dir
-from foto.storage.tags import Tag, connect_read_write
+from foto.storage.tags import FAVORITE_TAG, Tag, connect_read_write
 from foto.ui.grid import THUMB_H, THUMB_W
 from foto.ui.models import LocationStatus, Photo
+from foto.ui.presentation import find_tag_in_catalog
 from foto.ui.theme import apply_theme, ui_font
 from foto.ui.thumbnails import ThumbnailService
 from foto.ui.window import (
@@ -526,7 +527,27 @@ class MainWindow(PhotoWindow):
             QApplication.exit(1)
             return
         self.tag_connection = tag_connection
-        self.set_library(photos, tags=tags, locations=locations)
+        # Historia de usuario: la app abre con el filtro «:tag fav» activo,
+        # de modo que la rejilla arranca solo con las favoritas y la carga
+        # es más ligera: el populate nace con las no favoritas ya ocultas
+        # (T2.4). Solo si hay favoritas que ver: sin ninguna, el filtro
+        # dejaría la app vacía al abrir, y una biblioteca sin favoritas no
+        # tiene nada que ahorrar. La etiqueta ``fav`` la siembran siempre
+        # los catálogos migrados, así que basta con comprobar que el
+        # vocabulario la conoce, igual que haría ``:tag fav``.
+        initial_tag_filter = (
+            FAVORITE_TAG
+            if find_tag_in_catalog(FAVORITE_TAG, tags) and any(
+                photo.favorite for photo in photos
+            )
+            else None
+        )
+        self.set_library(
+            photos,
+            tags=tags,
+            locations=locations,
+            initial_tag_filter=initial_tag_filter,
+        )
 
     def _on_library_failed(self, message: str) -> None:
         """Error fatal de arranque tras el show (T2.2, ADR 0011).

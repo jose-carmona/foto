@@ -283,7 +283,7 @@ Vocabulario mínimo:
 | --- | --- |
 | `:q`, `:quit` | Salir de la aplicación |
 | `:sort date`, `:sort camera`, `:sort location` | Cambiar el orden de la rejilla (por defecto, fecha) |
-| `:tag` | Filtrar por etiqueta (`:tag <nombre>`; sin argumento o repetido, quita el filtro) |
+| `:tag` | Filtrar por etiqueta (`:tag <nombre>`; sin argumento o repetido, quita el filtro). La aplicación abre con el filtro de favoritos ya aplicado (`fav`) cuando la biblioteca tiene favoritas: la rejilla arranca solo con ellas y la carga es más ligera |
 | `:locations` | Estado de las ubicaciones de la fototeca (nombre, tier, ruta, estado y nº de fotos; ver «Panel de ubicaciones») |
 | `:help` | Abrir la ayuda |
 

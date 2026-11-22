@@ -838,6 +838,7 @@ class PhotoWindow(QMainWindow):
         *,
         tags: Sequence[Tag] = (),
         locations: Sequence[LocationStatus] = (),
+        initial_tag_filter: str | None = None,
     ) -> None:
         """Sustituye la biblioteca cargada por el worker (T2.3, ADR 0011).
 
@@ -847,6 +848,12 @@ class PhotoWindow(QMainWindow):
         de presentación y el panel de ubicaciones, y delega el populate en
         ``set_photos``. Es la vía del arranque progresivo: durante la
         carga la ventana solo tuvo el estado de carga (T2.2).
+
+        ``initial_tag_filter`` activa un filtro ``:tag`` antes de poblar:
+        la aplicación real abre con ``fav`` (historia de usuario) y la
+        rejilla nace con las no favoritas ya ocultas, así que la carga es
+        más ligera. La llamada decide si la etiqueta es válida; aquí entra
+        tal cual, como el filtro guardado de ``:tag``.
         """
         self.tag_catalog = tuple(tags)
         self._locations = tuple(locations)
@@ -859,14 +866,23 @@ class PhotoWindow(QMainWindow):
         else:
             self.banner.hide()
         self._layout_content()
-        self.set_photos(photos)
+        self.set_photos(photos, tag_filter=initial_tag_filter)
 
     def set_photos(
         self,
         photos: list[Photo],
         thumbnails: dict[str, QIcon] | None = None,
+        tag_filter: str | None = None,
     ) -> None:
-        """Sustituye la biblioteca visible conservando la foto actual si sigue."""
+        """Sustituye la biblioteca visible conservando la foto actual si sigue.
+
+        ``tag_filter`` fija el filtro ``:tag`` que rige el populate (por
+        defecto, ``None``: sin filtro de etiqueta, como siempre). Debe
+        entrar aquí y no después: cada ítem nace ya oculto o visible según
+        el filtro vigente al insertarlo (T2.4), de modo que un arranque con
+        filtro no paga la rejilla completa. Sin argumento el filtro queda
+        retirado, igual que antes.
+        """
         viewer_was_visible = self._viewer_visible
         self._image_cache.clear()
         self._image_cache_order.clear()
@@ -885,8 +901,8 @@ class PhotoWindow(QMainWindow):
         self.search_text = ""
         self._filter_text = ""
         self._search_origin = None
-        self._tag_filter = None
-        self.status.set_pinned("")
+        self._tag_filter = tag_filter
+        self.status.set_pinned(f"etiqueta: {tag_filter}" if tag_filter else "")
         self.grid.blockSignals(True)
         try:
             self._populate_grid(photos)

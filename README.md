@@ -101,7 +101,9 @@ forma de publicación o compartición.
     centralizados en `theme.py` y vocabulario de comandos en `commands.py`
   - [x] Favoritos y etiquetas en el catálogo
     ([ADR 0006](docs/adr/0006-etiquetas.md)): `f` conmuta la etiqueta `fav`
-    con escritura inmediata y `:tag <nombre>` filtra la rejilla por etiqueta
+    con escritura inmediata y `:tag <nombre>` filtra la rejilla por etiqueta;
+    la app abre con el filtro `fav` ya aplicado (solo favoritas, carga más
+    ligera) cuando la biblioteca tiene favoritas
   - [ ] Menú contextual de ratón con las acciones de la foto (pendiente para más adelante)
 - [ ] **Fase 2 — Organización**
   - Álbumes manuales e inteligentes

@@ -95,6 +95,6 @@ historial, `Enter` ejecuta y `Esc` cancela.
 | --- | --- |
 | `:q` / `:quit` | Salir de la aplicación |
 | `:sort` date / camera / location | Ordenar por fecha / cámara / ubicación |
-| `:tag` | Filtrar por etiqueta (`:tag <nombre>`, repita o deje vacío para quitar el filtro) |
+| `:tag` | Filtrar por etiqueta (`:tag <nombre>`, repita o deje vacío para quitar el filtro). La app abre con el filtro `fav` aplicado si hay favoritas |
 | `:locations` | Estado de las ubicaciones de la fototeca |
 | `:help` | Abrir esta ayuda |
