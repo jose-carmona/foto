@@ -120,8 +120,10 @@ forma de publicación o compartición.
   - Recorte, rotación, exposición, color
 - [ ] **Fase 5 — Migración e IA local**
   - Importación de una biblioteca existente de Apple Photos sin perder
-    metadatos (primera fase: favoritos y caras; los originales de
-    `originals/`, sin tocar el paquete)
+    metadatos (los originales de `originals/`, sin tocar el paquete)
+    - [x] Primera fase: favoritos y caras importados al catálogo (fase
+      `apple-import` de `foto-index`,
+      [ADR 0009](docs/adr/0009-indexado-apple-photos.md))
     - Importar más metadatos de Apple Photos (álbumes, títulos,
       descripciones, fecha de importación…) una vez la primera fase
       importe favoritos y caras
@@ -289,7 +291,7 @@ mismos resolutores en `storage/resolver.py`.
   con un `library.toml` previo lo ignora: el descriptor ya no existe
   (ADR 0010) y los ficheros huérfanos no se borran ni se leen.
 - La referencia de ubicaciones es la tabla `locations` del catálogo
-  (esquema v6): `foto-index` la sincroniza con la config al arrancar —
+  (esquema v7): `foto-index` la sincroniza con la config al arrancar —
   registra las ubicaciones nuevas y marca `deleted` las quitadas de la
   config, sin borrar nada (la limpieza de filas es de `--prune`); una
   ubicación ausente (USB desmontado) avisa y se degrada, jamás se da de
@@ -395,16 +397,33 @@ sin interferencias con Photos. El comportamiento está decidido en el
 - **Ausencias por iCloud** («Optimizar almacenamiento de Mac»): son estado
   normal, no errores; los originales ausentes se comportan como cualquier
   ubicación ausente del catálogo.
-- La importación de favoritos y personas desde `Photos.sqlite` (fase
-  `apple-import` del indexador, opt-in con `[apple_photos] enabled = true`)
-  está decidida en el ADR 0009 y pendiente de implementar (paso 3 de su
-  prompt).
+- **Importación de favoritos y personas** (fase `apple-import` del
+  indexador): lee `database/Photos.sqlite` del paquete en **solo lectura
+  estricta** y importa exactamente dos cosas al catálogo: favoritos
+  (etiqueta `fav` con `source='import'`) y personas con su región facial
+  (etiquetas `person` sugeridas, [ADR 0006](docs/adr/0006-etiquetas.md)).
+  Es **opt-in**: solo corre con `[apple_photos] enabled = true` en
+  `config.toml`; se omite con `--skip apple-import` y en `--dry-run`.
+  Idempotente: cada pasada recalcula el estado desde Apple (upsert), lo
+  que Apple deja de tener se revoca solo en filas importadas y lo puesto
+  a mano por el dueño (favoritos con `f`, etiquetas) nunca se toca.
+  Álbumes, títulos, descripciones y el resto de metadatos de Apple **no
+  se importan** (roadmap, Fase 5), y la visualización de caras en la UI
+  tampoco: los datos ya están en el catálogo y el filtro `:tag <persona>`
+  ya las alcanza. Assets favoritos sin foto indexada (vídeos, originales
+  en la nube) se cuentan como no resueltos, sin error.
 
 Para usarla hoy:
 
 Con la fototeca declarada en `config.toml`
 (`[library].path = "~/Pictures/Photos Library.photoslibrary"` o su
-`[[library.locations]]` equivalente):
+`[[library.locations]]` equivalente) y la importación activada si se
+quieren favoritos y caras:
+
+```toml
+[apple_photos]
+enabled = true   # opt-in: sin esta sección, la fase se omite
+```
 
 ```sh
 uv run foto-index --metadata ~/Fotos/ApplePhotos.foto

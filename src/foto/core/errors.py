@@ -46,6 +46,15 @@ class GeocodingResponseError(GeocodingError):
     """
 
 
+class ApplePhotosError(IndexingError):
+    """La base de datos de Apple Photos no existe o no es interpretable.
+
+    Elevada por el lector de ``Photos.sqlite`` cuando falta el fichero o el
+    modelo no tiene las tablas/columnas esperadas (ADR 0009, § 8): la fase
+    ``apple-import`` la reporta como fase en ``error`` sin abortar la pasada.
+    """
+
+
 class CatalogError(FotoError):
     """Error del catálogo SQLite."""
 

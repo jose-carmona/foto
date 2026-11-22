@@ -440,3 +440,27 @@ columna, su índice parcial y todas las reglas de la Decisión 9 quedan
 como estaban. Las menciones de «v6» que queden en el prompt
 `prompts/indexado-fototeca-apple-photos.md` (p. ej. su T3.2) se ajustarán
 al reanudar esa feature.
+
+### Nota de implementación (2026-11-22, paso 3 del prompt)
+
+Implementado el paso 3 con el esquema v7 y la fase `apple-import`
+(`INDEXING_PHASES = ("scan", "geocode", "apple-import")`, despacho por
+nombre). Tres acotaciones que precisa lo decidido, sin rediseño:
+
+1. **Criterio de «no resueltos» (Decisión 7 y § 7):** se cuentan los
+   assets de `Photos.sqlite` con *algo que importar* (favorito o caras)
+   que no resuelven a ninguna foto del catálogo —vídeos favoritos,
+   originales en la nube, no indexados—. Un asset sin favorito ni caras
+   fuera del catálogo no se cuenta: no habría nada que importar.
+2. **El dueño manda sobre la *quitada* del favorito importado (Decisión
+   12):** quitar con `f` un favorito `source='import'` deja una fila
+   `manual`/`rejected` (semántica de rechazo ya existente en el ADR
+   0006); sin ese rastro, la siguiente pasada con la fase activada
+   recrearía el favorito que el dueño acaba de quitar. Borrar la fila
+   `rejected` (otro `f`) la reactiva como asignación manual. El resto de
+   conmutados de `f` no cambian.
+3. **Orientación de las coordenadas de cara:** sigue *por verificar*
+   (riesgos); la implementación aplica la regla de la Decisión 11 tal
+   cual, y la fixture de prueba la ejercita con la convención del ADR
+   0006. Pendiente de confirmar contra fotos con EXIF de rotación en una
+   biblioteca real.

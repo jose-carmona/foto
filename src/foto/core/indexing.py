@@ -1,10 +1,12 @@
 """Orquestación del indexado de la fototeca como pipeline de fases.
 
 Fases (ADR 0005): ``scan`` (recorrido, hashing, ubicaciones, metadatos y
-reconciliación) y ``geocode`` (geocodificación inversa de las fotos con GPS).
-Cada fase registra su estado, sus contadores y su motivo en el historial de la
-pasada y el resumen; el servicio de geocodificación se inyecta y no conoce
-HTTP desde aquí.
+reconciliación), ``geocode`` (geocodificación inversa de las fotos con GPS)
+y ``apple-import`` (importación mínima de favoritos y personas desde
+``database/Photos.sqlite`` de un paquete Apple, ADR 0009). Cada fase
+registra su estado, sus contadores y su motivo en el historial de la pasada
+y el resumen; el despacho es por nombre, y los servicios inyectables
+(``Geocoder``, lector de Apple, …) no conocen el pipeline desde aquí.
 
 Multi-ubicación (ADR 0010): al arrancar, y dentro del lock del indexador, la
 pasada sincroniza la declaración de ``[[library.locations]]`` con la tabla
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -39,10 +42,17 @@ from foto.core.scanner import (
     apple_photos_scan_policy,
     is_apple_photos_library,
 )
+from foto.storage.apple_photos import (
+    ApplePhotosError,
+    ApplePhotosLibrary,
+    AppleSnapshot,
+    apple_uuid_from_rel_path,
+)
 from foto.storage.availability import AVAILABLE, availability_state
 from foto.storage.catalog import Catalog, FileRow, NamedLocationRow
 from foto.storage.config import Location
 from foto.storage.sync import SyncReport, sync_locations
+from foto.storage.tags import Tag, normalize_tag_name
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +61,7 @@ DEFAULT_METADATA_BATCH_SIZE = 100
 DEFAULT_GEOCODE_BATCH_SIZE = 100
 
 #: Fases del pipeline, en orden de ejecución.
-INDEXING_PHASES: tuple[str, ...] = ("scan", "geocode")
+INDEXING_PHASES: tuple[str, ...] = ("scan", "geocode", "apple-import")
 
 
 @dataclass(frozen=True)
@@ -96,6 +106,24 @@ class GeocodePhaseResult:
 
 
 @dataclass
+class AppleImportPhaseResult:
+    """Resultado y contadores de la fase ``apple-import`` (ADR 0009, § 7).
+
+    ``favorites_imported`` y ``persons_imported`` cuentan asignaciones
+    creadas en esta pasada (una repetida no crea nada); ``unresolved``
+    cuenta assets de Apple con algo que importar que no resolvieron a
+    ninguna foto del catálogo; ``errors``, los fallos de la fase.
+    """
+
+    status: str = "ok"
+    reason: str | None = None
+    favorites_imported: int = 0
+    persons_imported: int = 0
+    unresolved: int = 0
+    errors: int = 0
+
+
+@dataclass
 class IndexingSummary:
     """Resumen de una pasada, apto para consola y para ``--json``.
 
@@ -130,6 +158,7 @@ class IndexingSummary:
     locations_sync: SyncReport = field(default_factory=SyncReport)
     scan_phase: PhaseResult = field(default_factory=PhaseResult)
     geocode: GeocodePhaseResult = field(default_factory=GeocodePhaseResult)
+    apple_import: AppleImportPhaseResult = field(default_factory=AppleImportPhaseResult)
 
     def to_dict(self) -> dict[str, object]:
         """Representación serializable del resumen, segmentada por fase."""
@@ -178,6 +207,14 @@ class IndexingSummary:
                     "unique_cells": self.geocode.unique_cells,
                     "dry_run": self.geocode.dry_run,
                 },
+                "apple-import": {
+                    "status": self.apple_import.status,
+                    "reason": self.apple_import.reason,
+                    "favorites_imported": self.apple_import.favorites_imported,
+                    "persons_imported": self.apple_import.persons_imported,
+                    "unresolved": self.apple_import.unresolved,
+                    "errors": self.apple_import.errors,
+                },
             },
         }
 
@@ -225,6 +262,7 @@ class Indexer:
         extractor: MetadataExtractor | None = None,
         geocoder: Geocoder | None = None,
         scanner: Callable[[Path], LibraryScanner] | None = None,
+        apple_library_factory: Callable[[Path], ApplePhotosLibrary] | None = None,
         now: Callable[[], datetime] = _utcnow,
         batch_size: int = DEFAULT_BATCH_SIZE,
         metadata_batch_size: int = DEFAULT_METADATA_BATCH_SIZE,
@@ -243,6 +281,10 @@ class Indexer:
         # MetadataExtractor y Geocoder). Sin ella, el Indexer aplica la
         # política por ubicación mirando la raíz (Apple Photos, ADR 0009).
         self.scanner = scanner
+        # Lector de Photos.sqlite inyectable (ADR 0009, § 7): la CLI lo
+        # pasa solo con [apple_photos] enabled = true; sin él la fase se
+        # registra skipped.
+        self.apple_library_factory = apple_library_factory
         self._now = now
         self.batch_size = max(1, batch_size)
         self.metadata_batch_size = max(1, metadata_batch_size)
@@ -286,6 +328,13 @@ class Indexer:
                 self.catalog, self.locations, self._now()
             )
             interrupted = False
+            # Despacho por nombre (ADR 0009, § 7): el encadenamiento de
+            # casos no escala con las fases nuevas del pipeline.
+            dispatch: dict[str, Callable[[IndexingSummary, int], None]] = {
+                "scan": self._run_scan_phase,
+                "geocode": self._run_geocode_phase,
+                "apple-import": self._run_apple_import_phase,
+            }
             for phase in INDEXING_PHASES:
                 if interrupted:
                     self._record_phase(
@@ -300,10 +349,7 @@ class Indexer:
                     )
                     continue
                 try:
-                    if phase == "scan":
-                        self._run_scan_phase(summary, run_id)
-                    elif phase == "geocode":
-                        self._run_geocode_phase(summary, run_id)
+                    dispatch[phase](summary, run_id)
                     completed.add(phase)
                 except KeyboardInterrupt:
                     interrupted = True
@@ -812,6 +858,212 @@ class Indexer:
             logger.warning("%s", geocode.reason)
 
     # ------------------------------------------------------------------
+    # Importación de Apple (fase apple-import, ADR 0009)
+    # ------------------------------------------------------------------
+    def _run_apple_import_phase(self, summary: IndexingSummary, run_id: int) -> None:
+        """Lanza la fase ``apple-import``: favoritos y personas de Apple.
+
+        Solo lee ``Photos.sqlite`` de los paquetes Apple declarados y
+        disponibles y escribe en el catálogo; no recorre el paquete ni
+        toca la red (§ 7). Un fallo del lector de Apple deja la fase en
+        ``error`` explícito **sin abortar la pasada**.
+        """
+        apple = summary.apple_import
+        try:
+            if self.options.dry_run:
+                apple.status = "skipped"
+                apple.reason = "Simulación (--dry-run): la fase no escribe"
+            elif self.apple_library_factory is None:
+                apple.status = "skipped"
+                apple.reason = (
+                    "Importación de Apple no activada ([apple_photos] "
+                    "enabled = true)"
+                )
+            else:
+                self._apple_import(summary)
+        except KeyboardInterrupt:
+            apple.status = "partial"
+            apple.reason = "Interrumpido con SIGINT"
+            try:
+                self.catalog.commit()
+            except Exception:
+                logger.debug(
+                    "No se pudo cerrar la transacción al interrumpir "
+                    "la importación de Apple",
+                    exc_info=True,
+                )
+            raise
+        self.catalog.record_phase(
+            run_id,
+            "apple-import",
+            status=apple.status,
+            reason=apple.reason,
+            processed=apple.favorites_imported + apple.persons_imported,
+            errors=apple.errors,
+            now=_iso(self._now()),
+        )
+
+    def _apple_import(self, summary: IndexingSummary) -> None:
+        """Importa el estado de cada ubicación Apple disponible."""
+        apple = summary.apple_import
+        locations = self._apple_locations()
+        if not locations:
+            apple.status = "skipped"
+            apple.reason = (
+                "Ninguna ubicación declarada es un paquete de Apple Photos"
+            )
+            return
+        failures: list[str] = []
+        succeeded = 0
+        for record, root in locations:
+            try:
+                self._import_apple_location(record, root, summary)
+            except KeyboardInterrupt:
+                apple.status = "partial"
+                apple.reason = "Interrumpido con SIGINT"
+                raise
+            except (ApplePhotosError, sqlite3.Error) as exc:
+                failures.append(f"«{record.name}»: {exc}")
+                apple.errors += 1
+                logger.error(
+                    "La fase apple-import falló para la ubicación «%s»: %s",
+                    record.name,
+                    exc,
+                )
+            else:
+                succeeded += 1
+        self.catalog.commit()
+        if failures:
+            apple.status = "partial" if succeeded else "error"
+            apple.reason = "; ".join(failures)
+        else:
+            apple.status = "ok"
+
+    def _apple_locations(self) -> list[tuple[NamedLocationRow, Path]]:
+        """Las ubicaciones declaradas que son paquetes Apple disponibles."""
+        targets: list[tuple[NamedLocationRow, Path]] = []
+        for declared in self.locations:
+            record = self.catalog.get_named_location(declared.name)
+            if record is None or record.state != "active":
+                continue
+            if not is_apple_photos_library(declared.path):
+                continue
+            if availability_state(declared.path) != AVAILABLE:
+                logger.warning(
+                    "La ubicación «%s» no está disponible: la fase "
+                    "apple-import no la importa en esta pasada",
+                    declared.name,
+                )
+                continue
+            targets.append((record, declared.path))
+        return targets
+
+    def _import_apple_location(
+        self,
+        record: NamedLocationRow,
+        root: Path,
+        summary: IndexingSummary,
+    ) -> None:
+        """Lee ``Photos.sqlite`` de una ubicación y aplica su estado."""
+        factory = self.apple_library_factory
+        assert factory is not None  # la fase solo corre con lector
+        library = factory(root)
+        try:
+            snapshot = library.read_snapshot()
+            self._apply_apple_location_state(record, snapshot, summary)
+            self.catalog.commit()
+        finally:
+            library.close()
+
+    def _apply_apple_location_state(
+        self,
+        record: NamedLocationRow,
+        snapshot: AppleSnapshot,
+        summary: IndexingSummary,
+    ) -> None:
+        """Resuelve el vínculo catálogo ↔ asset y aplica el estado deseado.
+
+        El vínculo sale del ``rel_path`` presente (``originals/<h>/<UUID>.<ext>``
+        → ``apple_uuid``, § 9); lo que Apple ya no tiene se revoca solo en
+        filas ``source = 'import'`` (§ 12) y lo no resoluble se cuenta (§ 7).
+        """
+        apple = summary.apple_import
+        now = _iso(self._now())
+        linked: dict[str, str] = {}
+        for rel_path, photo_hash in self.catalog.present_rel_paths(record.id):
+            uuid = apple_uuid_from_rel_path(rel_path)
+            if uuid is None:
+                continue
+            self.catalog.set_apple_uuid(photo_hash, uuid, now)
+            linked[uuid] = photo_hash
+
+        for uuid, asset in snapshot.assets.items():
+            photo_hash = linked.get(uuid)
+            if photo_hash is None:
+                # Assets que Apple quiere marcar pero el catálogo no
+                # tiene (vídeos, originales en la nube, no indexados).
+                if asset.favorite or asset.persons:
+                    apple.unresolved += 1
+                continue
+            self._apply_apple_asset_state(photo_hash, asset, summary)
+
+        for uuid, photo_hash in linked.items():
+            if uuid in snapshot.assets:
+                continue
+            # El asset ya no está en Apple (borrado del catálogo de
+            # Photos): su estado importado se revoca.
+            self._revoke_imported_state(photo_hash)
+
+    def _apply_apple_asset_state(
+        self, photo_hash: str, asset, summary: IndexingSummary
+    ) -> None:
+        """Upsert idempotente del estado de un asset resuelto (§ 10-§ 12)."""
+        apple = summary.apple_import
+        now = _iso(self._now())
+        if asset.favorite:
+            if self.catalog.upsert_imported_favorite(photo_hash, now):
+                apple.favorites_imported += 1
+        else:
+            self.catalog.revoke_imported_favorite(photo_hash)
+
+        desired: dict[tuple[str, float, float, float, float], Tag] = {}
+        for person in asset.persons:
+            tag = self.catalog.ensure_person_tag(person.name, now)
+            key = (
+                normalize_tag_name(person.name),
+                person.region_x,
+                person.region_y,
+                person.region_w,
+                person.region_h,
+            )
+            desired[key] = tag
+            if self.catalog.insert_imported_person_assignment(
+                photo_hash,
+                tag,
+                region=(person.region_x, person.region_y,
+                        person.region_w, person.region_h),
+                now=now,
+            ):
+                apple.persons_imported += 1
+
+        for row in self.catalog.imported_person_assignments(photo_hash):
+            key = (
+                row.name_normalized,
+                row.region_x if row.region_x is not None else -1.0,
+                row.region_y if row.region_y is not None else -1.0,
+                row.region_w if row.region_w is not None else -1.0,
+                row.region_h if row.region_h is not None else -1.0,
+            )
+            if key not in desired:
+                self.catalog.delete_imported_assignment(row.id)
+
+    def _revoke_imported_state(self, photo_hash: str) -> None:
+        """Revoca el estado importado de una foto cuyo asset ya no está."""
+        self.catalog.revoke_imported_favorite(photo_hash)
+        for row in self.catalog.imported_person_assignments(photo_hash):
+            self.catalog.delete_imported_assignment(row.id)
+
+    # ------------------------------------------------------------------
     # Registro de fases en el catálogo
     # ------------------------------------------------------------------
     def _record_phase(
@@ -828,6 +1080,13 @@ class Indexer:
             summary.geocode.status = status
             summary.geocode.reason = (
                 reason if summary.geocode.reason is None else summary.geocode.reason
+            )
+        elif phase == "apple-import":
+            summary.apple_import.status = status
+            summary.apple_import.reason = (
+                reason
+                if summary.apple_import.reason is None
+                else summary.apple_import.reason
             )
         else:
             summary.scan_phase.status = status
@@ -882,6 +1141,11 @@ class Indexer:
         """El ``PhaseResult`` de una fase para el registro de interrupciones."""
         if phase == "scan":
             return summary.scan_phase
+        if phase == "apple-import":
+            return PhaseResult(
+                status=summary.apple_import.status,
+                reason=summary.apple_import.reason,
+            )
         return PhaseResult(status=summary.geocode.status, reason=summary.geocode.reason)
 
 
@@ -897,6 +1161,10 @@ def _apply_phase_status(summary: IndexingSummary) -> None:
         partial.append(("scan", summary.scan_phase.reason))
     if summary.geocode.status == "partial":
         partial.append(("geocode", summary.geocode.reason))
+    if summary.apple_import.status in ("partial", "error"):
+        # Una fase en ``error`` explícito no abortó la pasada, pero el
+        # resumen no puede presentarse como ``ok``.
+        partial.append(("apple-import", summary.apple_import.reason))
 
     if not partial:
         summary.status = "ok"

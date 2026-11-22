@@ -426,45 +426,92 @@ fixtures sintéticos demuestran lo mismo.
 
 ## 8. Desglose de tareas del paso 3
 
-- [ ] **T3.1 — Fixture de `Photos.sqlite` de prueba.** Fixture sintética
+- [x] **T3.1 — Fixture de `Photos.sqlite` de prueba.** Fixture sintética
   (o copia reducida y anonimizada de una real, si el proyectista lo
   autoriza) con el subconjunto del esquema verificado en T1.1: unos
   assets con favorito, una persona con cara y región facial. Los
   álbumes y el resto del modelo pueden existir en la fixture para
   demostrar que la fase los ignora. Sirve a todas las tareas
   siguientes.
-- [ ] **T3.2 — Migración v6 en `storage/catalog.py`** (§ 7): columna de
+  (2026-11-22)
+  > Nota (2026-11-22): helper `write_photos_sqlite` en `tests/conftest.py`
+  > (construida en cada test sobre `tmp_path`, nada binario en el repo).
+  > Incluye `ZASSET`/`ZPERSON`/`ZDETECTEDFACE` más `ZADDITIONALASSETATTRIBUTES`
+  > (títulos y descripciones) y `ZGENERICALBUM` (álbumes) para demostrar que
+  > la fase los ignora; caras con persona nombrada y sin nombre.
+- [x] **T3.2 — Migración v6 en `storage/catalog.py`** (§ 7): columna de
   vínculo, `SCHEMA_VERSION = 6`, migración desde v5 (y ruta completa
   desde v1 si el patrón lo exige), tests de migración y de las
   operaciones de etiquetas importadas (upsert, revocación
   import-only).
-- [ ] **T3.3 — Extractor read-only `storage/apple_photos.py`** (§ 7):
+  (2026-11-22)
+  > Nota (2026-11-22): renumerada a **v7** por la nota de corrección del
+  > ADR 0009 (el v6 es el del ADR 0010, ya implementado): migración desde
+  > v6, columna `photos.apple_uuid` con índice único parcial. Tests en
+  > `tests/test_catalog_v7.py` (migración v6→v7, unicidad, seguimiento del
+  > vínculo al rehashear, upsert/revocación import-only, etiquetas
+  > `person` con normalización y unicidad por región).
+- [x] **T3.3 — Extractor read-only `storage/apple_photos.py`** (§ 7):
   modelo propio (`AppleAsset`, `ApplePerson`), mapeo de campos/fechas,
   solo lectura estricta (demostrar que no se crean `-wal`/`-shm`),
   errores explícitos, y prueba de que álbumes/títulos/descripciones
   presentes en la fixture no se importan. Tests sobre la fixture de
   T3.1.
-- [ ] **T3.4 — Fase `apple-import` en `core/indexing.py`** (§ 7):
+  (2026-11-22)
+  > Nota (2026-11-22): `ApplePhotosLibrary` con URI `mode=ro&immutable=1`
+  > y validación del modelo por presencia de tablas/columnas
+  > (`ApplePhotosError` nuevo en `core/errors.py`). Devuelve un
+  > `AppleSnapshot` (`assets` por `ZUUID`, `unnamed_faces`); fechas sin
+  > mapear (nada se importa de ellas en esta fase). Región derivada
+  > centro+lado recortada a [0,1]. Solo lectura estricta demostrada:
+  > sin `-wal`/`-shm`/`-journal` y mtime del fichero intacto.
+- [x] **T3.4 — Fase `apple-import` en `core/indexing.py`** (§ 7):
   refactor del despacho de fases, registro en `run_phases`, contadores
   y `to_dict` (favoritos importados, personas importadas, no
   resueltos, errores); `--skip apple-import` funciona. Tests: fase
   completa sobre catálogo con fotos de la fixture, `skipped`, `error`
   si la BD falta, interrupción.
-- [ ] **T3.5 — Vínculo e idempotencia** (§ 7): doble pasada de la fase
+  (2026-11-22)
+  > Nota (2026-11-22): despacho por nombre (dict) en `run()`; contadores en
+  > `AppleImportPhaseResult` y clave `apple-import` en `to_dict`. «No
+  > resueltos» cuenta los assets con algo que importar (favorito o caras)
+  > que no resuelven a foto del catálogo; un error del lector deja la fase
+  > en `error` explícito sin abortar la pasada (estado global `partial`).
+  > `--dry-run` la registra `skipped`.
+- [x] **T3.5 — Vínculo e idempotencia** (§ 7): doble pasada de la fase
   produce el mismo estado (upsert); favorito manual del dueño no se
   sobrescribe; favorito y persona retirados en Apple se revocan si
   siguen siendo `source='import'`; assets sin correspondencia se
   cuentan como no resueltos sin error. Tests de cada regla.
-- [ ] **T3.6 — Configuración y CLI** (§ 7): sección opt-in en
+  (2026-11-22)
+  > Nota (2026-11-22): regla nueva descubierta y cerrada: quitar con `f`
+  > un favorito *importado* no dejaba rastro y la siguiente pasada lo
+  > recreaba. `toggle_favorite` (`storage/tags.py`) deja ahora una fila
+  > `manual`/`rejected` al quitar un favorito `source='import'`
+  > (semántica de rechazo del ADR 0006; otro `f` la reactiva como
+  > manual). El resto de conmutados no cambian (suite de `test_tags.py`
+  > intacta). Registrado como nota de implementación del ADR 0009.
+- [x] **T3.6 — Configuración y CLI** (§ 7): sección opt-in en
   `storage/config.py`, lectura en `indexer/cli.py`, construcción del
   extractor de Apple, epílogo de `--help` actualizado. Tests de
   configuración (patrón de geocoding) y de CLI.
-- [ ] **T3.7 — Documentación**: README (qué importa la fase: solo
+  (2026-11-22)
+  > Nota (2026-11-22): sección `[apple_photos]` con la única clave
+  > `enabled` (`false` por defecto); validación al estilo geocoding y
+  > `save_config` nunca la escribe. Sin flags nuevos: la fase corre solo
+  > con la sección activada y una ubicación paquete Apple disponible.
+- [x] **T3.7 — Documentación**: README (qué importa la fase: solo
   favoritos y personas; cómo desactivarla; nota de que el resto de
   metadatos de Apple y la visualización de caras en la UI quedan en el
   roadmap), `AGENT.md`, y el ADR 0009 si la implementación obliga a una
   corrección menor (registrarla como nota del ADR, no rediseñar).
-- [ ] **T3.8 — Verificación y cierre del paso 3.** Suite completa en
+  (2026-11-22)
+  > Nota (2026-11-22): README (§ Fototeca de Apple Photos actualizada con
+  > la fase real y el bloque `[apple_photos]`; Fase 5 marcada), AGENT.md
+  > (esquema v7, pipeline de tres fases, reglas de la fase) y nota de
+  > implementación en el ADR 0009 (criterio de «no resueltos», tumba del
+  > favorito quitado a mano, orientación de caras sigue por verificar).
+- [x] **T3.8 — Verificación y cierre del paso 3.** Suite completa en
   verde; smoke end-to-end si hay biblioteca real: dos pasadas seguidas
   de `foto-index` con estado estable, favoritos visibles con `f` en la
   UI y `:tag <persona>` filtra (las personas entran como etiquetas del
@@ -472,6 +519,30 @@ fixtures sintéticos demuestran lo mismo.
   La visualización de caras (regiones en el canvas) **no** es parte de
   este paso: está en el roadmap. Confirmar que el paquete no recibe
   escrituras ni en la fase Apple.
+  (2026-11-22)
+  > Nota (2026-11-22): `uv run ruff check .` limpio; `uv run pytest` 1064
+  > tests en verde. Smoke end-to-end con la CLI real (`foto-index` +
+  > `foto-export` + `foto-import`) sobre el paquete sintético con
+  > `Photos.sqlite` de la T3.1: pasada 1 `favoritos=1 personas=1
+  > no_resueltos=1`, pasada 2 idéntica con `favoritos=0 personas=0`
+  > (estado estable); `tags.json` viaja con `fav` y `Persona Prueba`;
+  > `foto-import` reimporta con `ya_existian=2` (merge idempotente); el
+  > paquete no recibe escrituras (mtimes idénticos, sin `-wal`/`-shm` ni
+  > `.foto/` dentro). La parte de UI (`f` y `:tag`) no se ejercitó
+  > (requiere Qt con pantalla): el visor consume `assignments_by_hash`,
+  > cubierto por la suite. La biblioteca real del paso 1 (volumen
+  > externo, sin TCC) no se re-ejercitó en este smoke: ver T3.9.
+- [ ] **T3.9 — Verificación contra la biblioteca real con la fase
+  activada** (nueva, 2026-11-22). Contra la biblioteca real del paso 1
+  (`/Volumes/familia/iMac/Fotos.photoslibrary/…`, legible sin TCC): una
+  pasada de `foto-index --metadata <externo>` con
+  `[apple_photos] enabled = true` (los ~32k originales ya hasheados,
+  segunda pasada barata), comprobando contadores de la fase contra
+  Apple (≈777 favoritos, 14 469 caras con persona nombrada), el
+  ascendente `no_resueltos` (≈30 vídeos favoritos) y que la orientación
+  de las regiones de cara (Decisión 11, «por verificar») cuadra con
+  fotos con EXIF de rotación. Cierra el último supuesto del Apéndice
+  A.4. Ninguna escritura en el paquete.
 
 **Criterio de fin del paso 3:** con una biblioteca real (o la fixture),
 favoritos y personas de Apple viven en el catálogo con las reglas del

@@ -260,6 +260,48 @@ def test_favorite_toggle_creates_and_removes_a_manual_confirmed_row(tmp_path):
         catalog.close()
 
 
+def test_unfavorite_an_imported_favorite_leaves_a_rejected_row(tmp_path):
+    """Quitar con ``f`` un favorito importado deja la decisión del dueño.
+
+    Sin rastro, la siguiente pasada de ``apple-import`` (ADR 0009)
+    recrearía el favorito que el dueño acaba de quitar: la fila
+    ``manual``/``rejected`` lo impide y, al volver a conmutar, se borra y
+    nace la asignación manual (ADR 0006: borrar la fila ``rejected`` la
+    reactiva).
+    """
+    _root, catalog = _open(tmp_path)
+    try:
+        photo_hash = _seed_photo(catalog, "a")
+        assert catalog.upsert_imported_favorite(photo_hash, NOW) is True
+
+        assert toggle_favorite(catalog._conn, photo_hash, now=NOW_2) is False
+        rows = catalog._conn.execute(
+            "SELECT source, status FROM photo_tags"
+        ).fetchall()
+        assert [(str(r["source"]), str(r["status"])) for r in rows] == [
+            ("manual", "rejected")
+        ]
+        # La importación no revive la fila rechazada.
+        assert catalog.upsert_imported_favorite(photo_hash, NOW_2) is False
+        rows = catalog._conn.execute(
+            "SELECT source, status FROM photo_tags"
+        ).fetchall()
+        assert [(str(r["source"]), str(r["status"])) for r in rows] == [
+            ("manual", "rejected")
+        ]
+
+        # El dueño se arrepiente: la fila rejected se borra y nace manual.
+        assert toggle_favorite(catalog._conn, photo_hash, now=NOW_2) is True
+        rows = catalog._conn.execute(
+            "SELECT source, status FROM photo_tags"
+        ).fetchall()
+        assert [(str(r["source"]), str(r["status"])) for r in rows] == [
+            ("manual", "confirmed")
+        ]
+    finally:
+        catalog.close()
+
+
 def test_full_photo_assignment_is_unique_even_with_null_region(tmp_path):
     """Trampa real del COALESCE: la región NULL también es única."""
     _root, catalog = _open(tmp_path)

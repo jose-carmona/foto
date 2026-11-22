@@ -6,11 +6,17 @@ estado ``present``/``missing``/``deleted`` — y ``locations`` queda
 reservada para las ubicaciones con nombre (``name``, ``path``, ``tier``,
 ``state``). ``library.toml`` desaparece: esta tabla es la única referencia
 de ubicaciones del sistema.
+
+Esquema v7 (ADR 0009): única columna nueva ``photos.apple_uuid``, la clave
+de unión entre ``photos(hash)`` y el identificador del asset de Apple
+(``ZASSET.ZUUID``, que es el nombre del fichero en ``originals/``). Sin
+tablas nuevas: favoritos y personas viven como etiquetas del ADR 0006.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -21,15 +27,25 @@ from foto.core.errors import CatalogError, CatalogVersionError
 from foto.core.geocoding import Place, PlaceRecord
 from foto.core.metadata import PhotoMetadata
 from foto.storage.config import Location
-from foto.storage.tags import Tag, TagAssignment, assignments_by_hash, list_tags
+from foto.storage.tags import (
+    Tag,
+    TagAssignment,
+    assignments_by_hash,
+    favorite_tag,
+    list_tags,
+    normalize_tag_name,
+)
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 CATALOG_FILE_NAME = "catalog.sqlite"
 
 #: Orden canónico por ``tier`` (ADR 0010, Decisión 4): ``fast`` gana a
 #: ``archive``; el ``rel_path`` solo desempata dentro del mismo ``tier``.
+#: Colapso de espacios para el nombre visible de una etiqueta creada aquí.
+_WHITESPACE = re.compile(r"\s+")
+
 TIER_RANK: dict[str, int] = {"fast": 0, "archive": 1}
 
 
@@ -324,6 +340,13 @@ CREATE INDEX IF NOT EXISTS files_status_idx ON files(status);
 CREATE INDEX IF NOT EXISTS files_location_idx ON files(location_id);
 """
 
+# Columna de vínculo con Apple añadida a ``photos`` en v7 (ADR 0009,
+# Decisión 9): el UUID del asset cuya original es el fichero indexado
+# (``ZASSET.ZUUID``, que es el nombre base en ``originals/``). ``NULL``
+# para las fotos que no vienen de Apple; el índice único parcial garantiza
+# que un asset no enlace con dos fotos.
+APPLE_UUID_COLUMN_V7 = (("apple_uuid", "TEXT"),)
+
 
 @dataclass(frozen=True)
 class FileRow:
@@ -380,6 +403,22 @@ class GeocodeTarget:
     hash: str
     latitude: float
     longitude: float
+
+
+@dataclass(frozen=True)
+class ImportedPersonRow:
+    """Asignación importada de una etiqueta ``person`` (ADR 0009).
+
+    La región viaja tal cual está en ``photo_tags``: es la clave para
+    decidir si el estado de Apple la sigue pidiendo o hay que revocarla.
+    """
+
+    id: int
+    name_normalized: str
+    region_x: float | None
+    region_y: float | None
+    region_w: float | None
+    region_h: float | None
 
 
 class Catalog:
@@ -540,6 +579,8 @@ class Catalog:
                 self._migrate_to_v5()
             if version < 6:
                 self._migrate_to_v6(self._declared_locations)
+            if version < 7:
+                self._migrate_to_v7()
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._conn.commit()
         except sqlite3.Error as exc:
@@ -673,6 +714,20 @@ class Catalog:
         for name, definition in columns:
             if name not in existing:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+    def _migrate_to_v7(self) -> None:
+        """Aplica la migración a v7: columna de vínculo ``photos.apple_uuid``.
+
+        ADR 0009, Decisión 9: única columna nueva y su índice único parcial
+        (``WHERE apple_uuid IS NOT NULL``). Sin tablas nuevas —favoritos y
+        personas viven como etiquetas del ADR 0006— y sin datos que
+        convertir: las fotos existentes no vienen de Apple.
+        """
+        self._ensure_columns("photos", APPLE_UUID_COLUMN_V7)
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS photos_apple_uuid_idx "
+            "ON photos(apple_uuid) WHERE apple_uuid IS NOT NULL"
+        )
 
     # ------------------------------------------------------------------
     # Utilidades de conexión
@@ -1222,6 +1277,171 @@ class Catalog:
             "place_updated_at = ?, updated_at = ? WHERE hash = ?",
             (message[:500], now, now, photo_hash),
         )
+
+    # ------------------------------------------------------------------
+    # Importación de Apple (fase apple-import, ADR 0009)
+    # ------------------------------------------------------------------
+    def present_rel_paths(self, location_id: int) -> list[tuple[str, str]]:
+        """Pares ``(rel_path, photo_hash)`` presentes de una ubicación.
+
+        Lo consume la fase ``apple-import`` para resolver el vínculo con
+        los assets de Apple a partir del ``rel_path`` (originals/…).
+        """
+        rows = self._conn.execute(
+            "SELECT rel_path, photo_hash FROM files "
+            "WHERE location_id = ? AND status = 'present'",
+            (location_id,),
+        ).fetchall()
+        return [(str(row["rel_path"]), str(row["photo_hash"])) for row in rows]
+
+    def set_apple_uuid(self, photo_hash: str, apple_uuid: str, now: str) -> None:
+        """Vincula la foto con el asset de Apple (clave de unión, § 9).
+
+        El vínculo sigue al contenido actual del catálogo: si otra fila de
+        ``photos`` conservaba el mismo ``apple_uuid`` (el contenido cambió,
+        se rehasheó y nació un hash nuevo), se libera de la fila antigua
+        para respetar el índice único parcial. La escritura solo ocurre si
+        el vínculo cambia, para no tocar ``updated_at`` en cada pasada.
+        """
+        self._conn.execute(
+            "UPDATE photos SET apple_uuid = NULL WHERE apple_uuid = ? AND hash != ?",
+            (apple_uuid, photo_hash),
+        )
+        self._conn.execute(
+            "UPDATE photos SET apple_uuid = ?, updated_at = ? "
+            "WHERE hash = ? AND (apple_uuid IS NULL OR apple_uuid != ?)",
+            (apple_uuid, now, photo_hash, apple_uuid),
+        )
+
+    def upsert_imported_favorite(self, photo_hash: str, now: str) -> bool:
+        """Crea la asignación importada de ``fav``; ``False`` si ya estaba.
+
+        ``INSERT OR IGNORE``: una asignación existente —manual del dueño,
+        sugerida por ML o importada con otra región— no se toca (§ 10 y
+        § 12): el dueño manda sobre lo importado.
+        """
+        fav = favorite_tag(self._conn)
+        cursor = self._conn.execute(
+            "INSERT OR IGNORE INTO photo_tags "
+            "(photo_hash, tag_id, source, status, created_at, updated_at) "
+            "VALUES (?, ?, 'import', 'confirmed', ?, ?)",
+            (photo_hash, fav.id, now, now),
+        )
+        return cursor.rowcount == 1
+
+    def revoke_imported_favorite(self, photo_hash: str) -> bool:
+        """Quita la asignación importada de ``fav`` (región completa).
+
+        Solo filas ``source = 'import'``: una asignación manual o de otra
+        vía jamás se revoca desde la importación (§ 12). Devuelve si hubo
+        fila que quitar.
+        """
+        fav = favorite_tag(self._conn)
+        cursor = self._conn.execute(
+            "DELETE FROM photo_tags WHERE photo_hash = ? AND tag_id = ? "
+            "AND source = 'import' "
+            "AND region_x IS NULL AND region_y IS NULL "
+            "AND region_w IS NULL AND region_h IS NULL",
+            (photo_hash, fav.id),
+        )
+        return cursor.rowcount > 0
+
+    def ensure_person_tag(self, name: str, now: str) -> Tag:
+        """La etiqueta ``person`` con ese nombre, creada si no existía.
+
+        Normalización del ADR 0006 (NFC + casefold + espacios). La
+        unicidad la garantiza ``name_normalized UNIQUE`` (``INSERT OR
+        IGNORE``) y la fila se resuelve por su nombre normalizado, como
+        ``fav`` por su ``kind``.
+        """
+        normalized = normalize_tag_name(name)
+        display_name = _WHITESPACE.sub(" ", name).strip()
+        row = self._conn.execute(
+            "SELECT id, name, kind, created_at, updated_at FROM tags "
+            "WHERE name_normalized = ?",
+            (normalized,),
+        ).fetchone()
+        if row is None:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO tags (name, name_normalized, kind, "
+                "created_at, updated_at) VALUES (?, ?, 'person', ?, ?)",
+                (display_name, normalized, now, now),
+            )
+            row = self._conn.execute(
+                "SELECT id, name, kind, created_at, updated_at FROM tags "
+                "WHERE name_normalized = ?",
+                (normalized,),
+            ).fetchone()
+        if row is None:  # pragma: no cover - la unicidad lo impide
+            raise CatalogError("No se pudo crear la etiqueta de persona")
+        return Tag(
+            id=int(row["id"]),
+            name=str(row["name"]),
+            kind=str(row["kind"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def insert_imported_person_assignment(
+        self,
+        photo_hash: str,
+        tag: Tag,
+        *,
+        region: tuple[float, float, float, float],
+        now: str,
+    ) -> bool:
+        """Crea la asignación importada de una cara; ``False`` si ya estaba.
+
+        ``source='import'`` y ``status='suggested'`` (§ 11). ``INSERT OR
+        IGNORE`` respeta la fila existente sea cual sea su procedencia:
+        una cara ya asignada —a mano, por ML o importada— no se toca.
+        """
+        region_x, region_y, region_w, region_h = region
+        cursor = self._conn.execute(
+            "INSERT OR IGNORE INTO photo_tags "
+            "(photo_hash, tag_id, source, status, confidence, "
+            "region_x, region_y, region_w, region_h, created_at, updated_at) "
+            "VALUES (?, ?, 'import', 'suggested', NULL, ?, ?, ?, ?, ?, ?)",
+            (photo_hash, tag.id, region_x, region_y, region_w, region_h, now, now),
+        )
+        return cursor.rowcount == 1
+
+    def imported_person_assignments(self, photo_hash: str) -> list[ImportedPersonRow]:
+        """Asignaciones importadas de etiquetas ``person`` de una foto."""
+        rows = self._conn.execute(
+            "SELECT pt.id, t.name_normalized, pt.region_x, pt.region_y, "
+            "pt.region_w, pt.region_h "
+            "FROM photo_tags pt JOIN tags t ON t.id = pt.tag_id "
+            "WHERE pt.photo_hash = ? AND t.kind = 'person' AND pt.source = 'import'",
+            (photo_hash,),
+        ).fetchall()
+        return [
+            ImportedPersonRow(
+                id=int(row["id"]),
+                name_normalized=str(row["name_normalized"]),
+                region_x=(
+                    float(row["region_x"]) if row["region_x"] is not None else None
+                ),
+                region_y=(
+                    float(row["region_y"]) if row["region_y"] is not None else None
+                ),
+                region_w=(
+                    float(row["region_w"]) if row["region_w"] is not None else None
+                ),
+                region_h=(
+                    float(row["region_h"]) if row["region_h"] is not None else None
+                ),
+            )
+            for row in rows
+        ]
+
+    def delete_imported_assignment(self, assignment_id: int) -> None:
+        """Borra una asignación de ``photo_tags`` por su ``id``.
+
+        Solo la llama la revocación import-only de la fase ``apple-import``
+        sobre filas ya filtradas por ``source = 'import'``.
+        """
+        self._conn.execute("DELETE FROM photo_tags WHERE id = ?", (assignment_id,))
 
     # ------------------------------------------------------------------
     # Historial de fases de la pasada

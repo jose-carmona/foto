@@ -20,6 +20,7 @@ from foto.core.errors import (
 from foto.core.indexing import INDEXING_PHASES, Indexer, IndexingOptions, IndexingSummary
 from foto.core.scanner import is_apple_photos_library
 from foto.indexer.geonames import NominatimGeocoder, ReverseGeocoderConfig
+from foto.storage.apple_photos import ApplePhotosLibrary
 from foto.storage.catalog import CATALOG_FILE_NAME, Catalog
 from foto.storage.config import ConfigError, load_config
 from foto.storage.exiftool import ExifToolExtractor
@@ -49,10 +50,14 @@ fototeca de Apple Photos (.photoslibrary, ADR 0009): la política
   (solo originals/) se aplica por ubicación; la metainformación debe vivir
   fuera del paquete (--metadata, FOTO_METADATA o [metadata].path). Sin
   «Acceso total al disco» (Full Disk Access) el paquete no se puede leer.
+  La fase apple-import importa favoritos y personas desde Photos.sqlite;
+  es opt-in: [apple_photos] enabled = true en config.toml. Solo importa
+  eso: álbumes, títulos y descripciones quedan para una fase posterior.
 
 fases del pipeline (todas por defecto); --skip FASE las excluye:
-  scan    recorrido del filesystem, hashing, metadatos y ausencias
-  geocode geocodificación inversa (OpenStreetMap/Nominatim) de las fotos con GPS
+  scan          recorrido del filesystem, hashing, metadatos y ausencias
+  geocode       geocodificación inversa (OpenStreetMap/Nominatim) de las fotos con GPS
+  apple-import  favoritos y personas de una fototeca Apple (opt-in, ver arriba)
 
 códigos de salida:
   0  éxito, con o sin cambios (una ubicación ausente no es error)
@@ -206,6 +211,7 @@ def _emit_summary(summary: IndexingSummary, args: argparse.Namespace) -> None:
         )
     _emit_locations_block(summary)
     _emit_geocode_phase(summary)
+    _emit_apple_import_phase(summary)
     if summary.partial_reason:
         print(f"  aviso: {summary.partial_reason}")
 
@@ -247,6 +253,21 @@ def _emit_geocode_phase(summary: IndexingSummary) -> None:
         f"geocode: candidatas={geocode.candidates} geocodificadas={geocode.geocoded_ok} "
         f"con_error={geocode.geocoded_error} cacheadas={geocode.cache_hits} "
         f"peticiones={geocode.http_requests}"
+    )
+
+
+def _emit_apple_import_phase(summary: IndexingSummary) -> None:
+    """Resumen de la fase apple-import en una línea, según cómo terminó."""
+    apple = summary.apple_import
+    if apple.status == "skipped":
+        reason = apple.reason or "excluida con --skip apple-import"
+        print(f"  apple-import: omitida ({reason})")
+        return
+    print(
+        "  "
+        f"apple-import: favoritos={apple.favorites_imported} "
+        f"personas={apple.persons_imported} "
+        f"no_resueltos={apple.unresolved} errores={apple.errors}"
     )
 
 
@@ -385,6 +406,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "([geocoding] enabled = false)"
             )
 
+        # ADR 0009 (§ 13): la fase apple-import es opt-in por configuración,
+        # sin flags nuevos. Desactivada, sin lector: la fase se registra
+        # skipped con su motivo explícito.
+        apple_library_factory = None
+        if config.apple_photos.enabled:
+            apple_library_factory = ApplePhotosLibrary
+        elif "apple-import" not in skip:
+            logger.info(
+                "Importación de Apple Photos desactivada en la "
+                "configuración ([apple_photos] enabled = false)"
+            )
+
         indexer = Indexer(
             catalog,
             tuple(locations),
@@ -397,6 +430,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             extractor=extractor,
             geocoder=geocoder,
+            apple_library_factory=apple_library_factory,
         )
         summary = indexer.run()
         _emit_summary(summary, args)

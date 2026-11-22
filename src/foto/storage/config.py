@@ -45,6 +45,9 @@ USER_AGENT_KEY = "user_agent"
 REQUEST_INTERVAL_KEY = "request_interval_seconds"
 TIMEOUT_KEY = "timeout_seconds"
 
+#: Sección opt-in de la fase ``apple-import`` (ADR 0009, § 13).
+APPLE_PHOTOS_SECTION = "apple_photos"
+
 #: Endpoint por defecto del geocodificador inverso (ver ADR 0005).
 DEFAULT_GEOCODING_ENDPOINT = "https://nominatim.openstreetmap.org/reverse"
 #: Zona horaria/idioma por defecto de los lugares normalizados.
@@ -82,6 +85,20 @@ class GeocodingSettings:
 
 
 @dataclass(frozen=True)
+class ApplePhotosSettings:
+    """Sección ``[apple_photos]``: fase ``apple-import`` (ADR 0009, § 13).
+
+    Opt-in y con una única clave: ``enabled`` (``false`` por defecto). Con
+    ``false`` la fase se registra ``skipped`` aunque la raíz sea un paquete
+    de Apple Photos; con ``true`` importa favoritos y personas. Sin flags
+    nuevos: la detección de la fuente es por sufijo y la activación, por
+    configuración.
+    """
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class Location:
     """Una ubicación declarada de la fototeca (ADR 0010).
 
@@ -104,6 +121,7 @@ class AppConfig:
     metadata_path: Path | None = None
     version: int = 1
     geocoding: GeocodingSettings = field(default_factory=GeocodingSettings)
+    apple_photos: ApplePhotosSettings = field(default_factory=ApplePhotosSettings)
     locations: tuple[Location, ...] = ()
 
 
@@ -335,6 +353,28 @@ def _validate_geocoding_section(data: dict[str, object]) -> GeocodingSettings:
     return settings
 
 
+def _validate_apple_photos_section(data: dict[str, object]) -> ApplePhotosSettings:
+    """Valida ``[apple_photos]`` (ADR 0009, § 13) y devuelve la efectiva.
+
+    Opt-in al estilo de la validación de geocodificación: errores explícitos
+    de tipo; el canonical de ``save_config`` nunca la escribe.
+    """
+    section = data.get(APPLE_PHOTOS_SECTION)
+    if section is None:
+        return ApplePhotosSettings()
+    if not isinstance(section, dict):
+        raise ConfigError(f"La sección '[{APPLE_PHOTOS_SECTION}]' debe ser una tabla TOML")
+    settings = ApplePhotosSettings()
+    if ENABLED_KEY in section:
+        value = section[ENABLED_KEY]
+        if type(value) is not bool:
+            raise ConfigError(
+                f"El campo '[{APPLE_PHOTOS_SECTION}].{ENABLED_KEY}' debe ser booleano"
+            )
+        settings = replace(settings, enabled=value)  # type: ignore[arg-type]
+    return settings
+
+
 def load_config(config_path: Path | None = None) -> AppConfig:
     """Carga la configuración global, validando esquema y versión."""
     resolved = resolve_config_path(config_path)
@@ -346,6 +386,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     library_path, locations = _validate_library_section(data, resolved.parent, version)
     metadata_path = _validate_metadata_section(data, resolved.parent)
     geocoding = _validate_geocoding_section(data)
+    apple_photos = _validate_apple_photos_section(data)
 
     # ADR 0010: en v1, ``[library].path`` equivale a una única ubicación
     # ``default`` (fast): la fototeca preexistente es la principal.
@@ -364,6 +405,7 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         metadata_path=metadata_path,
         version=version,
         geocoding=geocoding,
+        apple_photos=apple_photos,
         locations=locations,
     )
 

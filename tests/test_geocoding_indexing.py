@@ -563,6 +563,8 @@ def test_geocode_phase_is_recorded_in_run_phases(tmp_path):
         assert [(row["phase"], row["status"]) for row in rows] == [
             ("scan", "ok"),
             ("geocode", "ok"),
+            # Sin lector de Apple, la fase se registra skipped.
+            ("apple-import", "skipped"),
         ]
         scan_runs = catalog._conn.execute(
             "SELECT status FROM scan_runs ORDER BY id"
@@ -726,9 +728,10 @@ def test_skip_geocode_leaves_pending_and_records_skipped(tmp_path):
     catalog = Catalog.open(root / ".foto" / "catalog.sqlite")
     try:
         rows = catalog._conn.execute(
-            "SELECT phase, status, reason FROM run_phases ORDER BY id"
+            "SELECT phase, status, reason FROM run_phases "
+            "WHERE phase = 'geocode' ORDER BY id"
         ).fetchall()
-        assert rows[-1]["phase"] == "geocode"
+        assert len(rows) == 1
         assert rows[-1]["status"] == "skipped"
         assert "--skip geocode" in rows[-1]["reason"]
     finally:
@@ -791,7 +794,7 @@ def test_fatal_scan_error_records_geocode_as_skipped(tmp_path, monkeypatch):
 
 def test_phases_run_in_order(tmp_path):
     root = tmp_path / "biblioteca"
-    assert INDEXING_PHASES == ("scan", "geocode")
+    assert INDEXING_PHASES == ("scan", "geocode", "apple-import")
     write_image(root / "f.jpg", b"f")
     run_index(root, extractor=FakeExtractor(), geocoder=FakeGeocoder())
     catalog = Catalog.open(root / ".foto" / "catalog.sqlite")

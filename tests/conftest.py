@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -41,6 +42,112 @@ def write_image(path: Path, data: bytes = b"foto-de-prueba") -> Path:
     """Crea un fichero pequeño con extensión de imagen."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+    return path
+
+
+# Tipos de la fixture de Photos.sqlite (T3.1 del paso Apple, ADR 0009):
+# ``FaceSpec`` es ``(persona_o_None, centro_x, centro_y, lado)``; persona
+# ``None`` es una cara de persona sin nombre (se cuenta, no se importa).
+FaceSpec = tuple[str | None, float, float, float]
+AssetSpec = tuple[str, int, Sequence[FaceSpec]]
+
+
+def write_photos_sqlite(
+    path: Path,
+    *,
+    assets: Sequence[AssetSpec] = (),
+    album: str | None = None,
+) -> Path:
+    """Crea una ``Photos.sqlite`` sintética con el subconjunto del ADR 0009.
+
+    Solo las tablas y columnas que la fase ``apple-import`` consume
+    (``ZASSET``, ``ZPERSON``, ``ZDETECTEDFACE``) más el resto del modelo
+    que la fase debe demostrar que ignora (``ZADDITIONALASSETATTRIBUTES``
+    con títulos y descripciones, ``ZGENERICALBUM`` con álbumes). Nada de
+    datos personales: los nombres y UUIDs son de prueba.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    connection = sqlite3.connect(path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE ZASSET (
+                Z_PK INTEGER PRIMARY KEY AUTOINCREMENT,
+                ZUUID TEXT,
+                ZFAVORITE INTEGER,
+                ZFILENAME TEXT,
+                ZDIRECTORY TEXT,
+                ZKIND INTEGER
+            );
+            CREATE TABLE ZPERSON (
+                Z_PK INTEGER PRIMARY KEY AUTOINCREMENT,
+                ZFULLNAME TEXT,
+                ZFACECOUNT INTEGER
+            );
+            CREATE TABLE ZDETECTEDFACE (
+                Z_PK INTEGER PRIMARY KEY AUTOINCREMENT,
+                ZCENTERX REAL,
+                ZCENTERY REAL,
+                ZSIZE REAL,
+                ZASSETFORFACE INTEGER,
+                ZPERSONFORFACE INTEGER
+            );
+            CREATE TABLE ZADDITIONALASSETATTRIBUTES (
+                Z_PK INTEGER PRIMARY KEY AUTOINCREMENT,
+                ZASSET INTEGER,
+                ZTITLE TEXT,
+                ZACCESSIBILITYDESCRIPTION TEXT,
+                ZORIGINALFILENAME TEXT
+            );
+            CREATE TABLE ZGENERICALBUM (
+                Z_PK INTEGER PRIMARY KEY AUTOINCREMENT,
+                ZTITLE TEXT
+            );
+            """
+        )
+        person_pks: dict[str, int] = {}
+        for uuid, favorite, faces in assets:
+            cursor = connection.execute(
+                "INSERT INTO ZASSET (ZUUID, ZFAVORITE, ZFILENAME, ZDIRECTORY, "
+                "ZKIND) VALUES (?, ?, ?, ?, 0)",
+                (uuid, favorite, f"{uuid}.jpeg", uuid[0]),
+            )
+            asset_pk = cursor.lastrowid
+            for person_name, center_x, center_y, size in faces:
+                if person_name is not None and person_name not in person_pks:
+                    person_cursor = connection.execute(
+                        "INSERT INTO ZPERSON (ZFULLNAME, ZFACECOUNT) "
+                        "VALUES (?, 1)",
+                        (person_name,),
+                    )
+                    person_pks[person_name] = int(person_cursor.lastrowid)
+                connection.execute(
+                    "INSERT INTO ZDETECTEDFACE (ZCENTERX, ZCENTERY, ZSIZE, "
+                    "ZASSETFORFACE, ZPERSONFORFACE) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        center_x,
+                        center_y,
+                        size,
+                        asset_pk,
+                        person_pks.get(person_name) if person_name else None,
+                    ),
+                )
+            connection.execute(
+                "INSERT INTO ZADDITIONALASSETATTRIBUTES (ZASSET, ZTITLE, "
+                "ZACCESSIBILITYDESCRIPTION, ZORIGINALFILENAME) "
+                "VALUES (?, ?, ?, ?)",
+                (asset_pk, f"Título de {uuid}", f"Descripción de {uuid}",
+                 f"IMG_{uuid}.jpeg"),
+            )
+        if album is not None:
+            connection.execute(
+                "INSERT INTO ZGENERICALBUM (ZTITLE) VALUES (?)", (album,)
+            )
+        connection.commit()
+    finally:
+        connection.close()
     return path
 
 

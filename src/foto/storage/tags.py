@@ -245,16 +245,28 @@ def toggle_favorite(
     ``fav`` se resuelve por ``kind='system'``, jamás por ``id``. El
     conmutado borra la asignación completa (región NULL) sea cual sea su
     estado y, si no existía, la crea ``manual``/``confirmed`` en una única
-    transacción.
+    transacción. Si la fila que se quita venía importada
+    (``source='import'``, ADR 0009), la decisión del dueño de no tenerla
+    deja rastro como fila ``manual``/``rejected``: sin ella, la siguiente
+    pasada de ``apple-import`` recrearía el favorito que el dueño acaba de
+    quitar. Borrar la fila ``rejected`` la reactiva, como el resto de
+    etiquetas (ADR 0006).
     """
     fav = favorite_tag(connection)
     try:
+        row = connection.execute(
+            "SELECT source, status FROM photo_tags WHERE photo_hash = ? AND tag_id = ? "
+            "AND region_x IS NULL AND region_y IS NULL "
+            "AND region_w IS NULL AND region_h IS NULL",
+            (photo_hash, fav.id),
+        ).fetchone()
         cursor = connection.execute(
             "DELETE FROM photo_tags WHERE photo_hash = ? AND tag_id = ? "
             "AND region_x IS NULL AND region_y IS NULL "
             "AND region_w IS NULL AND region_h IS NULL",
             (photo_hash, fav.id),
         )
+        favored = False
         if cursor.rowcount == 0:
             connection.execute(
                 "INSERT OR IGNORE INTO photo_tags "
@@ -262,11 +274,31 @@ def toggle_favorite(
                 "VALUES (?, ?, 'manual', 'confirmed', ?, ?)",
                 (photo_hash, fav.id, now, now),
             )
+            favored = True
+        elif row is not None and str(row["status"]) == "rejected":
+            # Borrar la fila rechazada la reactiva (ADR 0006): nace la
+            # asignación manual del dueño.
+            connection.execute(
+                "INSERT OR IGNORE INTO photo_tags "
+                "(photo_hash, tag_id, source, status, created_at, updated_at) "
+                "VALUES (?, ?, 'manual', 'confirmed', ?, ?)",
+                (photo_hash, fav.id, now, now),
+            )
+            favored = True
+        elif row is not None and str(row["source"]) == "import":
+            # Quitar un favorito importado deja la decisión del dueño
+            # como fila rechazada, para que la importación no la reviva.
+            connection.execute(
+                "INSERT INTO photo_tags "
+                "(photo_hash, tag_id, source, status, created_at, updated_at) "
+                "VALUES (?, ?, 'manual', 'rejected', ?, ?)",
+                (photo_hash, fav.id, now, now),
+            )
         connection.commit()
     except sqlite3.Error as exc:
         connection.rollback()
         raise CatalogError(f"No se pudo conmutar el favorito: {exc}") from exc
-    return cursor.rowcount == 0
+    return favored
 
 
 def _assert_not_rejected(

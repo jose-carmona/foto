@@ -26,21 +26,28 @@ arquitectura y roadmap. Para cualquier cambio de interfaz, lee también
   las acciones con un único dispatcher (`_dispatch`) con registro acción →
   handler. Todos son módulos sin Qt que la ventana consume.
 - Indexador `foto-index` completo en `src/foto/indexer/` + `core/` + `storage/`:
-  catálogo SQLite incremental (esquema v6, con las tablas `tags` y
+  catálogo SQLite incremental (esquema v7, con las tablas `tags` y
   `photo_tags` de [ADR 0006](docs/adr/0006-etiquetas.md) —`photo_tags.source`
   ampliado con `'import'` por el
   [ADR 0007](docs/adr/0007-exportar-importar-metadatos.md)— y la etiqueta de
-  sistema `fav` sembrada por `kind='system'`), hashes SHA-256 de contenido,
+  sistema `fav` sembrada por `kind='system'`; la columna `photos.apple_uuid`
+  de [ADR 0009](docs/adr/0009-indexado-apple-photos.md) es la clave de unión
+  con los assets de Apple), hashes SHA-256 de contenido,
   rutas relativas por ubicación (`files.location_id` + `rel_path`, ADR 0010),
   reconciliación de ausencias, `exiftool` opcional y lock de
   escritor único. Es
-  un **pipeline de fases** (`scan` y `geocode`, [ADR 0005](docs/adr/0005-fases-y-geocodificacion.md)):
+  un **pipeline de fases** (`scan`, `geocode` y `apple-import`,
+  [ADR 0005](docs/adr/0005-fases-y-geocodificacion.md)):
   la fase `geocode` geocodifica en inverso con Nominatim las fotos con GPS y
   sin lugar (`place_status`), con caché por celda de 3 decimales invalidada
   por zoom, throttle de 1 petición/segundo y parada por rechazo con
   reanudación; de la respuesta guarda la jerarquía normalizada y el detalle
   completo (`municipality`, `display_name` y `address` íntegro). Para hacerla
   correr los tests, el servicio es inyectable (`core/geocoding.py`) y sin red.
+  La fase `apple-import` (opt-in con `[apple_photos] enabled = true`,
+  ADR 0009) lee `Photos.sqlite` del paquete en solo lectura estricta
+  (`storage/apple_photos.py`) e importa solo favoritos y personas al
+  catálogo, con revocación import-only y respeto absoluto de lo manual.
 - El catálogo vive en `<fototeca>/.foto/catalog.sqlite`. Es reconstruible en lo
   que deriva del contenido (fotos, ubicaciones, metadatos, lugares); las
   etiquetas y los favoritos no se regeneran y exigen copia de seguridad: la vía
@@ -201,7 +208,7 @@ resolución (configuración, fototeca y metainformación), en
   `version = 2`, `[library].path` en `version = 1` (una única ubicación
   `default`); las ubicaciones de la lista se editan a mano
   ([ADR 0010](docs/adr/0010-fototeca-distribuida.md)).
-- **De la biblioteca:** la tabla `locations` del catálogo (esquema v6) es la
+- **De la biblioteca:** la tabla `locations` del catálogo (esquema v7) es la
   única referencia de ubicaciones (nombre, path, tier, estado). El
   descriptor `library.toml` ya no existe (ADR 0010): no se crea, no se lee
   y no se valida; los descriptores ya presentes en `.foto/` se ignoran
@@ -238,7 +245,8 @@ El marco de fases y la geocodificación, en `docs/adr/0005-fases-y-geocodificaci
 Resumen operativo:
 
 - **Identidad:** `sha256:<64 hex>` del contenido. Una fila en `photos` por hash y
-  N filas en `files` (esquema v6, ADR 0010) por `(location_id, rel_path)`,
+  N filas en `files` (esquema v6 del ADR 0010, más la columna
+  `apple_uuid` del v7, ADR 0009) por `(location_id, rel_path)`,
   con la tabla `locations` de ubicaciones con nombre como única referencia
   de ubicaciones.
 - **Escrituras:** solo en `<fototeca>/.foto/`. Nunca se modifican, mueven ni
@@ -267,14 +275,23 @@ Resumen operativo:
   exige con un error explícito) y un permiso denegado por TCC se reporta como
   recorrido `partial` sugiriendo *Full Disk Access*, sin marcar ausencias.
   Sin *Full Disk Access* el paquete ni siquiera se puede leer: requisito del
-  entorno.
+  entorno. La fase `apple-import` (opt-in, `[apple_photos] enabled = true`)
+  lee `database/Photos.sqlite` en solo lectura estricta
+  (`mode=ro&immutable=1`, sin `-wal`/`-shm`) e importa únicamente
+  favoritos (`fav`, `source='import'`) y personas con su región facial
+  (etiquetas `person` sugeridas); el vínculo es `photos.apple_uuid` y lo
+  puesto a mano jamás se sobrescribe ni se revoca (quitar con `f` un
+  favorito importado deja una fila `rejected` que impide que la
+  importación lo reviva). El resto de metadatos de Apple queda fuera
+  (roadmap, Fase 5).
 - **Metadatos:** EXIF de la imagen, normalizados; `exiftool` es opcional, de solo
   lectura, sin shell y por lotes. Sin él quedan `pending`.
-- **Fases:** una pasada ejecuta `scan` y después `geocode`; `--skip`
-  excluye fases y cada fase se registra en `run_phases` con estado y
-  contadores. La geocodificación (`geocode`) consulta Nominatim con un
-  User-Agent propio y como máximo 1 petición por segundo; ante un rechazo se
-  detiene sin marcar error, reanudando en la siguiente pasada.
+- **Fases:** una pasada ejecuta `scan`, `geocode` y `apple-import` (este
+  último solo con la sección activada); `--skip` excluye fases y cada
+  fase se registra en `run_phases` con estado y contadores. La
+  geocodificación (`geocode`) consulta Nominatim con un User-Agent propio
+  y como máximo 1 petición por segundo; ante un rechazo se detiene sin
+  marcar error, reanudando en la siguiente pasada.
 - **Concurrencia:** WAL, `foreign_keys=ON`, `busy_timeout` y lock exclusivo en
   `.foto/index.lock`. Un solo escritor; el futuro lector no debe bloquearse.
 - **Transferencia:** `foto-export` (solo lectura del catálogo, sin lock) y
