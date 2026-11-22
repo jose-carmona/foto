@@ -444,6 +444,16 @@ registradas y registro de la fase al día.
 
 ## 9. Estado final de la fase
 
-> *(Pendiente de cerrar: rellenar al terminar la fase con el mismo formato
-> que `prompts/ejecutar-fase-2-revision-ui.md` § 9 — tests línea base →
-> final, medición de R9 antes/después, desviaciones y decisiones.)*
+> **Abortada a medias el 2026-11-22 por decisión del usuario** («Por esta
+> interacción es OK. Fin»). El commit `e0128eb` queda como estado válido:
+> **1024 passed** (línea base 1018 + 6: 2 de R8, 2 de R9, 2 de R10) y
+> `uv run ruff check .` limpio, con R8, R10 y R11 cerradas y R9 cerrada en
+> código y tests. La **medición antes/después de R9 quedó a medias**: el
+> script desechable (corregido tras detectar que su primer cronómetro
+> excluía el coste que se mide) dio el «antes» del populate inicial
+> (**mediana 157,2 ms**, muestras 759,4 · 149,4 · 157,2) sobre el código
+> previo en un worktree de `c7820d2`; el «antes» de `:sort location` y el
+> «después» completo no llegaron a ejecutarse. Queda pendiente, para cuando
+> el usuario lo pida: las cifras de T3.2, el smoke manual y este § 9
+> completo. Sin `git push`; sin cambios pendientes en el árbol de trabajo
+> salvo esta nota.
