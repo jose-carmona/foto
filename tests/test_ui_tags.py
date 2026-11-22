@@ -334,7 +334,9 @@ def test_favorite_toggle_persists_in_the_catalog(qapp, library):
 def test_favorite_write_failure_reverts_and_reports(qapp, library):
     window = _window(qapp, library)
     _select(window, 0)
+    window._commit_search("fav")
     assert window._current_photo().favorite is True
+    assert window._visible_keys_cache == [_photo_by_name(window, "a.jpg").key]
 
     # Bloqueo de escritura externo (otro proceso mantiene el lock); con
     # busy_timeout 0 el DELETE falla al instante.
@@ -350,18 +352,117 @@ def test_favorite_write_failure_reverts_and_reports(qapp, library):
         blocker.close()
 
     # Revertido en memoria y error persistente en la barra.
-    photo = window._current_photo()
+    photo = _photo_by_name(window, "a.jpg")
     assert photo.favorite is True
+    assert "fav" in window._search_index[photo.key]
     assert bool(window.grid.currentItem().data(FAVORITE_ROLE)) is True
     assert window.status.error_text
     assert "error:" in window.status.message_label.text()
     assert window.status.right_label.text() == "Esc descartar"
+
+    # El rollback también restauró las proyecciones derivadas: el panel y
+    # el conjunto visible vuelven a mostrar la favorita.
+    flow = window.panel.findChildren(TagChipFlow)[0]
+    assert flow._chips[0] == ("", "favorita", True)
+    assert window._visible_keys_cache == [photo.key]
 
     # Y el catálogo queda como estaba.
     reloaded = {p.name: p for p in load_photos(library)}
     assert reloaded["a.jpg"].favorite is True
 
     window.close()
+
+
+def test_favorite_updates_all_projections(qapp, library):
+    """El conmutado pasa por una sola ruta y actualiza todas las vistas."""
+    window = _window(qapp, library)
+    try:
+        window.show()
+        _select(window, 0)
+        a = _photo_by_name(window, "a.jpg")
+        b = _photo_by_name(window, "b.jpg")
+        window._open_viewer()
+        assert window._viewer_visible
+
+        window._toggle_favorite()
+
+        a = _photo_by_name(window, "a.jpg")
+        assert a.favorite is False
+        assert "fav" not in window._search_index[a.key]
+        assert bool(window.grid.currentItem().data(FAVORITE_ROLE)) is False
+        assert window.viewer.canvas._favorite is False
+        flow = window.panel.findChildren(TagChipFlow)[0]
+        assert all(chip[0] != "" for chip in flow._chips)
+        assert set(window._visible_keys_cache) == {a.key, b.key}
+
+        # Y de vuelta: el chip de favorito reaparece en el panel.
+        window._toggle_favorite()
+        a = _photo_by_name(window, "a.jpg")
+        assert a.favorite is True
+        assert "fav" in window._search_index[a.key]
+        flow = window.panel.findChildren(TagChipFlow)[0]
+        assert flow._chips[0] == ("", "favorita", True)
+
+        # Con un filtro que depende de la etiqueta, el conjunto visible se
+        # recalcula en el mismo paso que el resto de proyecciones.
+        window._commit_search("fav")
+        assert window._visible_keys_cache == [a.key]
+        window._toggle_favorite()
+        assert window._visible_keys_cache == []
+        assert _photo_by_name(window, "a.jpg").favorite is False
+    finally:
+        window.close()
+
+
+def test_favorite_follows_persisted_state(qapp, library):
+    """Si la BD y la UI divergen, gana el estado que devuelve el catálogo."""
+    window = _window(qapp, library)
+    try:
+        _select(window, 0)
+        assert window._current_photo().favorite is True
+
+        # Otro escritor borra la asignación por fuera de la UI.
+        window.tag_connection.execute(
+            "DELETE FROM photo_tags WHERE photo_hash = ? AND tag_id = "
+            "(SELECT id FROM tags WHERE kind = 'system' AND name = 'fav')",
+            (HASH_A,),
+        )
+        window.tag_connection.commit()
+
+        window._toggle_favorite()
+
+        photo = _photo_by_name(window, "a.jpg")
+        assert photo.favorite is True  # toggle_favorite devolvió True
+        assert "fav" in window._search_index[photo.key]
+        assert bool(window.grid.currentItem().data(FAVORITE_ROLE)) is True
+        assert window.status.message_label.text() == "favorito"
+        flow = window.panel.findChildren(TagChipFlow)[0]
+        assert flow._chips[0] == ("", "favorita", True)
+    finally:
+        window.close()
+
+
+def test_favorite_with_hidden_panel_refreshes_on_open(qapp, library):
+    """El panel oculto se rellena al abrirlo, no al cambiar la foto."""
+    window = PhotoWindow(
+        load_photos(library),
+        tag_connection=connect_read_write(library / ".foto" / "catalog.sqlite"),
+        tag_catalog=load_tags(library),
+        initial_panel_visible=False,
+    )
+    try:
+        _select(window, 0)
+        window._toggle_favorite()
+        assert _photo_by_name(window, "a.jpg").favorite is False
+        assert window.panel_visible is False
+
+        window.toggle_panel()
+
+        assert window.panel_visible is True
+        flow = window.panel.findChildren(TagChipFlow)[0]
+        assert all(chip[0] != "" for chip in flow._chips)
+    finally:
+        window.close()
 
 
 def test_favorite_toggle_without_connection_stays_in_memory(qapp, library):

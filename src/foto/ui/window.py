@@ -26,6 +26,7 @@ vertical, teclas de grupo y el color atenuado) siguen en los módulos sin Qt
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -122,6 +123,8 @@ from foto.ui.theme import (
     warning_background,
     warning_color,
 )
+
+logger = logging.getLogger(__name__)
 
 PANEL_W = 426
 PAN_STEP = 48
@@ -394,7 +397,10 @@ class PhotoWindow(QMainWindow):
         self._search_index = build_search_index(photos)
         self._sort_key = DEFAULT_SORT
         self.thumbnails = dict(thumbnails or {})
+        # ``search_text`` es solo la consulta confirmada con Enter; el filtro
+        # efectivo (vivo o confirmado) vive en ``_filter_text`` (A3).
         self.search_text = ""
+        self._filter_text = ""
         self._search_origin: str | None = None
         self.panel_visible = initial_panel_visible
         self.panel_overlay = False
@@ -430,6 +436,7 @@ class PhotoWindow(QMainWindow):
         self._library_loading = False
         self._populate_active = False
         self._populate_state: _PopulateState | None = None
+        self._closing = False
         self._populate_timer = QTimer(self)
         self._populate_timer.setSingleShot(True)
         self._populate_timer.setInterval(0)
@@ -666,9 +673,10 @@ class PhotoWindow(QMainWindow):
         if state is None:
             return
         end = min(state.index + count, len(state.ordered))
-        # El filtro se lee al empezar el lote: solo puede cambiar entre
-        # lotes (el bucle de eventos no corre en medio de este bucle).
-        needle = self.search_text.strip().casefold()
+        # El filtro efectivo se lee al empezar el lote: solo puede cambiar
+        # entre lotes (el bucle de eventos no corre en medio de este bucle).
+        # ``_filter_text`` incluye la búsqueda viva escrita entre lotes (A3).
+        needle = self._filter_text.strip().casefold()
         tag_filter = self._tag_filter
         rows: list[int] = []
         keys: list[str] = []
@@ -721,6 +729,8 @@ class PhotoWindow(QMainWindow):
 
     def _populate_next_batch(self) -> None:
         """Lote del populate progresivo (T2.4)."""
+        if self._closing:
+            return
         state = self._populate_state
         if state is None or not self._populate_active:
             return
@@ -755,7 +765,8 @@ class PhotoWindow(QMainWindow):
         # Normalización final del filtro (T2.4): cada ítem nace con la
         # visibilidad del filtro de su lote; esta pasada íntegra garantiza
         # cabeceras, caché de visibles y recuentos coherentes al terminar.
-        self._apply_filter(self.search_text)
+        # Se usa el filtro efectivo para no descartar la búsqueda viva (A3).
+        self._apply_filter(self._filter_text)
         self._schedule_visible_thumbnails()
         self._update_empty_state()
         if state is not None and state.on_done is not None:
@@ -883,6 +894,7 @@ class PhotoWindow(QMainWindow):
             self.thumbnails = dict(thumbnails)
             self._thumbnail_order = list(self.thumbnails)
         self.search_text = ""
+        self._filter_text = ""
         self._search_origin = None
         self._tag_filter = None
         self.status.set_pinned("")
@@ -1155,7 +1167,7 @@ class PhotoWindow(QMainWindow):
                 item.setIcon(self._placeholder_icon or QIcon())
 
     def _schedule_visible_thumbnails(self, *_args) -> None:
-        if self._thumbnail_loader is None:
+        if self._closing or self._thumbnail_loader is None:
             return
         self._visible_timer.start()
 
@@ -1198,7 +1210,7 @@ class PhotoWindow(QMainWindow):
         return keys
 
     def _request_visible_thumbnails(self) -> None:
-        if self._thumbnail_loader is None:
+        if self._closing or self._thumbnail_loader is None:
             return
         keys = self._visible_photo_keys()
         self._viewport_keys = set(keys)
@@ -1300,6 +1312,8 @@ class PhotoWindow(QMainWindow):
             self._g_timer.start()
 
     def _clear_g_pending(self) -> None:
+        if self._closing:
+            return
         self._g_pending = False
 
     def _cancel_g_pending(self) -> None:
@@ -1586,6 +1600,10 @@ class PhotoWindow(QMainWindow):
             self.empty_label.hide()
 
     def _apply_filter(self, text: str) -> None:
+        # El texto recibido es la fuente de esta pasada y queda registrado
+        # como filtro efectivo para los caminos que no son el filtro
+        # inmediato (populate, sort y filtro de etiqueta; A3).
+        self._filter_text = text
         needle = text.strip().casefold()
         tag_filter = self._tag_filter
         visible_items: list[QListWidgetItem] = []
@@ -1735,7 +1753,7 @@ class PhotoWindow(QMainWindow):
         # ser relevante: el filtro aplicado o retirado es la respuesta.
         self.status.clear_error()
         self.status.set_pinned(f"etiqueta: {name}" if name else "")
-        self._apply_filter(self.search_text)
+        self._apply_filter(self._filter_text)
 
     def _sort_grid(self, key: str) -> None:
         current = self.grid.currentItem()
@@ -1748,7 +1766,7 @@ class PhotoWindow(QMainWindow):
             target = self._grid_items.get(current_key) if current_key else None
             if target is not None:
                 self.grid.setCurrentItem(target)
-            self._apply_filter(self.search_text)
+            self._apply_filter(self._filter_text)
             self._on_current_changed(self.grid.currentItem(), None)
             self.status.show_message(f"ordenado por {key}", 3000)
 
@@ -1843,9 +1861,13 @@ class PhotoWindow(QMainWindow):
                 self._toggle_help()
             return
         if self.locations_overlay.isVisible():
-            if action in ("escape", "help", "close"):
+            if action in ("escape", "close"):
                 self._toggle_locations()
-            return
+                return
+            if action != "help":
+                return
+            # ``?`` cierra ubicaciones y sigue al handler de ayuda (A4).
+            self._toggle_locations()
         if self.status.prompt_active:
             if action == "escape":
                 self._handle_escape()
@@ -1971,6 +1993,9 @@ class PhotoWindow(QMainWindow):
         self.panel_visible = not self.panel_visible
         self._layout_content()
         if self.panel_visible:
+            # El panel oculto no se refresca en cada selección (A1): al
+            # abrirlo se rellena con la foto actual, no con la de antes.
+            self.panel.set_photo(self._current_photo())
             self.status.show_message("panel de metadatos", 2000)
         else:
             if had_focus:
@@ -2015,41 +2040,64 @@ class PhotoWindow(QMainWindow):
             self.locations_overlay.raise_()
             self.locations_overlay.setFocus()
 
+    def _apply_photo_update(self, photo: Photo) -> None:
+        """Aplica una ``Photo`` a todas sus proyecciones (A1).
+
+        Única ruta para que la foto de ``photos``, el índice de búsqueda, el
+        ítem de la rejilla, el panel visible, el lienzo del visor y el
+        filtro activo cuenten lo mismo. La usan el cambio optimista, la
+        corrección al estado persistido y el rollback.
+        """
+        self.photos[photo.key] = photo
+        self._search_index[photo.key] = photo_search_text(photo)
+
+        item = self._grid_items.get(photo.key)
+        if item is not None:
+            item.setData(FAVORITE_ROLE, photo.favorite)
+            item.setData(Qt.AccessibleTextRole, photo_accessible_name(photo))
+
+        if self.panel_visible:
+            self.panel.set_photo(photo)
+        current = self._current_photo()
+        if self._viewer_visible and current is not None and current.key == photo.key:
+            self.viewer.canvas.set_favorite(photo.favorite)
+        if self._filter_text or self._tag_filter:
+            self._apply_filter(self._filter_text)
+        else:
+            self.grid.viewport().update()
+
     def _toggle_favorite(self) -> None:
         photo = self._current_photo()
         item = self.grid.currentItem()
         if photo is None or item is None:
             return
         updated = with_favorite_tag(photo, not photo.favorite)
-        self.photos[photo.key] = updated
-        # Revalidación puntual del índice (T1.5): las etiquetas entran en
-        # el documento de búsqueda, así que la entrada de esta foto cambia.
-        self._search_index[photo.key] = photo_search_text(updated)
-        item.setData(FAVORITE_ROLE, updated.favorite)
-        item.setData(Qt.AccessibleTextRole, photo_accessible_name(updated))
-        self.viewer.canvas.set_favorite(updated.favorite)
-        self.grid.viewport().update()
-        message = "favorito" if updated.favorite else "sin favorito"
+        self._apply_photo_update(updated)
         if self.tag_connection is None or photo.photo_hash is None:
             # Demo y pruebas: el conmutado queda solo en memoria.
+            message = "favorito" if updated.favorite else "sin favorito"
             self.status.show_message(message, 2000)
             return
         try:
-            toggle_favorite(
+            persisted = toggle_favorite(
                 self.tag_connection,
                 photo.photo_hash,
                 now=datetime.now(UTC).isoformat(),
             )
         except CatalogError as exc:
-            # Escritura fallida: se revierte el cambio optimista y el error
-            # permanece en la barra hasta que Esc lo descarta.
-            self.photos[photo.key] = photo
-            item.setData(FAVORITE_ROLE, photo.favorite)
-            item.setData(Qt.AccessibleTextRole, photo_accessible_name(photo))
-            self.viewer.canvas.set_favorite(photo.favorite)
-            self.grid.viewport().update()
+            # Escritura fallida: se revierte el cambio optimista por la
+            # misma ruta y el error permanece en la barra hasta que Esc lo
+            # descarta.
+            self._apply_photo_update(photo)
             self.status.show_error(str(exc))
             return
+        final = updated
+        if persisted != updated.favorite:
+            # Otro escritor cambió la BD entre la carga y el conmutado: la
+            # UI sigue el estado que devolvió el catálogo.
+            final = with_favorite_tag(photo, persisted)
+            self._apply_photo_update(final)
+        message = "favorito" if final.favorite else "sin favorito"
         self.status.show_message(message, 2000)
 
     def shutdown_background_work(self) -> None:
@@ -2059,12 +2107,16 @@ class PhotoWindow(QMainWindow):
         ``Ctrl+q``, ``:q`` y ⌘Q salen del bucle de eventos sin pasar por el
         ``closeEvent``, y los timers del populate por lotes y el pool de
         decodificación del visor deben quedar muertos en toda vía de
-        salida. El ``waitForDone`` va acotado: una tarea que lo supere
-        acaba su emit bajo el guardia de su módulo (descarta el resultado).
+        salida. ``_closing`` es terminal y bloquea el trabajo que llegue
+        tarde; el ``waitForDone`` va acotado y registra si expira.
         """
+        self._closing = True
+        self._visible_timer.stop()
+        self._g_timer.stop()
         self._cancel_populate()
         self._loader_pool.clear()
-        self._loader_pool.waitForDone(2000)
+        if not self._loader_pool.waitForDone(2000):
+            logger.warning("quedan decodificaciones del visor al cerrar")
 
     def closeEvent(self, event):
         # Trabajo en fondo (T2.6): sin timers de populate ni tareas del

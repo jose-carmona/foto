@@ -8,6 +8,7 @@ cierre a mitad sin errores. Incluye la regresión de la salida por
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -26,7 +27,7 @@ from foto.ui import app as app_module
 from foto.ui import window as window_module
 from foto.ui.canvas import ImageLoadTask
 from foto.ui.grid import THUMB_H, THUMB_W
-from foto.ui.models import LocationStatus, Photo
+from foto.ui.models import LocationStatus, Photo, PhotoTag
 from foto.ui.thumbnails import ThumbnailTask
 from foto.ui.window import PhotoWindow
 
@@ -193,6 +194,83 @@ def test_search_works_mid_populate(qapp, progresivo):
         window.close()
 
 
+def test_live_search_survives_populate(qapp, progresivo):
+    """La búsqueda viva escrita entre lotes no se pierde al terminar (A3)."""
+    window = _ventana(qapp, FIVE_PHOTOS)
+    try:
+        assert _bombear(qapp, lambda: len(window._grid_items) >= 2)
+
+        # Solo el filtro vivo: ``search_text`` sigue siendo la consulta
+        # confirmada (vacía).
+        window._apply_filter("a.jpg")
+        assert window.search_text == ""
+
+        assert _bombear(qapp, lambda: not window._populate_active)
+        assert window._filter_text == "a.jpg"
+        assert window.search_text == ""
+        assert window._visible_keys_cache == [FIVE_PHOTOS[0].key]
+    finally:
+        window.close()
+
+
+def test_cancel_search_restores_committed_filter(qapp):
+    """Cancelar con Esc vuelve al texto confirmado, no al vivo (A3)."""
+    window = _ventana(qapp, FIVE_PHOTOS)
+    try:
+        window._commit_search("a.jpg")
+        assert window._visible_keys_cache == [FIVE_PHOTOS[0].key]
+
+        window._apply_filter("b.jpg")
+        assert window._visible_keys_cache == [FIVE_PHOTOS[1].key]
+
+        window._cancel_prompt("search")
+
+        assert window._filter_text == "a.jpg"
+        assert window.search_text == "a.jpg"
+        assert window._visible_keys_cache == [FIVE_PHOTOS[0].key]
+    finally:
+        window.close()
+
+
+def test_sort_mid_populate_keeps_live_filter(qapp, progresivo):
+    """``:sort`` a medio populate conserva la consulta viva (A3)."""
+    window = _ventana(qapp, FIVE_PHOTOS)
+    try:
+        assert _bombear(qapp, lambda: len(window._grid_items) >= 2)
+        window._apply_filter("a.jpg")
+
+        window._sort_grid("camera")
+
+        assert _bombear(qapp, lambda: not window._populate_active)
+        assert window._filter_text == "a.jpg"
+        assert window._visible_keys_cache == [FIVE_PHOTOS[0].key]
+    finally:
+        window.close()
+
+
+def test_tag_filter_mid_populate_keeps_live_filter(qapp, progresivo):
+    """``:tag`` a medio populate compone con la consulta viva (A3)."""
+    fav = PhotoTag(name="fav", kind="system", status="confirmed", source="manual")
+    photos = [
+        _photo("a.jpg", "2024-05-01 08:00", tags=(fav,)),
+        _photo("b.jpg", "2024-05-02 08:00", tags=(fav,)),
+        _photo("c.jpg", "2024-05-03 08:00"),
+    ]
+    window = _ventana(qapp, photos)
+    try:
+        assert _bombear(qapp, lambda: len(window._grid_items) >= 2)
+        window._apply_filter("a.jpg")
+
+        window._set_tag_filter("fav")
+
+        assert _bombear(qapp, lambda: not window._populate_active)
+        assert window._filter_text == "a.jpg"
+        assert window._tag_filter == "fav"
+        assert window._visible_keys_cache == [photos[0].key]
+    finally:
+        window.close()
+
+
 def test_sort_mid_populate_does_not_lose_the_cursor(qapp, progresivo):
     """``:sort`` durante un populate cancela la sesión vieja y no pierde nada."""
     window = _ventana(qapp, FIVE_PHOTOS)
@@ -248,7 +326,62 @@ def test_close_mid_populate_leaves_no_live_timers(qapp, progresivo):
     assert window._populate_active is False
     assert window._populate_state is None
     assert not window._populate_timer.isActive()
+    assert not window._visible_timer.isActive()
+    assert not window._g_timer.isActive()
     qapp.processEvents()  # nada más entra por el bucle: sin errores
+
+
+def test_shutdown_is_idempotent(qapp):
+    """El apagado puede repetirse (``closeEvent`` + ``aboutToQuit``)."""
+    window = _ventana(qapp, FIVE_PHOTOS)
+    try:
+        window._visible_timer.start()
+        window._g_timer.start()
+
+        window.shutdown_background_work()
+        window.shutdown_background_work()
+
+        assert window._closing is True
+        assert not window._visible_timer.isActive()
+        assert not window._g_timer.isActive()
+    finally:
+        window.close()
+
+
+def test_late_populate_batch_after_shutdown_is_ignored(qapp, progresivo):
+    """El trabajo que llega tras el apagado no toca rejilla ni timers (A5)."""
+    pedidas: list = []
+    window = PhotoWindow(
+        FIVE_PHOTOS,
+        thumbnails={},
+        placeholder_icon=None,
+        thumbnail_loader=lambda requests: pedidas.append(requests),
+        title="test",
+        initial_panel_visible=False,
+        grid_row=True,
+    )
+    try:
+        assert _bombear(qapp, lambda: len(window._grid_items) >= 2)
+        window.shutdown_background_work()
+        items = len(window._grid_items)
+        filas = list(window.grid._visible_rows)
+        pedidas.clear()
+
+        window._populate_next_batch()
+        window._schedule_visible_thumbnails()
+        window._request_visible_thumbnails()
+        window._clear_g_pending()
+        qapp.processEvents()
+
+        assert len(window._grid_items) == items
+        assert window.grid._visible_rows == filas
+        assert pedidas == []
+        assert not window._populate_timer.isActive()
+        assert not window._visible_timer.isActive()
+        assert not window._g_timer.isActive()
+        assert window._populate_state is None
+    finally:
+        window.close()
 
 
 # ----------------------------------------------------------------------
@@ -307,6 +440,42 @@ def test_worker_reports_load_failures(qapp, tmp_path, monkeypatch):
     worker.load()
 
     assert results == ["No se pudo abrir el catálogo: boom"]
+
+
+def test_worker_reports_sqlite_errors(qapp, tmp_path, monkeypatch):
+    """Un ``sqlite3.Error`` del catálogo llega por ``failed`` (A2)."""
+
+    def fake_load_library(path, meta, *, should_continue=None):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(app_module, "load_library", fake_load_library)
+    worker = app_module.LibraryLoadWorker(tmp_path, tmp_path)
+    results: list = []
+    worker.loaded.connect(lambda *a: results.append("loaded"))
+    worker.failed.connect(lambda m: results.append(m))
+
+    worker.load()
+
+    assert results == ["database is locked"]
+
+
+def test_worker_reports_unexpected_errors(qapp, tmp_path, monkeypatch):
+    """Ninguna excepción escapa del worker: también llega por ``failed``."""
+
+    def fake_load_library(path, meta, *, should_continue=None):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(app_module, "load_library", fake_load_library)
+    worker = app_module.LibraryLoadWorker(tmp_path, tmp_path)
+    results: list = []
+    worker.loaded.connect(lambda *a: results.append("loaded"))
+    worker.failed.connect(lambda m: results.append(m))
+
+    worker.load()
+
+    assert results
+    assert results[0].startswith("Fallo inesperado al cargar el catálogo:")
+    assert "boom" in results[0]
 
 
 # ----------------------------------------------------------------------
@@ -407,6 +576,57 @@ def test_main_window_reports_a_missing_catalog_after_the_show(
         assert "foto-index" in avisos[0][2]
         assert salidas == [1]
         assert window._library_loading is False
+    finally:
+        window.close()
+
+
+def test_worker_thread_stops_after_success(qapp, tmp_path):
+    """El hilo de carga termina al entregar ``loaded`` (A2)."""
+    from tests.conftest import write_image
+
+    root = tmp_path / "biblioteca"
+    write_image(root / "2024" / "una.jpg", b"visibles")
+    metadata = _seed_catalog(root, "sha256:" + "d" * 64)
+
+    window = app_module.MainWindow(root, _config(root), metadata)
+    try:
+        window.show()
+        qapp.processEvents()
+        assert _bombear(
+            qapp,
+            lambda: len(window.photos) == 1
+            and not window._loader_thread.isRunning(),
+        ), "el hilo de carga siguió vivo tras el éxito"
+    finally:
+        window.close()
+
+
+def test_worker_thread_stops_after_failure(qapp, tmp_path, monkeypatch):
+    """Y también termina cuando la carga falla (A2)."""
+    root = tmp_path / "biblioteca"
+    metadata = root / ".foto"
+    metadata.mkdir(parents=True)
+
+    def failing_load_library(path, meta, *, should_continue=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app_module, "load_library", failing_load_library)
+    avisos: list = []
+    salidas: list = []
+    monkeypatch.setattr(
+        app_module.QMessageBox, "critical", lambda *a, **k: avisos.append(a)
+    )
+    monkeypatch.setattr(
+        app_module.QApplication, "exit", lambda code=0: salidas.append(code)
+    )
+
+    window = app_module.MainWindow(root, _config(root), metadata)
+    try:
+        window.show()
+        qapp.processEvents()
+        assert _bombear(qapp, lambda: bool(salidas)), "no llegó el fallo"
+        assert avisos
+        assert not window._loader_thread.isRunning()
     finally:
         window.close()
 

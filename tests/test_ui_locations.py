@@ -241,6 +241,38 @@ def test_locations_command_toggles_the_panel(qapp, library):
     window.close()
 
 
+def test_help_opens_over_locations(qapp, library):
+    """Con ubicaciones abierto, ``?`` lo cierra y abre la ayuda (A4)."""
+    window = _window(qapp, library)
+    window.show()
+    try:
+        window._run_command("locations")
+        assert window.locations_overlay.isVisible()
+
+        window._dispatch("help")
+
+        assert window.help_overlay.isVisible()
+        assert not window.locations_overlay.isVisible()
+    finally:
+        window.close()
+
+
+def test_escape_closes_locations_without_opening_help(qapp, library):
+    """Esc solo cierra ubicaciones: no abre la ayuda por accidente (A4)."""
+    window = _window(qapp, library)
+    window.show()
+    try:
+        window._run_command("locations")
+        assert window.locations_overlay.isVisible()
+
+        window._dispatch("escape")
+
+        assert not window.locations_overlay.isVisible()
+        assert not window.help_overlay.isVisible()
+    finally:
+        window.close()
+
+
 # ----------------------------------------------------------------------
 # T4.3 — placeholders fantasma: visor desactivado con mensaje claro
 # ----------------------------------------------------------------------

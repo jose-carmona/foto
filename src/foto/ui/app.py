@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable
@@ -386,9 +387,21 @@ class LibraryLoadWorker(QObject):
             )
         except LibraryLoadCancelled:
             return
+        except sqlite3.Error as exc:
+            if not self._cancelled:
+                self.failed.emit(str(exc))
+            return
         except (OSError, RuntimeError) as exc:
             if not self._cancelled:
                 self.failed.emit(str(exc))
+            return
+        except Exception as exc:  # límite del worker: ninguna excepción escapa
+            # Ninguna excepción puede escapar de un hilo de fondo: si lo
+            # hiciera, el slot moriría y la ventana quedaría en «Cargando…»
+            # para siempre. Se registra y se entrega por ``failed``.
+            logger.exception("fallo inesperado al cargar el catálogo")
+            if not self._cancelled:
+                self.failed.emit(f"Fallo inesperado al cargar el catálogo: {exc}")
             return
         if self._cancelled:
             return
@@ -448,6 +461,10 @@ class MainWindow(PhotoWindow):
         self._loader.moveToThread(self._loader_thread)
         self._loader.loaded.connect(self._on_library_loaded)
         self._loader.failed.connect(self._on_library_failed)
+        # El hilo es corto: termina al entregar el resultado, en éxito y en
+        # fallo (``quit`` es seguro e idempotente).
+        self._loader.loaded.connect(self._loader_thread.quit)
+        self._loader.failed.connect(self._loader_thread.quit)
         self._loader_thread.started.connect(self._loader.load)
         self._loader_thread.finished.connect(self._loader.deleteLater)
         app = QApplication.instance()
@@ -485,7 +502,8 @@ class MainWindow(PhotoWindow):
             loader.cancel()
         if thread is not None and thread.isRunning():
             thread.quit()
-            thread.wait(10_000)
+            if not thread.wait(10_000):
+                logger.warning("el worker de carga no terminó en 10 s")
         service = getattr(self, "_thumbnail_service", None)
         if service is not None:
             service.shutdown()
