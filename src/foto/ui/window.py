@@ -529,7 +529,6 @@ class PhotoWindow(QMainWindow):
         else:
             self.banner.hide()
 
-        self._populate_grid(photos)
         self._update_empty_state()
         self.grid.currentItemChanged.connect(self._on_current_changed)
         self.grid.itemDoubleClicked.connect(self._on_grid_double_clicked)
@@ -666,8 +665,8 @@ class PhotoWindow(QMainWindow):
         rejilla, con ``append_visible_rows``), de modo que búsqueda,
         favoritos y navegación son coherentes también a medio populate. Las
         filas visibles de este lote se registran incrementalmente: la
-        recalculación completa ocurre solo al terminar, en
-        ``_refresh_visible_cache``.
+        pasada única del filtro normaliza el resto al terminar, en
+        ``_finish_populate``.
         """
         state = self._populate_state
         if state is None:
@@ -801,21 +800,6 @@ class PhotoWindow(QMainWindow):
             not needle or needle in self._search_index.get(photo.key, "")
         ) and (tag_filter is None or photo_matches_tag_name(photo, tag_filter))
 
-    def _update_group_headers(self) -> None:
-        """Oculta las cabeceras de grupos sin fotos visibles."""
-        visible_groups: set[str] = set()
-        for row in range(self.grid.count()):
-            item = self.grid.item(row)
-            if item is None or item.data(HEADER_ROLE) or item.isHidden():
-                continue
-            visible_groups.add(str(item.data(GROUP_ROLE) or ""))
-        for row in range(self.grid.count()):
-            item = self.grid.item(row)
-            if item is None or not item.data(HEADER_ROLE):
-                continue
-            group_key = str(item.data(GROUP_ROLE) or "")
-            item.setHidden(group_key not in visible_groups)
-
     def _update_row_header(self) -> None:
         """En el visor muestra sobre la fila el grupo de la foto actual.
 
@@ -939,7 +923,9 @@ class PhotoWindow(QMainWindow):
         if target is not None:
             self.grid.setCurrentItem(target)
             self.grid.scrollToItem(target, QAbstractItemView.EnsureVisible)
-        else:
+        elif self.panel_visible:
+            # El panel oculto no se reconstruye (R4): al abrirlo,
+            # ``set_photo`` deja el estado correcto.
             self.panel.show_empty("Sin selección")
 
     def _after_set_photos(
@@ -1103,6 +1089,9 @@ class PhotoWindow(QMainWindow):
         if not self.panel_visible:
             self.panel_visible = True
             self._layout_content()
+            # El panel oculto no se refresca en cada selección (R4): al abrirlo
+            # por Tab muestra la foto actual, igual que ``toggle_panel``.
+            self.panel.set_photo(self._current_photo())
         self.panel.focus_scroll()
 
     def _current_photo(self) -> Photo | None:
@@ -1113,23 +1102,6 @@ class PhotoWindow(QMainWindow):
 
     def _grid_item(self, key: str) -> QListWidgetItem | None:
         return self._grid_items.get(key)
-
-    def _refresh_visible_cache(self) -> None:
-        """Recalcula las fotos no ocultas y su posición para navegación O(1)."""
-        rows: list[int] = []
-        keys: list[str] = []
-        for row in range(self.grid.count()):
-            item = self.grid.item(row)
-            if item is None or item.isHidden():
-                continue
-            key = item.data(PHOTO_ROLE)
-            if not key:
-                continue
-            rows.append(row)
-            keys.append(str(key))
-        self.grid.set_visible_rows(rows)
-        self._visible_keys_cache = keys
-        self._visible_positions_by_key = {key: index for index, key in enumerate(keys)}
 
     def _remember_thumbnail(self, key: str, icon: QIcon) -> None:
         if key in self.thumbnails:
@@ -1425,7 +1397,11 @@ class PhotoWindow(QMainWindow):
             return
         photo = self._current_photo()
         self._update_row_header()
-        self.panel.set_photo(photo)
+        if self.panel_visible:
+            # El panel oculto no se reconstruye en cada selección (R4): al
+            # abrirlo, ``toggle_panel`` y ``_focus_panel`` lo rellenan con la
+            # foto actual.
+            self.panel.set_photo(photo)
         filename = photo.name if photo else ""
         self.status.set_counts(self._visible_count(), len(self.photos), filename)
         if self._viewer_visible:
@@ -1600,16 +1576,32 @@ class PhotoWindow(QMainWindow):
             self.empty_label.hide()
 
     def _apply_filter(self, text: str) -> None:
-        # El texto recibido es la fuente de esta pasada y queda registrado
-        # como filtro efectivo para los caminos que no son el filtro
-        # inmediato (populate, sort y filtro de etiqueta; A3).
+        """Filtra la rejilla en una sola pasada (R2).
+
+        El texto recibido es la fuente de esta pasada y queda registrado
+        como filtro efectivo para los caminos que no son el filtro
+        inmediato (populate, sort y filtro de etiqueta; A3). El único
+        recorrido de la rejilla calcula a la vez la visibilidad de cada
+        foto, las filas/claves/posiciones visibles, los grupos con fotos
+        visibles y la primera foto visible para la selección de respaldo;
+        ``setHidden`` solo se llama cuando el valor cambia.
+        """
         self._filter_text = text
         needle = text.strip().casefold()
         tag_filter = self._tag_filter
-        visible_items: list[QListWidgetItem] = []
+        first_visible: QListWidgetItem | None = None
+        rows: list[int] = []
+        keys: list[str] = []
+        positions: dict[str, int] = {}
+        visible_groups: set[str] = set()
+        headers: list[QListWidgetItem] = []
+
         for row in range(self.grid.count()):
             item = self.grid.item(row)
-            if item is None or item.data(HEADER_ROLE):
+            if item is None:
+                continue
+            if item.data(HEADER_ROLE):
+                headers.append(item)
                 continue
             photo = self.photos.get(item.data(PHOTO_ROLE))
             if photo is None:
@@ -1621,22 +1613,42 @@ class PhotoWindow(QMainWindow):
                 # la regla es la misma que aplica el populate por lotes
                 # (T2.4) al crear cada ítem.
                 visible = self._matches_filter(photo, needle, tag_filter)
-            item.setHidden(not visible)
-            if visible:
-                visible_items.append(item)
+            hidden = not visible
+            if item.isHidden() != hidden:
+                item.setHidden(hidden)
+            if not visible:
+                continue
+            if first_visible is None:
+                first_visible = item
+            group_key = str(item.data(GROUP_ROLE) or "")
+            visible_groups.add(group_key)
+            key = item.data(PHOTO_ROLE)
+            if key:
+                positions[str(key)] = len(keys)
+                keys.append(str(key))
+                rows.append(row)
 
-        self._update_group_headers()
-        self._refresh_visible_cache()
+        for header in headers:
+            hidden = str(header.data(GROUP_ROLE) or "") not in visible_groups
+            if header.isHidden() != hidden:
+                header.setHidden(hidden)
+
+        self.grid.set_visible_rows(rows)
+        self._visible_keys_cache = keys
+        self._visible_positions_by_key = positions
 
         current = self.grid.currentItem()
         if current is not None and (current.data(HEADER_ROLE) or current.isHidden()):
             current = None
         if current is None:
-            if visible_items:
-                self.grid.setCurrentItem(visible_items[0])
+            if first_visible is not None:
+                self.grid.setCurrentItem(first_visible)
             else:
                 self.grid.setCurrentRow(-1)
-                self.panel.show_empty("Sin coincidencias")
+                if self.panel_visible:
+                    # El panel oculto no se reconstruye (R4): al abrirlo,
+                    # ``set_photo`` deja el estado correcto.
+                    self.panel.show_empty("Sin coincidencias")
 
         if self._viewer_visible and self._visible_count() == 0:
             self._close_viewer()

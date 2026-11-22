@@ -19,6 +19,24 @@ Condiciones medidas (cada una con repetición, se reporta el mínimo):
     carga corre en el hilo worker y el bucle de eventos se bombea como en
     la app real. No se cuentan la construcción del catálogo ni la
     importación de módulos (coste fijo, no del pipeline).
+(d) ``--interaccion`` (fase 2 del plan de revisión de UI): sobre una
+    ``MainWindow`` ya poblada completamente, mide cada evento de
+    interacción como *tiempo desde antes de la llamada hasta después de
+    ``app.processEvents()``* —no solo la función interna—:
+
+    - ``j``/``k``: 100 ``QTest.keyClick`` sobre la rejilla, alternando
+      ambas teclas y partiendo de una foto intermedia (evento →
+      selección con repintado y scroll incluidos).
+    - filtro: 50 actualizaciones de ``search_changed`` con consultas de
+      1–3 letras sobre nombres sintéticos (``0``, ``00``, ``000``, ``1``,
+      ``12``, ``IMG``…), terminando en ``""`` (evento → visibilidad,
+      cabeceras, caché de visibles y recuentos).
+
+    Cada modo se repite ``--repeticiones`` rondas y las muestras se
+    agregan para reportar **p50, p95 y máximo**, con el veredicto
+    OK/FALLA del umbral **p95 < 50 ms**. Si la geometría de la rejilla no
+    es fiable en ``offscreen`` (``_visual_rows()`` es ``None``), la cifra
+    de ``j``/``k`` no se presenta como válida.
 
 Condiciones del filesystem, documentadas (afectan a las rutas y a la
 disponibilidad):
@@ -34,6 +52,7 @@ Uso exacto::
     QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py
     QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py --originales
     QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py --fotos 25000 --repeticiones 3
+    QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py --fotos 25000 --repeticiones 3 --interaccion
 
 El directorio temporal se borra al terminar (``--keep`` para conservarlo
 e inspeccionar la biblioteca generada). El script fuerza la plataforma
@@ -44,6 +63,7 @@ la medición sea explícita.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import shutil
 import statistics
@@ -169,6 +189,90 @@ def _formato_segundos(segundos: float) -> str:
     return f"{segundos * 1000:8.1f} ms"
 
 
+def _porcentil(muestras: list[float], q: float) -> float:
+    """Percentil por rango cercano (p50, p95, …) sobre muestras en segundos."""
+    ordenadas = sorted(muestras)
+    indice = min(len(ordenadas) - 1, max(0, math.ceil(q * len(ordenadas)) - 1))
+    return ordenadas[indice]
+
+
+# Umbral de la fase 2 (§ 5 del plan): p95 < 50 ms para j/k y para filtro.
+UMBRAL_P95 = 0.050
+
+
+def _linea_interaccion(muestras: list[float], *, fiable: bool = True) -> str:
+    """p50/p95/máx y veredicto OK/FALLA del umbral de la fase 2."""
+    p50 = _porcentil(muestras, 0.5)
+    p95 = _porcentil(muestras, 0.95)
+    maximo = max(muestras)
+    veredicto = "OK" if p95 < UMBRAL_P95 else "FALLA"
+    if not fiable:
+        veredicto = "n/a (geometría no fiable)"
+    return (
+        f"p50 {_formato_segundos(p50)} · p95 {_formato_segundos(p95)} · "
+        f"máx {_formato_segundos(maximo)} · umbral p95<{UMBRAL_P95 * 1000:.0f} ms: "
+        f"{veredicto}"
+    )
+
+
+def _interaccion(
+    app, raiz: Path, metadata: Path, esperado: int, repeticiones: int
+) -> tuple[bool, list[float], list[float]]:
+    """Modo (d): j/k y filtro sobre una ``MainWindow`` poblada del todo.
+
+    Devuelve ``(geometria_fiable, muestras_jk, muestras_filtro)``; cada
+    muestra es el tiempo evento → ``processEvents`` (ver docstring del (d)).
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    window = MainWindow(raiz, _config(raiz), metadata)
+    window.show()
+    app.processEvents()
+    while window._populate_active or len(window._grid_items) < esperado:
+        app.processEvents()
+        time.sleep(0.001)
+
+    # Si la geometría no es fiable en offscreen, las cifras de j/k no se
+    # presentan como válidas (se miden igual, con el veredicto n/a).
+    geometria_fiable = window.grid._visual_rows() is not None
+    if not geometria_fiable:
+        print(
+            "aviso: la geometría de la rejilla no es fiable en offscreen "
+            "(_visual_rows() es None); la cifra de j/k no se presenta como válida"
+        )
+
+    filtros = ["0", "00", "000", "1", "12", "IMG"]
+    jk: list[float] = []
+    filtro: list[float] = []
+    try:
+        for _ in range(repeticiones):
+            # Partir siempre de una foto intermedia.
+            claves = window._visible_keys_cache
+            window._select_key(claves[len(claves) // 2])
+            app.processEvents()
+            for indice in range(100):
+                tecla = Qt.Key_J if indice % 2 == 0 else Qt.Key_K
+                inicio = time.perf_counter()
+                QTest.keyClick(window.grid, tecla)
+                app.processEvents()
+                jk.append(time.perf_counter() - inicio)
+            for indice in range(50):
+                texto = filtros[indice % len(filtros)]
+                inicio = time.perf_counter()
+                window.status.search_changed.emit(texto)
+                app.processEvents()
+                filtro.append(time.perf_counter() - inicio)
+            # Cerrar la ronda con el filtro limpio.
+            inicio = time.perf_counter()
+            window.status.search_changed.emit("")
+            app.processEvents()
+            filtro.append(time.perf_counter() - inicio)
+    finally:
+        window.close()
+    return geometria_fiable, jk, filtro
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fotos", type=int, default=25_000)
@@ -177,6 +281,9 @@ def main() -> None:
     parser.add_argument("--repeticiones", type=int, default=3)
     parser.add_argument("--keep", action="store_true",
                         help="conserva la biblioteca temporal para inspección")
+    parser.add_argument("--interaccion", action="store_true",
+                        help="mide j/k y el filtro incremental (fase 2); sin el "
+                             "flag el comportamiento (a)/(b)/(c) no cambia")
     args = parser.parse_args()
 
     from PySide6.QtWidgets import QApplication
@@ -201,6 +308,17 @@ def main() -> None:
         # El umbral del populate por lotes (T2.4) se sube para forzar el
         # camino monolítico y que la cifra siga siendo la del paso 1.
         app = QApplication.instance() or QApplication([])
+
+        # (d) interacción (fase 2): j/k y filtro, con percentiles y umbral.
+        if args.interaccion:
+            fiable, jk, filtro = _interaccion(
+                app, raiz, metadata, args.fotos, args.repeticiones
+            )
+            print(f"(d) interacción ({args.fotos} fotos, {args.repeticiones} rondas):")
+            print(f"  j/k    ({len(jk)} pulsaciones): {_linea_interaccion(jk, fiable=fiable)}")
+            print(f"  filtro ({len(filtro)} eventos):    {_linea_interaccion(filtro)}")
+            return
+
         from foto.ui import window as window_module
         from foto.ui.app import _placeholder_icon
         from foto.ui.window import PhotoWindow

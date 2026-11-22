@@ -378,6 +378,64 @@ def test_escape_closes_the_command_without_executing_it(qapp):
 
 
 # ----------------------------------------------------------------------
+# 4b. Panel oculto: no se reconstruye en cada selección (R4)
+# ----------------------------------------------------------------------
+def test_hidden_panel_is_not_rebuilt_on_navigation(qapp):
+    window = _make_window(qapp)
+    assert not window.panel_visible
+    llamadas: list = []
+    window.panel.set_photo = lambda photo: llamadas.append(photo)
+
+    window.grid.setCurrentItem(window._grid_items["playa.jpg"])
+    qapp.processEvents()
+
+    assert llamadas == []
+    window.close()
+
+
+def test_opening_panel_shows_current_photo(qapp):
+    window = _make_window(qapp)
+    window.grid.setCurrentItem(window._grid_items["playa.jpg"])
+    qapp.processEvents()
+    llamadas: list = []
+    window.panel.set_photo = lambda photo: llamadas.append(photo)
+
+    window.toggle_panel()
+    qapp.processEvents()
+
+    assert [photo.key for photo in llamadas] == ["playa.jpg"]
+    window.close()
+
+
+def test_tab_opening_panel_refreshes_the_hidden_panel(qapp):
+    window = _make_window(qapp)
+    window.grid.setCurrentItem(window._grid_items["playa.jpg"])
+    qapp.processEvents()
+    llamadas: list = []
+    window.panel.set_photo = lambda photo: llamadas.append(photo)
+
+    window._focus_panel()
+    qapp.processEvents()
+
+    assert [photo.key for photo in llamadas] == ["playa.jpg"]
+    window.close()
+
+
+def test_visible_panel_is_still_updated_on_navigation(qapp):
+    window = _make_window(qapp)
+    window.toggle_panel()  # queda visible; el refresco de apertura no cuenta
+    qapp.processEvents()
+    llamadas: list = []
+    window.panel.set_photo = lambda photo: llamadas.append(photo)
+
+    window.grid.setCurrentItem(window._grid_items["ciudad.jpg"])
+    qapp.processEvents()
+
+    assert [photo.key for photo in llamadas] == ["ciudad.jpg"]
+    window.close()
+
+
+# ----------------------------------------------------------------------
 # 5. Foco
 # ----------------------------------------------------------------------
 def test_opening_and_closing_the_viewer_returns_focus_to_the_grid(qapp):

@@ -6,12 +6,11 @@ import argparse
 import logging
 import os
 import sqlite3
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QProcess, QSize, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
@@ -561,6 +560,31 @@ class MainWindow(PhotoWindow):
         logger.debug("Miniatura fallida para %s: %s", key, message)
 
 
+def _activate_window(window, *, macos: bool) -> None:
+    """Trata de llevar la ventana al frente, sin bloquear el hilo de UI (R6).
+
+    ``raise_``/``activateWindow`` son locales y baratos; en macOS se añade
+    una petición de activación vía ``osascript`` con ``QProcess.startDetached``
+    —asíncrona, sin espera ni zombis— porque Cocoa no siempre atiende al
+    ``activateWindow`` propio en el arranque. Se llama una sola vez tras
+    ``show()``; fuera de macOS no se lanza ningún proceso.
+    """
+    window.raise_()
+    window.activateWindow()
+    if not macos:
+        return
+    QProcess.startDetached(
+        "osascript",
+        [
+            "-e",
+            (
+                'tell application "System Events" to set frontmost of '
+                f'(first process whose unix id is {os.getpid()}) to true'
+            ),
+        ],
+    )
+
+
 def main() -> None:
     args = _build_ui_parser().parse_args(sys.argv[1:])
     app = QApplication(sys.argv)
@@ -639,45 +663,11 @@ def main() -> None:
         if screen is not None:
             window.setGeometry(screen.availableGeometry())
         window.show()
-        window.raise_()
-        window.activateWindow()
         QApplication.processEvents()
-        try:
-            pid = os.getpid()
-            subprocess.run(
-                [
-                    "osascript",
-                    "-e",
-                    f'tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true',
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-        except OSError:
-            logger.debug("no se pudo activar la ventana")
-        def _focus():
-            try:
-                window.raise_()
-                window.activateWindow()
-                pid = os.getpid()
-                subprocess.run(
-                    [
-                        "osascript",
-                        "-e",
-                        f'tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true',
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-            except OSError:
-                logger.debug("no se pudo activar la ventana")
-        QTimer.singleShot(50, _focus)
+        _activate_window(window, macos=True)
     else:
         window.show()
-        window.raise_()
-        window.activateWindow()
+        _activate_window(window, macos=False)
     sys.exit(app.exec())
 
 

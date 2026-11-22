@@ -14,6 +14,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
+from foto.ui.grid import PhotoGrid
 from foto.ui.models import Photo
 from foto.ui.window import PhotoWindow
 
@@ -186,6 +187,101 @@ def test_viewer_row_shows_the_group_header(qapp):
     viewer_window._close_viewer()
     assert viewer_window._viewer_visible is False
     assert viewer_window.row_header.isHidden()
+
+
+# ----------------------------------------------------------------------
+# Caché de la geometría visual (R3)
+# ----------------------------------------------------------------------
+def test_vertical_navigation_reuses_the_layout_cache(qapp, window, monkeypatch):
+    """Dos ``j`` sin cambio de layout recalculan la geometría una sola vez."""
+    window.show()
+    qapp.processEvents()
+    window.grid._invalidate_layout_cache()
+
+    llamadas: list = []
+    original = PhotoGrid._compute_visual_layout
+
+    def espia(self):
+        llamadas.append(1)
+        return original(self)
+
+    monkeypatch.setattr(PhotoGrid, "_compute_visual_layout", espia)
+
+    inicial = window.grid.currentItem()
+    window._dispatch("j")
+    tras_primera = window.grid.currentItem()
+    window._dispatch("j")
+
+    assert len(llamadas) == 1
+    assert tras_primera is not inicial
+    assert window.grid.currentItem() is not tras_primera
+    window.close()
+
+
+def test_layout_cache_is_invalidated_on_resize_filter_and_sort(
+    qapp, window, monkeypatch
+):
+    """Resize, filtro y ``:sort`` invalidan la caché y el destino es correcto."""
+    window.show()
+    qapp.processEvents()
+    window.grid._invalidate_layout_cache()
+
+    llamadas: list = []
+    original = PhotoGrid._compute_visual_layout
+
+    def espia(self):
+        llamadas.append(1)
+        return original(self)
+
+    monkeypatch.setattr(PhotoGrid, "_compute_visual_layout", espia)
+
+    # Un resize cambia la composición: la caché se reconstruye.
+    window.resize(window.width() + 160, window.height())
+    qapp.processEvents()
+    _select(window, "farol.jpg")
+    window._dispatch("j")
+    assert llamadas == [1]
+    assert _current(window) == "estuario.jpg"
+    window._dispatch("j")
+    assert _current(window) == "claros.jpg"
+    llamadas.clear()
+
+    # Un filtro pasa por ``set_visible_rows``: la caché se reconstruye.
+    window._apply_filter("2024-06")
+    window._dispatch("j")
+    assert llamadas == [1]
+    assert _current(window) in {"duna.jpg", "estuario.jpg"}
+    llamadas.clear()
+
+    # Un ``:sort`` repuebla la rejilla: la caché se reconstruye y ``j``
+    # sigue moviéndose solo entre las fotos visibles del nuevo orden.
+    window._apply_filter("")
+    window._sort_grid("camera")
+    qapp.processEvents()
+    origen = window._visible_keys_cache[0]
+    _select(window, window.photos[origen].name)
+    window._dispatch("j")
+    assert llamadas == [1]
+    assert _current(window) != window.photos[origen].name
+    assert window._current_photo().key in window._visible_keys_cache
+    window.close()
+
+
+def test_vertical_navigation_after_filter_uses_the_new_rows(qapp, window):
+    """Con un filtro activo, ``j``/``k`` solo se mueven entre las visibles."""
+    window.show()
+    qapp.processEvents()
+    window._apply_filter("2024-06")
+    assert window._visible_count() == 2
+
+    _select(window, "estuario.jpg")
+    for _ in range(4):
+        window._dispatch("j")
+        assert _current(window) in {"duna.jpg", "estuario.jpg"}
+    for _ in range(4):
+        window._dispatch("k")
+        assert _current(window) in {"duna.jpg", "estuario.jpg"}
+    window.close()
 
 
 def test_viewer_row_header_hides_without_current_photo(qapp):

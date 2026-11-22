@@ -118,6 +118,33 @@ def test_small_library_populates_synchronously(qapp):
     window.close()
 
 
+def test_constructor_populates_the_grid_once(qapp, monkeypatch):
+    """El constructor popula la rejilla una sola vez (R1).
+
+    Regresión del doble populate: la llamada que ignoraba el resultado y
+    ocurría antes de conectar las señales ya no existe; queda la segunda,
+    que contempla el camino síncrono y el diferido.
+    """
+    llamadas: list[list[Photo]] = []
+    original = PhotoWindow._populate_grid
+
+    def espia(self, photos):
+        llamadas.append(list(photos))
+        return original(self, photos)
+
+    monkeypatch.setattr(PhotoWindow, "_populate_grid", espia)
+
+    window = _ventana(qapp, FIVE_PHOTOS)
+    try:
+        assert len(llamadas) == 1
+        assert llamadas[0] == FIVE_PHOTOS
+        assert len(window._grid_items) == 5
+        assert window._visible_count() == 5
+        assert window.grid.currentItem() is not None
+    finally:
+        window.close()
+
+
 def test_progressive_populate_inserts_in_batches(qapp, progresivo):
     """Por encima del umbral, la rejilla entra lote a lote y termina completa.
 
@@ -510,6 +537,59 @@ def _config(root: Path) -> AppConfig:
     return AppConfig(
         config_path=root / "config.toml", library_path=root, version=2
     )
+
+
+def test_macos_activation_does_not_block(qapp, monkeypatch):
+    """``_activate_window`` lanza ``osascript`` una sola vez y sin esperar (R6)."""
+    import os
+
+    llamadas: list = []
+
+    class FalsoQProcess:
+        @staticmethod
+        def startDetached(programa, argumentos):
+            llamadas.append((programa, list(argumentos)))
+
+    monkeypatch.setattr(app_module, "QProcess", FalsoQProcess)
+    window = _ventana(qapp, FIVE_PHOTOS)
+    try:
+        window.show()
+        app_module._activate_window(window, macos=True)
+
+        assert len(llamadas) == 1
+        programa, argumentos = llamadas[0]
+        assert programa == "osascript"
+        assert any(str(os.getpid()) in argumento for argumento in argumentos)
+        assert window.isVisible()
+    finally:
+        window.close()
+
+
+def test_activation_skips_osascript_off_macos(qapp, monkeypatch):
+    """Fuera de macOS no se lanza ``osascript`` (R6)."""
+    llamadas: list = []
+
+    class FalsoQProcess:
+        @staticmethod
+        def startDetached(*argumentos):
+            llamadas.append(argumentos)
+
+    monkeypatch.setattr(app_module, "QProcess", FalsoQProcess)
+    window = _ventana(qapp, FIVE_PHOTOS)
+    try:
+        window.show()
+        tocados: list = []
+        monkeypatch.setattr(window, "raise_", lambda: tocados.append("raise"))
+        monkeypatch.setattr(
+            window, "activateWindow", lambda: tocados.append("activate")
+        )
+
+        app_module._activate_window(window, macos=False)
+
+        assert tocados == ["raise", "activate"]
+        assert llamadas == []
+    finally:
+        window.close()
 
 
 def test_main_window_shows_a_loading_state_and_then_the_library(qapp, tmp_path):

@@ -204,6 +204,14 @@ class PhotoGrid(QListWidget):
         self._visible_rows: list[int] = []
         self._visible_positions: dict[int, int] = {}
         self._header_width = 0
+        # Caché de la geometría visual (R3): filas visuales, su geometría
+        # (top y centros X) y el índice de fila visual por fila visible.
+        # Solo depende del layout, no del scroll: se invalida en los puntos
+        # que cambian la composición (filas visibles, tamaño, tema, ancho de
+        # cabeceras) y se calcula perezosamente al primer movimiento.
+        self._visual_rows_cache: list[list[int]] | None = None
+        self._visual_geometry_cache: list[tuple[int, tuple[int, ...]]] | None = None
+        self._visual_row_by_row: dict[int, int] = {}
         self.setStyleSheet(GRID_QSS)
         palette = self.palette()
         palette.setColor(QPalette.Base, palette.color(QPalette.Window))
@@ -211,6 +219,7 @@ class PhotoGrid(QListWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._invalidate_layout_cache()
         self.update_header_widths()
 
     def mousePressEvent(self, event):
@@ -232,12 +241,14 @@ class PhotoGrid(QListWidget):
                 item.setSizeHint(QSize(width, GROUP_HEADER_H))
                 changed = True
         if changed:
+            self._invalidate_layout_cache()
             self.doItemsLayout()
 
     def set_visible_rows(self, rows: list[int]) -> None:
         """Cachea las filas no ocultas para navegar sin recorrer toda la lista."""
         self._visible_rows = rows
         self._visible_positions = {row: index for index, row in enumerate(rows)}
+        self._invalidate_layout_cache()
 
     def append_visible_rows(self, rows: list[int]) -> None:
         """Extiende la caché de filas visibles con las recién insertadas.
@@ -251,16 +262,55 @@ class PhotoGrid(QListWidget):
         self._visible_rows.extend(rows)
         for offset, row in enumerate(rows):
             self._visible_positions[row] = base + offset
+        self._invalidate_layout_cache()
 
     def retheme(self) -> None:
         palette = app_palette()
         palette.setColor(QPalette.Base, palette.color(QPalette.Window))
         reapply_style(self)
         self.setPalette(palette)
+        self._invalidate_layout_cache()
         self.viewport().update()
 
-    def _visual_rows(self) -> list[list[int]] | None:
-        """Agrupa las filas de fotos en líneas visuales usando la geometría real.
+    def _invalidate_layout_cache(self) -> None:
+        """Descarta la caché de geometría visual (R3).
+
+        La caché depende del layout, no del scroll: basta invalidarla en
+        los puntos que cambian la composición (filas visibles, tamaño,
+        tema, ancho de las cabeceras).
+        """
+        self._visual_rows_cache = None
+        self._visual_geometry_cache = None
+        self._visual_row_by_row = {}
+
+    def _visual_layout(
+        self,
+    ) -> tuple[
+        list[list[int]], list[tuple[int, tuple[int, ...]]], dict[int, int]
+    ] | None:
+        """Devuelve la caché de geometría visual o la construye (R3).
+
+        ``(filas_visuales, geometría, fila→índice)`` en una sola estructura
+        calculada perezosamente; ``None`` si la geometría aún no es fiable
+        (sin layout), igual que antes, sin cachear nada en ese caso.
+        """
+        if self._visual_rows_cache is None:
+            computed = self._compute_visual_layout()
+            if computed is None:
+                return None
+            self._visual_rows_cache, self._visual_geometry_cache, self._visual_row_by_row = computed
+        return (
+            self._visual_rows_cache,
+            self._visual_geometry_cache,
+            self._visual_row_by_row,
+        )
+
+    def _compute_visual_layout(
+        self,
+    ) -> tuple[
+        list[list[int]], list[tuple[int, tuple[int, ...]]], dict[int, int]
+    ] | None:
+        """Recorre la geometría real una vez: filas visuales, top y centros X.
 
         Con agrupación por fecha o cámara, las cabeceras ocupan la fila
         completa y la última fila de cada grupo puede ser parcial: las filas
@@ -269,7 +319,10 @@ class PhotoGrid(QListWidget):
         geometría aún no es fiable (sin layout).
         """
         rows: list[list[int]] = []
+        geometry: list[tuple[int, tuple[int, ...]]] = []
+        row_by_row: dict[int, int] = {}
         row: list[int] = []
+        centers: list[int] = []
         row_top: int | None = None
         for visible_row in self._visible_rows:
             item = self.item(visible_row)
@@ -281,19 +334,29 @@ class PhotoGrid(QListWidget):
             top = rect.top()
             if row and abs(top - row_top) > 2:
                 rows.append(row)
+                geometry.append((row_top, tuple(centers)))
                 row = []
+                centers = []
             if not row:
                 row_top = top
             row.append(visible_row)
+            row_by_row[visible_row] = len(rows)
+            centers.append(int(rect.center().x()))
         if row:
             rows.append(row)
-        return rows or None
+            geometry.append((row_top, tuple(centers)))
+        if not rows:
+            return None
+        return rows, geometry, row_by_row
 
-    def _row_center_x(self, visible_row: int) -> int:
-        item = self.item(visible_row)
-        if item is None:
-            return 0
-        return int(self.visualItemRect(item).center().x())
+    def _visual_rows(self) -> list[list[int]] | None:
+        """Filas visuales de la rejilla (envoltorio fino de ``_visual_layout``).
+
+        Lo usa el benchmark de interacción para comprobar que la geometría
+        es fiable antes de presentar cifras de ``j``/``k``.
+        """
+        layout = self._visual_layout()
+        return None if layout is None else layout[0]
 
     def move_selection(self, action: str) -> bool:
         if not self._visible_rows:
@@ -367,26 +430,21 @@ class PhotoGrid(QListWidget):
         cuentan: solo quedan en ``_visible_rows`` filas con fotos); el tamaño
         de página salta por altura de viewport. Como la línea destino puede
         tener menos fotos (cabecera que corta el flujo), la celda elegida es
-        la de centro horizontal más próximo a la columna actual.
+        la de centro horizontal más próximo a la columna actual. La geometría
+        sale de la caché del layout (R3): dos ``j`` seguidos sin cambio de
+        composición no vuelven a recorrer la rejilla; sin geometría fiable,
+        ``_move_indexed`` queda de respaldo.
         """
-        visual_rows = self._visual_rows()
         current_row = self._visible_rows[position]
-        if visual_rows is None:
-            return self._move_indexed(action, position)
         if self.item(current_row) is None:
             return False
-
-        row_index = 0
-        geometry: list[tuple[int, tuple[int, ...]]] = []
-        for index, row in enumerate(visual_rows):
-            if current_row in row:
-                row_index = index
-            geometry.append(
-                (
-                    self.visualItemRect(self.item(row[0])).top(),
-                    tuple(self._row_center_x(visible_row) for visible_row in row),
-                )
-            )
+        layout = self._visual_layout()
+        if layout is None:
+            return self._move_indexed(action, position)
+        visual_rows, geometry, row_by_row = layout
+        row_index = row_by_row.get(current_row, 0)
+        column = visual_rows[row_index].index(current_row)
+        current_x = geometry[row_index][1][column]
 
         page_rows = max(1, self.viewport().height() // ITEM_H)
         step_top = page_rows * ITEM_H
@@ -395,12 +453,11 @@ class PhotoGrid(QListWidget):
 
         target_index = vertical_row_target(action, geometry, row_index=row_index, step_top=step_top)
         # La línea destino puede tener menos fotos: elige la celda más
-        # cercana a la columna actual.
-        current_x = self._row_center_x(current_row)
-        visible_row = min(
-            visual_rows[target_index],
-            key=lambda row: abs(self._row_center_x(row) - current_x),
-        )
+        # cercana a la columna actual, con la geometría ya cacheada.
+        candidates = visual_rows[target_index]
+        centers = geometry[target_index][1]
+        best = min(range(len(candidates)), key=lambda i: abs(centers[i] - current_x))
+        visible_row = candidates[best]
         target = self._visible_positions.get(visible_row, position)
         self.setCurrentRow(visible_row)
         self.scrollToItem(self.currentItem(), QAbstractItemView.EnsureVisible)
