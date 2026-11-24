@@ -57,6 +57,7 @@ from foto.ui.keybindings import (
     KEY_RETURN,
     KEY_RIGHT,
     KEY_SLASH,
+    KEY_T,
     KEY_TAB,
     KEY_U,
     KEY_UP,
@@ -119,6 +120,7 @@ GRID_EXPECTATIONS = (
     (GRID, KEY_F1, "", "help"),
     (GRID, KEY_I, "", "panel"),
     (GRID, KEY_F, "", "favorite"),
+    (GRID, KEY_T, "", None),  # sin visor la tecla sigue muerta
     (GRID, KEY_M, "", "m"),  # segunda tecla del prefijo g m
     (GRID, KEY_Q, "", "close"),
     (GRID, KEY_Q, "cmd", None),
@@ -161,6 +163,10 @@ GRID_VIEWER_EXPECTATIONS = (
     (GRID_VIEWER, KEY_TAB, "", "focus_panel"),
     (GRID_VIEWER, KEY_ESCAPE, "", "escape"),
     (GRID_VIEWER, KEY_M, "", "m"),
+    (GRID_VIEWER, KEY_T, "", "toggle_tag_overlay"),
+    (GRID_VIEWER, KEY_T, "shift", None),
+    (GRID_VIEWER, KEY_T, "ctrl", None),
+    (GRID_VIEWER, KEY_T, "cmd", None),
 )
 
 PANEL_EXPECTATIONS = (
@@ -199,6 +205,10 @@ PANEL_EXPECTATIONS = (
     (PANEL, KEY_F1, "", "help"),
     (PANEL, KEY_I, "", "panel"),
     (PANEL, KEY_F, "", "favorite"),
+    (PANEL, KEY_T, "", "toggle_tag_overlay"),
+    (PANEL, KEY_T, "shift", None),
+    (PANEL, KEY_T, "ctrl", None),
+    (PANEL, KEY_T, "cmd", None),
     (PANEL, KEY_M, "", "m"),
     (PANEL, KEY_Q, "", "close"),
     (PANEL, KEY_Q, "ctrl", None),
@@ -240,6 +250,10 @@ VIEWER_EXPECTATIONS = (
     (VIEWER, KEY_ESCAPE, "", "escape"),
     (VIEWER, KEY_I, "", "panel"),
     (VIEWER, KEY_F, "", "favorite"),
+    (VIEWER, KEY_T, "", "toggle_tag_overlay"),
+    (VIEWER, KEY_T, "shift", None),
+    (VIEWER, KEY_T, "ctrl", None),
+    (VIEWER, KEY_T, "cmd", None),
     (VIEWER, KEY_M, "", "m"),
     (VIEWER, KEY_QUESTION, "", "help"),
     (VIEWER, KEY_F1, "", "help"),
@@ -265,6 +279,10 @@ WINDOW_EXPECTATIONS = (
     (WINDOW, KEY_I, "cmd", None),
     (WINDOW, KEY_ESCAPE, "", "escape"),
     (WINDOW, KEY_F, "", "favorite"),
+    (WINDOW, KEY_T, "", "toggle_tag_overlay"),
+    (WINDOW, KEY_T, "shift", None),
+    (WINDOW, KEY_T, "ctrl", None),
+    (WINDOW, KEY_T, "cmd", None),
     (WINDOW, KEY_M, "", "m"),
     (WINDOW, KEY_Q, "", "close"),
     (WINDOW, KEY_J, "", "j"),
@@ -333,7 +351,9 @@ def test_table_only_has_the_five_contexts():
 # Política unificada de modificadores (§7.3/R11)
 # ----------------------------------------------------------------------
 @pytest.mark.parametrize("context", CONTEXTS)
-@pytest.mark.parametrize("key", (KEY_J, KEY_TAB, KEY_ESCAPE, KEY_PLUS, KEY_G))
+@pytest.mark.parametrize(
+    "key", (KEY_J, KEY_TAB, KEY_ESCAPE, KEY_PLUS, KEY_G, KEY_T)
+)
 def test_control_and_command_annul_undeclared_keys(context, key):
     """Solo Ctrl+d/Ctrl+u (y Ctrl+q, que es QAction) admiten modificadores."""
     assert key_action(context, key, ctrl=True) is None

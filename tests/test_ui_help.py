@@ -41,6 +41,16 @@ def test_render_keeps_the_documented_shortcuts():
         assert fragment in html
 
 
+def test_help_documents_the_tag_overlay():
+    texto = _help_markdown()
+
+    assert "| `t` |" in texto
+    assert "tooltip" in texto
+    html = render_help(texto)
+    assert "\u00a0\u00a0t\u00a0\u00a0" in html
+    assert "rectángulos de etiquetas con región" in html
+
+
 def test_chips_are_not_duplicated():
     """Regresión: el texto de una ficha no debe repetirse dentro de ella."""
     html = render_help(_help_markdown())

@@ -15,7 +15,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from foto.storage.tags import Region, TagAssignment
+
 MAP_URL = "https://www.google.com/maps?q={lat},{lon}"
+
+
+def _ui_region(assignment: TagAssignment) -> Region | None:
+    """Región en el sistema de la UI: origen arriba-izquierda, `y` hacia abajo.
+
+    Las asignaciones con ``source='import'`` —tanto las de ``apple-import``
+    como las que reimporta ``foto-import``— guardan `y` desde abajo (convención
+    de ``ZDETECTEDFACE``, ADR 0009). Se convierten aquí, en la única frontera
+    núcleo/UI: el catálogo y ``foto-export`` conservan el valor de origen y no
+    cambia ningún fichero. El resto de fuentes ya usan la convención del ADR
+    0006 y pasan tal cual; ``foto-import`` vuelve a escribir la misma
+    coordenada, así que el viaje de ida y vuelta sigue siendo estable.
+    """
+    region = assignment.region
+    if region is None or assignment.source != "import":
+        return region
+    x, y, w, h = region
+    return (x, max(0.0, min(1.0, 1.0 - y - h)), w, h)
 
 
 @dataclass(frozen=True)
@@ -25,12 +45,16 @@ class PhotoTag:
     ``kind``/``status``/``source`` son los valores del esquema del catálogo
     (``system``/``free``, ``confirmed``/``suggested``/``rejected``,
     ``manual``/``ml``); las reglas de presentación deciden qué se muestra.
+    ``region`` es la región proporcional del visor en convención de la UI
+    (origen arriba-izquierda), o ``None`` para la foto completa; se añade al
+    final para no romper constructores existentes.
     """
 
     name: str
     kind: str
     status: str
     source: str
+    region: Region | None = None
 
 
 @dataclass(frozen=True)
@@ -123,7 +147,8 @@ class Photo:
         construye el objeto **una sola vez**. Sustituye a la copia campo a
         campo de ``_to_ui_photo``: la única conversión que queda es la de
         las etiquetas (``TagAssignment`` → ``PhotoTag``), que cambia de
-        forma en la frontera núcleo/UI.
+        forma en la frontera núcleo/UI. Ahí se normaliza también el origen
+        de `y` de las regiones importadas (ADR 0009).
         """
         converted = tuple(
             PhotoTag(
@@ -131,6 +156,7 @@ class Photo:
                 kind=tag.kind,
                 status=tag.status,
                 source=tag.source,
+                region=_ui_region(tag),
             )
             for tag in tags
         )

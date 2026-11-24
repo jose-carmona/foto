@@ -221,8 +221,18 @@ Notas:
   constraint del esquema: el esquema no liga `region` a `kind`. La misma
   persona puede convivir en la misma foto con y sin región (grupo y
   retrato); la unicidad es por región (Decisión 3).
-- El visor no pinta regiones en esta entrega y la región no se carga en el
-  modelo de UI: solo queda definido el dato.
+- La región se carga en el modelo de UI con la asignación y el visor pinta su
+  borde con `t`, con el nombre en el tooltip (revisión de 2026-11-24).
+
+> **Revisión (2026-11-24).** Origina en el prompt de rectángulos en el visor:
+> la región **sí viaja** desde `photo_tags` hasta `PhotoTag` y el visor **sí
+> pinta** el borde del rectángulo al pulsar `t`, con el nombre de la etiqueta
+> en el tooltip. Ni la definición proporcional `[0,1]`, ni el eje `y`, ni el
+> todo-o-nada, ni las reglas de estado (confirmed + suggested, nunca
+> rejected) cambian. Solo el borde se dibuja sobre la foto: el nombre sigue
+> disponible por teclado en la sección «Etiquetas» del panel. Las asignaciones
+> con `source='import'` llegan con `y` desde abajo (ADR 0009) y se normalizan
+> a esta convención en `Photo.from_catalog`, sin escribir en el catálogo.
 
 ### 8. Sustitución total del favorito
 

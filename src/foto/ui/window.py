@@ -113,6 +113,7 @@ from foto.ui.presentation import (
     photo_matches_tag_name,
     photo_search_text,
     sorted_photos,
+    visible_tag_regions,
     with_favorite_tag,
 )
 from foto.ui.theme import (
@@ -405,6 +406,10 @@ class PhotoWindow(QMainWindow):
         self.panel_visible = initial_panel_visible
         self.panel_overlay = False
         self._viewer_visible = False
+        # Interruptor de sesión del overlay de etiquetas: ni config.toml ni
+        # QSettings (ADR 0001). Sobrevive al cambio de foto y al cierre del
+        # visor; se pierde al reiniciar la aplicación.
+        self._tag_overlay_visible = False
         self._image_cache: dict[str, QPixmap] = {}
         self._image_cache_order: list[str] = []
         self._loading_keys: set[str] = set()
@@ -1453,9 +1458,16 @@ class PhotoWindow(QMainWindow):
             return None
         return icon.pixmap(QSize(THUMB_W, THUMB_H))
 
+    def _sync_tag_regions(self, photo: Photo) -> None:
+        """Entrega al lienzo las regiones visibles de la foto actual."""
+        self.viewer.canvas.set_tag_regions(visible_tag_regions(photo))
+
     def _show_viewer_photo(self, photo: Photo) -> None:
         if not self._viewer_visible:
             return
+        # Antes del retorno anticipado: la misma foto con imagen ya cargada
+        # también debe llevar sus regiones al lienzo.
+        self._sync_tag_regions(photo)
         if photo.key == self._displayed_key and self.viewer.canvas.has_image():
             return
         cached = self._image_cache.get(photo.key)
@@ -1862,6 +1874,7 @@ class PhotoWindow(QMainWindow):
         registry["search"] = self._open_search
         registry["panel"] = self.toggle_panel
         registry["favorite"] = self._toggle_favorite
+        registry["toggle_tag_overlay"] = self._toggle_tag_overlay
         registry["focus_panel"] = self._focus_panel
         registry["focus_back"] = self._focus_current_view
         for action in (
@@ -2100,10 +2113,35 @@ class PhotoWindow(QMainWindow):
         current = self._current_photo()
         if self._viewer_visible and current is not None and current.key == photo.key:
             self.viewer.canvas.set_favorite(photo.favorite)
+            self._sync_tag_regions(photo)
         if self._filter_text or self._tag_filter:
             self._apply_filter(self._filter_text)
         else:
             self.grid.viewport().update()
+
+    def _toggle_tag_overlay(self) -> None:
+        """``t``: conmuta el borde de las etiquetas con región, sin escribir.
+
+        Solo actúa con el visor abierto: la tabla de ``WINDOW`` no distingue
+        estados y el panel/fallback también despachan esta acción. Sin
+        regiones el interruptor queda activo y el aviso es efímero.
+        """
+        if not self._viewer_visible:
+            return
+        photo = self._current_photo()
+        if photo is None:
+            return
+        self._tag_overlay_visible = not self._tag_overlay_visible
+        regions = visible_tag_regions(photo)
+        self.viewer.canvas.set_tag_regions(regions)
+        self.viewer.canvas.set_tag_overlay_visible(self._tag_overlay_visible)
+        if not self._tag_overlay_visible:
+            message = "etiquetas ocultas"
+        elif regions:
+            message = "etiquetas sobre la foto"
+        else:
+            message = "sin etiquetas con región en esta foto"
+        self.status.show_message(message, 3000)
 
     def _toggle_favorite(self) -> None:
         photo = self._current_photo()

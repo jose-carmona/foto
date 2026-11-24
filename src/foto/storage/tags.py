@@ -10,7 +10,8 @@ bibliotecas).
 La unicidad la garantiza el esquema (``INSERT OR IGNORE``/``UPDATE OR
 IGNORE``), no el código. Las operaciones de escritura son transacciones
 mínimas con commit inmediato, para no retrasar los checkpoints ni bloquear
-los lotes del indexador más de lo inevitable.
+los lotes del indexador más de lo inevitable. Las asignaciones llegan a la
+UI con su región proporcional cuando la tienen (ADR 0006, Decisión 7).
 """
 
 from __future__ import annotations
@@ -25,6 +26,10 @@ from foto.core.errors import CatalogError, TagError
 
 #: Nombre de la etiqueta de sistema del favorito.
 FAVORITE_TAG = "fav"
+
+#: Región proporcional sobre la imagen orientada: ``(x, y, w, h)`` en [0, 1].
+#: Definido aquí, sin Qt, para que datos y reglas puras compartan el tipo.
+Region = tuple[float, float, float, float]
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -44,8 +49,10 @@ class Tag:
 class TagAssignment:
     """Asignación foto–etiqueta tal como viaja a la UI.
 
-    La región no se carga todavía: solo queda definida en el esquema
-    (ADR 0006, Decisión 7); el visor no pinta regiones en esta entrega.
+    ``region`` llega de ``photo_tags`` (ADR 0006, Decisión 7, revisión de
+    2026-11-24): ``None`` para la foto completa, cuatro reales para el
+    rectángulo. Se añade al final del ``dataclass`` para no romper los
+    constructores positionales existentes.
     """
 
     photo_hash: str
@@ -54,6 +61,7 @@ class TagAssignment:
     kind: str
     source: str
     status: str
+    region: Region | None = None
 
 
 # ----------------------------------------------------------------------
@@ -117,12 +125,14 @@ def assignments_by_hash(
 
     Una entrada por hash con asignaciones; los hashes sin asignaciones no
     aparecen. Contar ``confirmed`` + ``suggested`` (jamás ``rejected``) es
-    regla de presentación, no de la consulta.
+    regla de presentación, no de la consulta. La región viaja en la misma
+    consulta y el ``id`` desempata el orden de las caras de una misma persona.
     """
     rows = connection.execute(
-        "SELECT pt.photo_hash, pt.tag_id, t.name, t.kind, pt.source, pt.status "
+        "SELECT pt.id, pt.photo_hash, pt.tag_id, t.name, t.kind, pt.source, "
+        "pt.status, pt.region_x, pt.region_y, pt.region_w, pt.region_h "
         "FROM photo_tags pt JOIN tags t ON t.id = pt.tag_id "
-        "ORDER BY pt.photo_hash, t.name"
+        "ORDER BY pt.photo_hash, t.name, pt.id"
     ).fetchall()
     grouped: dict[str, list[TagAssignment]] = {}
     for row in rows:
@@ -135,9 +145,22 @@ def assignments_by_hash(
                 kind=str(row["kind"]),
                 source=str(row["source"]),
                 status=str(row["status"]),
+                region=_region_from_row(row),
             )
         )
     return {photo_hash: tuple(items) for photo_hash, items in grouped.items()}
+
+
+def _region_from_row(row: sqlite3.Row) -> Region | None:
+    """Las cuatro columnas juntas, o ``None`` (todo-o-nada del esquema)."""
+    if row["region_x"] is None:
+        return None
+    return (
+        float(row["region_x"]),
+        float(row["region_y"]),
+        float(row["region_w"]),
+        float(row["region_h"]),
+    )
 
 
 def _tag_from_row(row: sqlite3.Row) -> Tag:

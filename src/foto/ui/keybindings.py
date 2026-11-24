@@ -241,6 +241,9 @@ def _build_table() -> tuple[Binding, ...]:
     bind_common(GRID)
     bind_common(GRID_VIEWER)
     bind_panes_and_zoom(GRID_VIEWER)
+    # ``t`` pertenece al visor: se registra aparte porque ``bind_common``
+    # también sirve a la rejilla sin visor, donde la tecla sigue muerta.
+    bind(GRID_VIEWER, KEY_T, "toggle_tag_overlay", shift=False)
 
     # Panel de metadatos: scroll local más acciones de rejilla. Desde la
     # fase 3 comparte con la rejilla los bordes de grupo (R2), exige ``z``
@@ -280,6 +283,7 @@ def _build_table() -> tuple[Binding, ...]:
         (KEY_Q, "close"),
     ):
         bind(PANEL, key, action)
+    bind(PANEL, KEY_T, "toggle_tag_overlay", shift=False)
 
     # Lienzo del visor: sin guardas fila a fila — la regla única del módulo
     # (§7.3/R11) ya anula cualquier tecla con Ctrl/⌘, incluida la fila de la
@@ -314,6 +318,7 @@ def _build_table() -> tuple[Binding, ...]:
     bind_viewer(KEY_ESCAPE, "escape")
     bind_viewer(KEY_I, "panel")
     bind_viewer(KEY_F, "favorite")
+    bind_viewer(KEY_T, "toggle_tag_overlay", shift=False)
     bind_viewer(KEY_M, "m")
     bind_viewer(KEY_QUESTION, "help")
     bind_viewer(KEY_F1, "help")
@@ -329,6 +334,7 @@ def _build_table() -> tuple[Binding, ...]:
     # a _viewer_last, una divergencia con la semántica de la rejilla que se
     # unifica — la rejilla manda en navegación).
     bind_common(WINDOW)
+    bind(WINDOW, KEY_T, "toggle_tag_overlay", shift=False)
     return tuple(rows)
 
 

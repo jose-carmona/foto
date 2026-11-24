@@ -311,6 +311,33 @@ def test_panel_enter_and_o_open_the_viewer(qapp, key):
     assert window._viewer_visible
 
 
+@pytest.mark.parametrize("contexto", ("visor", "fila", "panel", "ventana"))
+def test_t_toggles_the_overlay_from_every_viewer_context(qapp, contexto):
+    """El inventario incluye `t` en los cuatro contextos del visor abierto."""
+    window = _make_window(qapp)
+    try:
+        _setup_viewer_with_image(window, qapp)
+        event = _event(Qt.Key_T)
+        {
+            "visor": window.viewer.canvas.keyPressEvent,
+            "fila": window.grid.keyPressEvent,
+            "panel": window.panel.scroll.keyPressEvent,
+            "ventana": window.keyPressEvent,
+        }[contexto](event)
+        assert window._tag_overlay_visible is True
+    finally:
+        window.close()
+
+
+def test_t_is_dead_in_the_grid_without_a_viewer(qapp):
+    window = _make_window(qapp)
+    try:
+        window.grid.keyPressEvent(_event(Qt.Key_T))
+        assert window._tag_overlay_visible is False
+    finally:
+        window.close()
+
+
 def test_panel_zoom_keys_act_with_the_viewer_open(qapp):
     window = _make_window(qapp)
     _panel_focused(window, qapp)

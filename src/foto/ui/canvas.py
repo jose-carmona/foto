@@ -7,7 +7,7 @@ fuera del hilo de UI para alimentar la caché LRU de la ventana.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -22,12 +22,22 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QImage, QImageReader, QPainter, QPalette, QPen, QPixmap
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtGui import (
+    QColor,
+    QImage,
+    QImageReader,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+)
+from PySide6.QtWidgets import QToolTip, QVBoxLayout, QWidget
 
+from foto.storage.tags import Region
 from foto.ui.chips import draw_tag_chip, favorite_chip_size
 from foto.ui.keybindings import VIEWER, event_modifiers, key_action
-from foto.ui.theme import muted_color, ui_font
+from foto.ui.presentation import tag_rect_pixels
+from foto.ui.theme import accent_color, muted_color, ui_font
 
 CANVAS_MARGIN = 8
 
@@ -94,11 +104,17 @@ class PhotoCanvas(QWidget):
         super().__init__(parent)
         self.setAccessibleName("foto actual")
         self.setFocusPolicy(Qt.StrongFocus)
+        # El tooltip es información por hover: sin seguimiento del ratón Qt
+        # solo entregaría mouseMoveEvent mientras algún botón está pulsado.
+        self.setMouseTracking(True)
         self._pixmap: QPixmap | None = None
         self._preview = False
         self._zoom: float | None = None
         self._pan = QPointF(0, 0)
         self._favorite = False
+        self._tag_regions: tuple[tuple[str, Region], ...] = ()
+        self._tag_overlay_visible = False
+        self._hover_tag: int | None = None
         self.focus_ring = True
 
     def set_image(self, pixmap: QPixmap | None, *, preview: bool = False) -> None:
@@ -106,6 +122,7 @@ class PhotoCanvas(QWidget):
         self._preview = preview
         self._zoom = None
         self._pan = QPointF(0, 0)
+        self._hide_tag_tooltip()
         self.update()
 
     def clear(self) -> None:
@@ -114,6 +131,8 @@ class PhotoCanvas(QWidget):
         self._zoom = None
         self._pan = QPointF(0, 0)
         self._favorite = False
+        self._tag_regions = ()
+        self._hide_tag_tooltip()
         self.update()
 
     def set_favorite(self, favorite: bool) -> None:
@@ -121,6 +140,25 @@ class PhotoCanvas(QWidget):
         if self._favorite != favorite:
             self._favorite = favorite
             self.update()
+
+    def set_tag_regions(self, regions: Sequence[tuple[str, Region]]) -> None:
+        """Regiones visibles de la foto actual, en orden determinista."""
+        self._tag_regions = tuple(regions)
+        self._hide_tag_tooltip()
+        self.update()
+
+    def set_tag_overlay_visible(self, visible: bool) -> None:
+        """El interruptor lo posee la ventana; el lienzo solo lo aplica."""
+        if self._tag_overlay_visible == visible:
+            return
+        self._tag_overlay_visible = visible
+        if not visible:
+            self._hide_tag_tooltip()
+        self.update()
+
+    def _hide_tag_tooltip(self) -> None:
+        QToolTip.hideText()
+        self._hover_tag = None
 
     def has_image(self) -> bool:
         return self._pixmap is not None and not self._pixmap.isNull()
@@ -201,17 +239,14 @@ class PhotoCanvas(QWidget):
             return window.darker(112)
         return window.darker(135)
 
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), self._canvas_color())
+    def _image_target(self) -> QRectF | None:
+        """Rectángulo ocupado por la foto, vigente en este instante.
 
+        Lo comparten el pintado y el tooltip: no se guarda una geometría
+        cacheada que pueda quedarse obsoleta con zoom, paneo o resize.
+        """
         if self._pixmap is None or self._pixmap.isNull():
-            painter.setPen(muted_color(self))
-            painter.setFont(ui_font(13))
-            painter.drawText(self.rect(), Qt.AlignCenter, "Sin foto")
-            self._paint_focus_ring(painter)
-            return
-
+            return None
         scale = self._fit_scale() if self._zoom is None else self._zoom
         size = self._logical_size()
         target_w = size.width() * scale
@@ -221,10 +256,48 @@ class PhotoCanvas(QWidget):
         if self._zoom is not None:
             x += self._pan.x()
             y += self._pan.y()
-        target = QRectF(x, y, target_w, target_h)
+        return QRectF(x, y, target_w, target_h)
+
+    def _tag_rect(self, region: Region, target: QRectF) -> QRectF:
+        """Región proporcional → rectángulo sobre la imagen mostrada."""
+        left, top, right, bottom = tag_rect_pixels(
+            region, target.width(), target.height()
+        )
+        if right <= left or bottom <= top:
+            return QRectF()
+        return QRectF(
+            target.x() + left,
+            target.y() + top,
+            right - left,
+            bottom - top,
+        )
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self._canvas_color())
+
+        target = self._image_target()
+        if target is None:
+            painter.setPen(muted_color(self))
+            painter.setFont(ui_font(13))
+            painter.drawText(self.rect(), Qt.AlignCenter, "Sin foto")
+            self._paint_focus_ring(painter)
+            return
 
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.drawPixmap(target, self._pixmap, QRectF(self._pixmap.rect()))
+
+        # Bordes de las etiquetas con región, sobre la foto y por debajo del
+        # chrome. El preview está recortado a 400×247: no se pintan hasta que
+        # llega la imagen completa. Sin setBrush: solo trazo, sin relleno.
+        if self._tag_overlay_visible and not self._preview:
+            background = self._canvas_color()
+            painter.setPen(QPen(accent_color(self, background), 2))
+            for _name, region in self._tag_regions:
+                rect = self._tag_rect(region, target)
+                if not rect.isEmpty():
+                    painter.drawRect(rect)
+
         self._paint_focus_ring(painter)
 
         # Chip de favorito sobre la foto, arriba a la derecha, fijo (no
@@ -253,8 +326,41 @@ class PhotoCanvas(QWidget):
             return
         event.ignore()
 
+    def mouseMoveEvent(self, event) -> None:
+        """Muestra el nombre de la etiqueta al sobrevolar su rectángulo."""
+        if not self._tag_overlay_visible or self._preview:
+            self._hide_tag_tooltip()
+            super().mouseMoveEvent(event)
+            return
+        target = self._image_target()
+        position = event.position()
+        hover: int | None = None
+        if target is not None:
+            for index, (_name, region) in enumerate(self._tag_regions):
+                if self._tag_rect(region, target).contains(position):
+                    # En solapes gana la primera del orden determinista.
+                    hover = index
+                    break
+        if hover is None:
+            self._hide_tag_tooltip()
+            super().mouseMoveEvent(event)
+            return
+        if hover != self._hover_tag:
+            self._hover_tag = hover
+            QToolTip.showText(
+                event.globalPosition().toPoint(),
+                self._tag_regions[hover][0],
+                self,
+            )
+        event.accept()
+
+    def leaveEvent(self, event) -> None:
+        self._hide_tag_tooltip()
+        super().leaveEvent(event)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._hide_tag_tooltip()
         self._clamp_pan()
         self.update()
 

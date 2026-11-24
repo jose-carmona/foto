@@ -309,11 +309,16 @@ ADR 0005; los contadores de la fase son numéricos.
   `resources/renders/`); la exclusión defensiva se mantiene, pero conviene
   confirmar el comportamiento en bibliotecas no migradas de iPhoto. *Por
   verificar.*
-- **Orientación de las coordenadas de cara.** Las regiones de
-  `ZDETECTEDFACE` están normalizadas [0,1], pero hay que verificar contra
-  fotos con EXIF de rotación si Apple las da sobre la imagen orientada tal
-  como la muestra `foto` (convención del ADR 0006). *Por verificar en el
-  paso 3 con la fixture y la biblioteca real.*
+- **Orientación de las coordenadas de cara (verificado en la revisión de
+  2026-11-24).** Las regiones de `ZDETECTEDFACE` están normalizadas [0,1]
+  sobre la imagen orientada, pero con **origen abajo-izquierda**: `y` crece
+  hacia arriba. Comprobado en la biblioteca real al pintar el visor: sin
+  conversión el rectángulo salía reflejado verticalmente. Se normaliza en la
+  frontera catálogo→UI (`Photo.from_catalog`), sin tocar el extractor ni el
+  catálogo: `y_ui = 1 − y_importada − h`. `foto-export`/`foto-import`
+  conservan el valor de origen, así que el ida y vuelta sigue siendo estable.
+  Queda por verificar el caso de fotos rotadas dentro de Photos.app, donde
+  `ZORIENTATION` no cambia.
 - **Placeholders de iCloud en disco** (miniatura sin original): su forma
   exacta dentro de `originals/` no aparece en la biblioteca verificada
   (31 965 ficheros ≈ 31 966 assets). *Por verificar.*

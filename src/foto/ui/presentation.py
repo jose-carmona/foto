@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from foto.core.geocoding import Place
-from foto.storage.tags import FAVORITE_TAG, Tag, normalize_tag_name
+from foto.storage.tags import FAVORITE_TAG, Region, Tag, normalize_tag_name
 from foto.ui.models import LocationStatus, Photo, PhotoTag
 
 # ---------------------------------------------------------------------------
@@ -110,6 +110,43 @@ def tag_chips(photo: Photo) -> tuple[tuple[str, str, bool], ...]:
     if favorite is not None:
         return (favorite, *chips)
     return tuple(chips)
+
+
+def visible_tag_regions(photo: Photo) -> tuple[tuple[str, Region], ...]:
+    """Nombre y región de las etiquetas que el visor debe dibujar.
+
+    Cuentan ``confirmed`` y ``suggested`` con las cuatro coordenadas; no hay
+    filtro por ``kind`` y las caras distintas de una misma persona se
+    conservan en el orden en que llegaron (ADR 0006, Decisión 7). Sin
+    regiones, tupla vacía.
+    """
+    return tuple(
+        (tag.name, tag.region)
+        for tag in photo.tags
+        if tag.status in TAG_VISIBLE_STATUSES and tag.region is not None
+    )
+
+
+def tag_rect_pixels(
+    region: Region, width: float, height: float
+) -> tuple[float, float, float, float]:
+    """``(x, y, w, h)`` proporcional → ``(left, top, right, bottom)`` en píxeles.
+
+    La única aritmética de la región (ADR 0006, Decisión 7): ``y`` crece hacia
+    abajo sobre la imagen orientada tal como se muestra. Recorta a
+    ``[0, ancho] × [0, alto]`` y devuelve ``(0, 0, 0, 0)`` si el destino queda
+    vacío, para que el lienzo no trace rectángulos degenerados.
+    """
+    if width <= 0 or height <= 0:
+        return (0.0, 0.0, 0.0, 0.0)
+    x, y, w, h = region
+    left = min(max(x * width, 0.0), width)
+    top = min(max(y * height, 0.0), height)
+    right = min(max((x + w) * width, 0.0), width)
+    bottom = min(max((y + h) * height, 0.0), height)
+    if right <= left or bottom <= top:
+        return (0.0, 0.0, 0.0, 0.0)
+    return (left, top, right, bottom)
 
 
 # ---------------------------------------------------------------------------

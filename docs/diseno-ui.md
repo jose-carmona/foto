@@ -139,6 +139,8 @@ sin el prefijo `g`, queda reservada y no hace nada.
 | `g m` | Abrir la ubicación de la foto en el navegador (Google Maps) |
 | `q` | Sin efecto; sugiere `Ctrl+q` en la barra de estado |
 
+`t` solo actúa con el visor abierto: en la rejilla sin visor no hace nada.
+
 Los dígitos ``1``–``5`` no tienen función asignada y quedan fuera de servicio:
 no hacen nada. Las únicas combinaciones con modificador que actúan son
 ``Ctrl+d``/``Ctrl+u`` (media página) y ``Ctrl+q``/``⌘Q`` (salir): cualquier otra
@@ -161,7 +163,8 @@ las flechas y `PgUp`/`PgDn`/`Home`/`End` hacen scroll local del contenido y
 de teclas operan la rejilla y el visor igual que en modo normal: `h` `j` `k` `l`
 mueven el cursor (sin tocar el scroll del panel), `0`/`$` van a los bordes del
 grupo, `Enter`/`o` abren el visor, `+`/`-`/`z` manejan el zoom solo con el
-visor abierto, `f` alterna favorito, `:` `/` `?` abren comandos, búsqueda y
+visor abierto, `f` alterna favorito, `t` alterna los rectángulos de etiquetas
+con región solo con el visor abierto, `:` `/` `?` abren comandos, búsqueda y
 ayuda, y `q` cierra el visor o sugiere `Ctrl+q`. Las flechas laterales (`←`,
 `→`) no hacen nada. Los dígitos `1`–`5` tampoco.
 
@@ -232,6 +235,7 @@ Reglas de la fila:
 | `z` | Alternar entre ajustar a la ventana y 100 % |
 | `i` | Mostrar u ocultar metadatos |
 | `f` | Alternar favorito |
+| `t` | Mostrar u ocultar los rectángulos de etiquetas con región |
 | `g m` | Abrir la ubicación de la foto en el navegador (Google Maps) |
 | `q` | Volver a la rejilla |
 | `Esc` | Restablecer zoom; si ya está ajustado, volver a la rejilla |
@@ -245,6 +249,21 @@ miniatura del grupo al que pertenece la foto actual.
 El paneo de la imagen ampliada usa las mayúsculas `H`, `J`, `K`, `L`. Sin zoom no
 desplazan nada. La miniatura actual se resalta en la fila; la foto grande no lleva
 anillo de foco ni se resalta.
+
+`t` conmuta una superposición con un borde de acento de 2 px por cada etiqueta
+asignada que tenga región (`confirmed` o `suggested`, sin importar el tipo).
+Solo se dibuja el borde: nunca texto sobre la foto. Al situar el cursor sobre
+un rectángulo, su tooltip da el nombre de la etiqueta; los nombres siguen
+disponibles por teclado en la sección «Etiquetas» del panel, y ninguna acción
+depende del ratón. Las coordenadas son proporcionales `[0,1]` sobre la imagen
+orientada por EXIF, con origen arriba-izquierda y `y` hacia abajo: el borde
+sigue a la foto al acercar, alejar, panear y redimensionar. La superposición
+no aparece mientras se muestra la miniatura de preview. El interruptor es de
+sesión: sobrevive al cambio de foto y a cerrar y reabrir el visor. Si la foto
+no tiene regiones, la barra lo avisa durante unos segundos y el interruptor
+sigue activo para las siguientes. Las regiones importadas de Apple Photos se
+convierten a este origen al cargar el modelo de UI: el catálogo guarda la
+coordenada original (ADR 0009).
 
 Al llegar al final de la secuencia, la navegación se detiene; no hay salto
 circular.

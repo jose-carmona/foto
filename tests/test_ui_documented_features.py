@@ -553,6 +553,11 @@ def _v_help_open(w: PhotoWindow, q) -> None:
     assert w.help_overlay.isVisible()
 
 
+def _v_tag_overlay_on(w: PhotoWindow, q) -> None:
+    assert w._tag_overlay_visible is True
+    assert w.viewer.canvas._tag_overlay_visible is True
+
+
 def _v_command_open(w: PhotoWindow, q) -> None:
     assert w.status.prompt_active
     assert w.status.prompt_mode == "command"
@@ -931,6 +936,13 @@ VIEWER_SHORTCUTS = (
         Qt.Key_F,
         setup=lambda w, q: None,
         verify=_v_favorite_on,
+    ),
+    Shortcut(
+        "t",
+        "viewer",
+        Qt.Key_T,
+        setup=_setup_unzoomed_viewer_with_image,
+        verify=_v_tag_overlay_on,
     ),
     Shortcut(
         "m", "viewer", Qt.Key_M, setup=_setup_pending_g_viewer,

@@ -45,11 +45,14 @@ Se abre con `Enter` sobre cualquier foto. La rejilla queda debajo como una
 | `J` / `K` | Desplazar la imagen abajo / arriba |
 | `+` / `-` | Acercar / alejar la imagen |
 | `z` | Ajustar a la ventana / 100 % |
+| `t` | Mostrar u ocultar los rectángulos de etiquetas con región |
 | `0` / `$` | Primera / última foto del grupo |
 | `g g` / `G` | Primera / última foto |
 | `q` | Volver a la rejilla |
 
-El paneo solo tiene efecto con zoom.
+El paneo solo tiene efecto con zoom. `t` dibuja solo el borde de las etiquetas
+con región; el tooltip de cada rectángulo da el nombre, que también está en la
+sección «Etiquetas» del panel. En la rejilla sin visor, `t` no hace nada.
 
 ## Ubicaciones
 

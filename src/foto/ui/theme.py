@@ -92,6 +92,15 @@ def _accent_for(palette: QPalette, background: QColor) -> QColor:
     return candidates[-1]
 
 
+def accent_color(widget: QWidget, background: QColor) -> QColor:
+    """Token ``accent`` sobre un fondo concreto, con contraste suficiente.
+
+    Envuelve ``_accent_for`` para que los widgets no necesiten la paleta ni
+    decisiones de tema: el lienzo pasa su propio fondo y recibe el acento.
+    """
+    return _accent_for(widget.palette(), background)
+
+
 def app_palette() -> QPalette:
     app = QApplication.instance()
     return app.palette() if app is not None else QPalette()
