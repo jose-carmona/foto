@@ -28,6 +28,7 @@ from foto.ui.presentation import (
     KEY_DOLLAR,
     SORT_KEYS,
     build_search_index,
+    help_section_for_context,
     is_group_end,
     is_group_start,
     location_banner_parts,
@@ -718,6 +719,45 @@ def test_pure_modules_import_without_pyside6():
     )
 
     assert result.returncode == 0, result.stderr
+
+
+# ----------------------------------------------------------------------
+# Ayuda contextual: mapeo puro de la vista a la sección (T2.4, § 2.1)
+# ----------------------------------------------------------------------
+def test_help_section_for_context_prefers_the_viewer():
+    assert (
+        help_section_for_context(
+            viewer_visible=True, panel_focused=True, grid_focused=True
+        )
+        == "Visor"
+    )
+
+
+def test_help_section_for_context_uses_the_panel_when_it_has_the_focus():
+    assert (
+        help_section_for_context(
+            viewer_visible=False, panel_focused=True, grid_focused=True
+        )
+        == "Panel de metadatos"
+    )
+
+
+def test_help_section_for_context_uses_the_grid_when_it_has_the_focus():
+    assert (
+        help_section_for_context(
+            viewer_visible=False, panel_focused=False, grid_focused=True
+        )
+        == "Rejilla"
+    )
+
+
+def test_help_section_for_context_without_context_opens_at_the_start():
+    assert (
+        help_section_for_context(
+            viewer_visible=False, panel_focused=False, grid_focused=False
+        )
+        is None
+    )
 
 
 # ----------------------------------------------------------------------

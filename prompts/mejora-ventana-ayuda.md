@@ -4,8 +4,9 @@
 - **Ámbito:** `src/foto/ui/help.py`, `src/foto/ui/theme.py`, `src/foto/ui/window.py`,
   `src/foto/ui/panels.py`, `src/foto/ui/presentation.py`,
   `src/foto/resources/ayuda.md`, `docs/diseno-ui.md` y tests de UI.
-- **Estado:** fases 0 y 1 cerradas y decisiones cerradas. La fase 2 está lista
-  para ejecutar; de la fase 3 solo entra la ayuda contextual, absorbida en T2.4.
+- **Estado:** fases 0, 1 y 2 cerradas y decisiones cerradas. De la fase 3 solo
+  entró la ayuda contextual, absorbida en T2.4. Los cambios de la fase 2 están
+  en el árbol, pendientes del commit.
 - **Objetivo:** mejorar el aspecto y la usabilidad del overlay de ayuda (`?` / `F1` /
   `:help`) sin cambiar su contrato: `ayuda.md` sigue siendo la fuente única del
   contenido y el render sigue siendo propio, con el tema activo.
@@ -33,7 +34,7 @@
 | --- | --- | --- |
 | 0. Documento, decisiones y punto de retorno | Hecho | T0.1–T0.4 |
 | 1. Render y navegación P0 | Hecho | T1.1–T1.5 |
-| 2. Índice, cabecera, responsive y contenido | Pendiente | T2.1–T2.11 |
+| 2. Índice, cabecera, responsive y contenido | Hecho | T2.1–T2.13 |
 | 3. Filtro, ratón y selección | **Descartado** | — |
 | 3b. Ayuda contextual | Incluida en T2.4 | — |
 
@@ -279,7 +280,8 @@
 
 ### Fase 2 — Índice, cabecera, responsive y contenido
 
-- [ ] **T2.1 — Modelo puro de secciones y anclas.**
+- [x] **T2.1 — Modelo puro de secciones y anclas.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
   - **Cambio:** añadir `HelpSection` (anchor, title) y
     `help_sections(markdown) -> tuple[HelpSection, ...]`; las anclas son `s1`, `s2`, …
@@ -290,8 +292,12 @@
   - **Tests:** `help_sections` devuelve los títulos en orden y `render_help` contiene
     las mismas anclas. No se indexa el `# Ayuda` inicial.
   - **Hecho cuando:** los tests puros pasan sin Qt y el HTML contiene las anclas.
+  - **Resultado:** `HelpSection` y `help_sections` comparten con el parser el
+    recorte de títulos, de modo que índice y anclas coinciden 1:1; el HTML lleva
+    `<a name="sN">` antes de cada `##`.
 
-- [ ] **T2.2 — Cabecera fija con índice y pista de cierre.**
+- [x] **T2.2 — Cabecera fija con índice y pista de cierre.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/help.py`, `src/foto/ui/theme.py`,
     `tests/test_ui_help.py`.
   - **Cambio:** añadir a `HelpOverlay` un `QWidget` de cabecera con un `QLabel` de
@@ -303,8 +309,12 @@
     `QToolButton` de cierre; el índice tiene nombre accesible.
   - **Hecho cuando:** a 960 y a 576 px el índice se lee (puede ocupar dos líneas) y no
     tapa el cuerpo.
+  - **Resultado:** índice atenuado con `wordWrap` (a 576 px ocupa dos líneas) y
+    pista a la derecha; debajo, un filete de 1 px en `Midlight`. `theme.py` no
+    necesitó cambios («QSS de la cabecera si hace falta» no hizo falta).
 
-- [ ] **T2.3 — Teclas 1–9 para saltar a secciones.**
+- [x] **T2.3 — Teclas 1–9 para saltar a secciones.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
   - **Cambio:** en `keyPressEvent`, si la tecla es un dígito `1`–`9` sin
     `Ctrl`/`Alt`/`Meta`, saltar a la sección N con `body.scrollToAnchor(anchor)`.
@@ -314,8 +324,14 @@
   - **Tests:** pulsar `2` deja `current_section == "Rejilla"` y la barra por encima del
     mínimo; `Home` vuelve al inicio.
   - **Hecho cuando:** los tests pasan con la ayuda abierta desde la ventana.
+  - **Resultado:** ``1`–`6`` saltan, ``7`–`9`` se ignoran y `Home` vuelve al
+    principio; el salto también funciona con la ayuda abierta desde la ventana.
+  - **Nota (2026-11-25):** el salto exige además el dígito sin `Shift` (el
+    enunciado solo excluía `Ctrl`/`Alt`/`Meta`): `Shift+dígito` es otro carácter
+    en la mayoría de las distribuciones.
 
-- [ ] **T2.4 — Apertura contextual según la vista.**
+- [x] **T2.4 — Apertura contextual según la vista.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/presentation.py`, `src/foto/ui/window.py`,
     `src/foto/ui/help.py`, `tests/test_presentation.py`, `tests/test_ui_help.py`.
   - **Cambio:** añadir a `presentation.py` una función pura
@@ -332,8 +348,12 @@
   - **Nota:** si `scrollToAnchor` no posiciona en el primer `show`, aplicar la sección
     pendiente en `showEvent` o con `QTimer.singleShot(0, …)`; verificar en tests con
     `processEvents`.
+  - **Resultado:** el contexto se lee antes de mover el foco al overlay y el salto
+    se aplica con `QTimer.singleShot(0, …)`; sin contexto (o con título
+    inexistente) se restablece el scroll al inicio, también al reabrir.
 
-- [ ] **T2.5 — Barra de estado en modo AYUDA.**
+- [x] **T2.5 — Barra de estado en modo AYUDA.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/panels.py`, `src/foto/ui/window.py`,
     `tests/test_ui_status_bar.py`, `tests/test_ui_help.py`.
   - **Cambio:** `set_help_mode(enabled, sections=0)` muestra en el área izquierda
@@ -346,8 +366,12 @@
     y comprobar que no cambia; salir y comprobar que se restaura el mensaje.
   - **Hecho cuando:** los tests pasan y el mensaje no conserva el color de un error
     anterior.
+  - **Resultado:** la pista izquierda entra en `_apply_message_text` (el error sigue
+    ganando) y `refresh_right` deja el cierre unificado; al salir se restauran el
+    mensaje y el color normal.
 
-- [ ] **T2.6 — Geometría responsive de 960 px.**
+- [x] **T2.6 — Geometría responsive de 960 px.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/window.py`, `tests/test_ui_help.py`,
     `tests/test_ui_locations.py` si cubre geometría.
   - **Cambio:** parametrizar `_center_overlay` con `max_width` y `max_height`; la
@@ -358,8 +382,11 @@
   - **Tests:** redimensionar la ventana y comprobar `help_overlay.width()` y que el
     panel de ubicaciones sigue con su máximo.
   - **Hecho cuando:** los tests pasan y no hay recortes en 640×480.
+  - **Resultado:** 960 a 1280×800, 576 a 640×480 y máximo 820 de alto a
+    1920×1080; `test_ui_locations.py` no cubre geometría y no necesitó cambios.
 
-- [ ] **T2.7 — Escala tipográfica, reglas y tabla.**
+- [x] **T2.7 — Escala tipográfica, reglas y tabla.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
   - **Cambio:** `h1` 20 px/600, `h2` 15 px/600; cabecera de tabla 12 px/600 en
     `fg.muted`; reglas con `Midlight`; espaciado de § 2.4. Usar `<th>` para la
@@ -369,8 +396,16 @@
   - **Tests:** el HTML contiene `font-size:20px`, `font-size:15px`, `<th` y el color
     atenuado; la fila de teclas conserva un único ancho de columna.
   - **Hecho cuando:** los tests pasan y la captura a 640×480 sigue siendo legible.
+  - **Resultado:** escala aplicada y cabecera de tabla alineada a la izquierda,
+    atenuada; la columna de teclas conserva su único ancho.
+  - **Nota (2026-11-25):** el `<hr>` pinta con `background-color`, no con `color`:
+    el QSS del cuerpo (`color: palette(window-text)`) hacía que Qt ignorara el
+    color inline de la regla y la pintara negra. El token sigue siendo
+    `Midlight`. Además, `th` lleva `align="left"` porque Qt centra su contenido
+    por defecto.
 
-- [ ] **T2.8 — Interlineado 1,4.**
+- [x] **T2.8 — Interlineado 1,4.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
   - **Cambio:** tras `setHtml`, recorrer los bloques del documento y aplicar
     `QTextBlockFormat.setLineHeight(140, ProportionalHeight)`. Reaplicar en cada
@@ -380,8 +415,12 @@
   - **Hecho cuando:** el test pasa y una captura confirma que las tablas siguen
     completas. Si alguna tabla se desborda, aplicar solo a párrafos y encabezados y
     anotarlo.
+  - **Resultado:** se aplica a todos los bloques (incluidos los de las celdas) en
+    cada `_render`; `retheme` conserva el scroll y las tablas quedan completas en
+    las capturas.
 
-- [ ] **T2.9 — Reordenar y condensar `ayuda.md`; actualizar `docs/diseno-ui.md`.**
+- [x] **T2.9 — Reordenar y condensar `ayuda.md`; actualizar `docs/diseno-ui.md`.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/resources/ayuda.md`, `docs/diseno-ui.md`,
     `tests/test_ui_help.py`, `tests/test_ui_documented_features.py`,
     `tests/test_ui_key_inventory.py`.
@@ -395,8 +434,14 @@
     en la ayuda; las teclas nuevas aparecen en `ayuda.md` y en `docs/diseno-ui.md`.
   - **Hecho cuando:** suite completa en verde y el documento se lee de arriba abajo
     sin prosa sobrante.
+  - **Resultado:** orden Globales → Rejilla → Visor → Panel → Comandos →
+    Ubicaciones; introducción con `q` y las teclas internas; «Ubicaciones» en tres
+    frases y «Panel» en una línea de contexto. Los tests de contrato
+    (`test_ui_documented_features.py`, `test_ui_key_inventory.py`) no necesitaron
+    cambios: las tablas que escanean no se tocaron.
 
-- [ ] **T2.10 — Semántica accesible.**
+- [x] **T2.10 — Semántica accesible.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
   - **Cambio:** usar `<h1>`/`<h2>` para el título y las secciones, `<th>` para la
     cabecera de tabla y `body.setAccessibleName("atajos de teclado")`; nombre
@@ -407,8 +452,12 @@
     esperado. Actualizar `test_rejected_syntax_stays_out_of_the_renderer`, que hoy
     espera `T</p>`, a la etiqueta de encabezado que se use.
   - **Hecho cuando:** los tests pasan y no se pierde el estilo visual.
+  - **Resultado:** `<h1>`/`<h2>` conservan la escala de T2.7; el cuerpo se llama
+    «atajos de teclado» y el índice «índice de la ayuda»; el test de sintaxis
+    rechazada espera `T</h1>`.
 
-- [ ] **T2.11 — Verificación de la fase 2.**
+- [x] **T2.11 — Verificación de la fase 2.**
+  - **Fecha:** 2026-11-25.
   - **Comandos:** `uv run pytest`, `uv run ruff check .`.
   - **Revisión visual:** 640×480, 1280×800 y 1920×1080, claro y oscuro. Comprobar
     índice, teclas `1`–`6`, apertura contextual desde rejilla/panel/visor, cierre con
@@ -416,6 +465,42 @@
   - **Documentación:** `docs/diseno-ui.md` y `ayuda.md` actualizados.
   - **Hecho cuando:** suite y ruff en verde; capturas revisadas; `git diff` limitado a
     los ficheros de § 6.
+  - **Resultado:** 1179 tests y ruff en verde; `git diff` limitado a `help.py`,
+    `window.py`, `panels.py`, `presentation.py`, `ayuda.md`, `diseno-ui.md` y los
+    tres ficheros de tests (`theme.py` no necesitó cambios). Capturas revisadas a
+    1280×800, 640×480 y 1920×1080 en claro y oscuro.
+  - **Nota (2026-11-25):** la revisión visual se hizo sobre capturas de la
+    plataforma `offscreen`; las teclas (`1`–`6`, `Esc`/`q`, scroll) se verifican
+    con los tests de `test_ui_help.py`, no de forma interactiva.
+
+- [x] **T2.12 — `:help` abre al inicio (Globales), no en la sección de la rejilla.**
+  - **Fecha:** 2026-11-25.
+  - **Ficheros:** `src/foto/ui/window.py`, `docs/diseno-ui.md`,
+    `tests/test_ui_help.py`.
+  - **Cambio:** `_toggle_help` gana el parámetro `contextual=True`; el comando
+    `:help` llama con `contextual=False` y abre sin ancla. Ajusta § 2.1: `?` y
+    `F1` siguen el criterio contextual, `:help` no.
+  - **Resultado:** `:help` abre en el inicio aunque la rejilla haya recobrado el foco.
+  - **Nota (2026-11-25):** en cocoa, `_enter` cierra el prompt antes de emitir
+    el comando y el foco vuelve a la rejilla; `_toggle_help` interpretaba ese
+    foco heredado como contexto y abría en «Rejilla». En `offscreen` la
+    restauración de foco no ocurre, por eso las capturas de T2.11 no lo vieron.
+    El test simula el estado de cocoa (rejilla con foco al ejecutar el comando)
+    para no depender de la plataforma.
+
+- [x] **T2.13 — El texto del cuerpo no hereda el color QSS al cambiar de tema.**
+  - **Fecha:** 2026-11-25.
+  - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
+  - **Cambio:** párrafos y celdas de tabla llevan su color inline (igual que
+    encabezados y fichas) y `HelpOverlay.retheme` llama a `reapply_style(self.body)`
+    para re-parsear `HELP_BODY_QSS`.
+  - **Resultado:** tras un cambio oscuro→claro en vivo, el cuerpo no se queda con
+    el texto blanco del tema anterior; el asa de la scrollbar tampoco.
+  - **Nota (2026-11-25):** los párrafos eran el único texto sin color explícito y
+    dependían de `color: palette(window-text)` del QSS; Qt no reinterpreta las
+    funciones `palette(...)` al cambiar la paleta (mecanismo ya documentado en
+    `reapply_style`). Las capturas de T2.11 no lo vieron porque cada captura
+    arrancaba con su tema ya aplicado; el fallo requiere rethemear en vivo.
 
 ---
 
@@ -428,18 +513,18 @@
 - [x] No hay espacios dobles ni espacios antes de puntuación alrededor de fichas.
 - [x] Con el foco en el overlay funcionan ↑/↓, j/k, PgUp/PgDn, Home/End,
       Espacio/Shift+Espacio y Ctrl+d/Ctrl+u, con el mismo paso.
-- [ ] `1`–`9` saltan a las secciones existentes y las anclas son estables.
-- [ ] La ayuda abre en la sección de la vista actual (rejilla, panel o visor) y en el
+- [x] `1`–`9` saltan a las secciones existentes y las anclas son estables.
+- [x] La ayuda abre en la sección de la vista actual (rejilla, panel o visor) y en el
       inicio si no hay contexto.
-- [ ] La cabecera fija muestra el índice y `Esc/q cerrar`; no hay «✕» ni cierre con
+- [x] La cabecera fija muestra el índice y `Esc/q cerrar`; no hay «✕» ni cierre con
       ratón.
-- [ ] El overlay se ve bien a 640×480 y a 1920×1080; el ancho máximo es 960 px y el
+- [x] El overlay se ve bien a 640×480 y a 1920×1080; el ancho máximo es 960 px y el
       panel de ubicaciones conserva 760.
-- [ ] El interlineado es 1,4 y las tablas no se desbordan.
-- [ ] `?`, `F1`, `:help`, `Esc` y `q` se comportan como se documenta.
-- [ ] `docs/diseno-ui.md` y `src/foto/resources/ayuda.md` actualizados con las teclas
+- [x] El interlineado es 1,4 y las tablas no se desbordan.
+- [x] `?`, `F1`, `:help`, `Esc` y `q` se comportan como se documenta.
+- [x] `docs/diseno-ui.md` y `src/foto/resources/ayuda.md` actualizados con las teclas
       nuevas.
-- [ ] `uv run pytest` y `uv run ruff check .` en verde.
+- [x] `uv run pytest` y `uv run ruff check .` en verde.
 
 ---
 
@@ -476,6 +561,19 @@
 | 2026-11-25 | T1.3 | Unión sin espacios añadidos y relleno contextual ante puntuación. |
 | 2026-11-25 | T1.4 | Teclas de scroll completas; cuerpo con `Qt.NoFocus` para no perder el foco. |
 | 2026-11-25 | T1.5 | Suite y ruff en verde; capturas 1280×800 y 640×480 en claro y oscuro revisadas. |
+| 2026-11-25 | T2.1 | `HelpSection` y `help_sections`; anclas `s1`…`s6` compartidas por índice y render. |
+| 2026-11-25 | T2.2 | Cabecera fija: índice atenuado y pista `Esc/q cerrar`, sin botones; filete en Midlight. |
+| 2026-11-25 | T2.3 | Dígitos 1–6 saltan a sección; 7–9 y dígitos con modificadores se ignoran. |
+| 2026-11-25 | T2.4 | `help_section_for_context` puro; apertura en Visor/Panel/Rejilla o al inicio con singleShot(0). |
+| 2026-11-25 | T2.5 | Modo AYUDA con teclas y salto 1–N; `Esc/q cerrar` unificado y color restaurado al salir. |
+| 2026-11-25 | T2.6 | `_center_overlay` parametrizado: ayuda 960×820; ubicaciones conserva 760. |
+| 2026-11-25 | T2.7 | h1 20 px, h2 15 px, `<th>` 12 px en fg.muted alineado; reglas en Midlight con `background-color`. |
+| 2026-11-25 | T2.8 | Interlineado 1,4 proporcional bloque a bloque tras `setHtml`; tablas sin desbordes. |
+| 2026-11-25 | T2.9 | `ayuda.md` reordenado y condensado; guía con teclas, contexto, cabecera y 960 px. |
+| 2026-11-25 | T2.10 | `h1`/`h2`/`th` semánticos; nombres accesibles en cuerpo e índice. |
+| 2026-11-25 | T2.11 | 1179 tests y ruff en verde; capturas de tres tamaños en claro y oscuro revisadas. |
+| 2026-11-25 | T2.12 | `:help` abre al inicio (Globales); el foco heredado del prompt ya no cuenta como contexto. |
+| 2026-11-25 | T2.13 | Color explícito en cada bloque y `reapply_style` del cuerpo en `retheme`: sin texto blanco tras oscuro→claro. |
 
 ---
 

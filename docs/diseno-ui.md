@@ -105,6 +105,34 @@ cada atajo básico de la rejilla está en la ayuda. Las teclas distinguen
 mayúsculas solo donde se indica (`G`, `H`, `J`, `K`, `L`); las secuencias con
 prefijo `g` (`g g`, `g m`) admiten hasta 500 ms entre pulsaciones.
 
+La ayuda abre en la sección de la vista con el foco: el visor abre en «Visor»,
+el panel en «Panel de metadatos» y la rejilla en «Rejilla»; sin contexto
+reconocible, en el inicio. `?` y `F1` usan este criterio; `:help` abre siempre
+en el inicio (Globales) porque su contexto es la línea de comandos —al
+cerrarse el prompt el foco vuelve a la vista, pero es un foco heredado, no un
+contexto—. Con la ayuda ya visible, todas la cierran como hoy. El overlay
+lleva una cabecera fija con
+el índice de secciones (`1 Globales · 2 Rejilla · …`) y la pista `Esc/q
+cerrar`: el índice no scrollea, el cuerpo sí, y el cierre es solo por teclado
+(sin «✕» ni clic fuera). El overlay mide como máximo 960×820 px con los
+márgenes de 64 px y mínimos 320×260; el panel de ubicaciones conserva su
+máximo de 760.
+
+Dentro de la ayuda:
+
+| Tecla | Acción |
+| --- | --- |
+| `↑` / `↓` o `j` / `k` | Una línea arriba / abajo |
+| `PgDn` / `PgUp` | Una página abajo / arriba |
+| `Espacio` / `Shift+Espacio` | Una página abajo / arriba |
+| `Home` / `End` | Principio / final de la ayuda |
+| `Ctrl+d` / `Ctrl+u` | Media página abajo / arriba |
+| `1`–`9` | Saltar a la sección N del índice |
+| `Esc` / `q` | Cerrar la ayuda |
+
+En modo AYUDA, la barra de estado muestra en el área izquierda
+`j/k · PgUp/PgDn · Home/End · 1–N secciones` y a la derecha `Esc/q cerrar`.
+
 ### Atajos globales
 
 | Tecla | Acción |

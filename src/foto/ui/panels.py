@@ -490,6 +490,7 @@ class StatusBar(QWidget):
         # etiqueta activo («etiqueta: nombre»). Error > mensaje > fijado.
         self._pinned = ""
         self._help_saved_message = ""
+        self._help_sections = 0
         self._message_timer = QTimer(self)
         self._message_timer.setSingleShot(True)
         self._message_timer.timeout.connect(self._clear_message)
@@ -561,18 +562,40 @@ class StatusBar(QWidget):
         self._search_right = f"{visible} de {total}"
         self.refresh_right()
 
-    def set_help_mode(self, enabled: bool) -> None:
+    def set_help_mode(self, enabled: bool, sections: int = 0) -> None:
+        """Modo AYUDA: enseña las teclas propias y unifica el cierre.
+
+        En el área izquierda va el recordatorio ``j/k · PgUp/PgDn ·
+        Home/End`` y, con ``sections`` secciones, el salto ``1–N``; a la
+        derecha, siempre ``Esc/q cerrar`` (también tras ``refresh_right``).
+        Al salir se restaura el mensaje anterior y el color normal.
+        """
         self.help_mode = enabled
+        self._help_sections = sections
         self.mode_label.setText("AYUDA" if enabled else "NORMAL")
         if enabled:
             self._help_saved_message = self._message
             self._message = ""
-            self._apply_message_text()
+            if not self.error_text:
+                self.message_label.setStyleSheet("")
+                self.message_label.setForegroundRole(QPalette.WindowText)
             self.right_label.setText("Esc/q cerrar")
         else:
             self._message = self._help_saved_message
-            self._apply_message_text()
+            # El mensaje restaurado no conserva el color de un error anterior.
+            self.message_label.setStyleSheet(
+                f"color: {error_color(self).name()};" if self.error_text else ""
+            )
+            self.message_label.setForegroundRole(QPalette.WindowText)
             self.refresh_right()
+        self._apply_message_text()
+
+    @property
+    def _help_hint(self) -> str:
+        hint = "j/k · PgUp/PgDn · Home/End"
+        if self._help_sections:
+            hint += f" · 1–{self._help_sections} secciones"
+        return hint
 
     def set_pinned(self, text: str) -> None:
         """Fija o retira el texto persistente (filtro de etiqueta activo)."""
@@ -582,11 +605,13 @@ class StatusBar(QWidget):
         self._apply_message_text()
 
     def _apply_message_text(self) -> None:
-        """Texto del área de mensajes: error > temporal > fijado > vacío."""
+        """Texto del área de mensajes: error > temporal > pista de ayuda > fijado."""
         if self.error_text:
             self.message_label.setText(f"error: {self.error_text}")
         elif self._message:
             self.message_label.setText(self._message)
+        elif self.help_mode:
+            self.message_label.setText(self._help_hint)
         elif self._pinned:
             self.message_label.setText(self._pinned)
         else:
@@ -674,7 +699,9 @@ class StatusBar(QWidget):
         elif self.error_text:
             self.right_label.setText("Esc descartar")
         elif self.help_mode:
-            self.right_label.setText("Esc cerrar")
+            # Unificado: en modo ayuda el cierre es siempre «Esc/q cerrar»,
+            # venga de set_help_mode o de un refresh_right posterior.
+            self.right_label.setText("Esc/q cerrar")
         else:
             self.right_label.setText(self._idle_right)
 

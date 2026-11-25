@@ -2,7 +2,12 @@
 
 Todo funciona con el teclado: no hay menús ni ratón necesario. `Esc` siempre
 retrocede un paso —cierra ayuda, visor o línea de comandos, y además
-restablece el zoom— y `Ctrl+q` sale de la aplicación.
+restablece el zoom— y `Ctrl+q` sale de la aplicación. `q` también cierra esta
+ayuda.
+
+Dentro de la ayuda, `↑` / `↓` o `j` / `k` mueven una línea, `PgUp` / `PgDn` y
+`Espacio` una página, `Ctrl+d` / `Ctrl+u` media página, `Home` / `End` van a
+los extremos y `1`–`9` saltan a la sección con ese número del índice.
 
 ## Globales
 
@@ -54,33 +59,11 @@ El paneo solo tiene efecto con zoom. `t` dibuja solo el borde de las etiquetas
 con región; el tooltip de cada rectángulo da el nombre, que también está en la
 sección «Etiquetas» del panel. En la rejilla sin visor, `t` no hace nada.
 
-## Ubicaciones
-
-La fototeca puede repartirse en varios discos (`[[library.locations]]` en
-`config.toml`, ADR 0010). Si uno no está conectado —por ejemplo un USB
-desmontado— la ventana lo avisa con una tarjeta sobre la rejilla (icono de
-advertencia, la ruta afectada y cuántas fotos no se ven). La app es
-teclado primero: la tarjeta se cierra con `Esc` —también con la «✕», y se
-cierra sola a los 30 segundos— y el panel de ubicaciones está a un
-`:locations` de distancia. Esas fotos se marcan en la rejilla solo con el
-mismo icono de aviso, y muestran sus datos del catálogo (fecha, cámara,
-etiquetas, favorito) aunque el fichero no esté a mano; la miniatura sale de
-la caché si existe. Favoritar y filtrar por etiqueta siguen funcionando:
-todo son metadatos. Abrir la foto en el visor, que exige el fichero, queda
-desactivado con un mensaje claro. Al volver a montar el disco, reabre
-`foto` para refrescar el estado.
-
-| Comando | Acción |
-| --- | --- |
-| `:locations` | Estado de las ubicaciones (también con un clic en el banner) |
-
 ## Panel de metadatos
 
-Muestra los datos de la foto seleccionada. Las etiquetas se muestran como
-chips —el favorito, como un chip carmesí con un corazón— y el detalle de cada
-una (sugerida, machine learning) se ve en el tooltip. Con el foco en el panel,
-las teclas
-de la rejilla siguen operando la rejilla; solo las flechas desplazan el panel.
+Muestra los datos de la foto seleccionada —las etiquetas, como chips, con el
+favorito primero—; con el foco en el panel, las teclas de la rejilla siguen
+moviendo el cursor y solo las flechas desplazan el panel.
 
 | Tecla | Acción |
 | --- | --- |
@@ -101,3 +84,17 @@ historial, `Enter` ejecuta y `Esc` cancela.
 | `:tag` | Filtrar por etiqueta (`:tag <nombre>`, repita o deje vacío para quitar el filtro). La app abre con el filtro `fav` aplicado si hay favoritas |
 | `:locations` | Estado de las ubicaciones de la fototeca |
 | `:help` | Abrir esta ayuda |
+
+## Ubicaciones
+
+La fototeca puede repartirse en varios discos (`[[library.locations]]` en
+`config.toml`, ADR 0010). Si un disco no está a mano —un USB desmontado, por
+ejemplo—, la ventana lo avisa con una tarjeta sobre la rejilla que se cierra
+con `Esc` —también con la «✕», o sola a los 30 segundos—: esas fotos se marcan
+con el icono de aviso, sus metadatos siguen visibles y favoritar o filtrar por
+etiqueta sigue funcionando, pero abrirlas exige el fichero. Al volver a montar
+el disco, reabre `foto` para refrescar el estado.
+
+| Comando | Acción |
+| --- | --- |
+| `:locations` | Estado de las ubicaciones (también con un clic en el banner) |

@@ -8,7 +8,9 @@ ventana.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from dataclasses import dataclass
+
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -16,16 +18,58 @@ from PySide6.QtGui import (
     QFontMetrics,
     QPainter,
     QPalette,
+    QTextBlockFormat,
+    QTextCursor,
 )
-from PySide6.QtWidgets import QFrame, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
 from foto.ui.presentation import muted_rgb
-from foto.ui.theme import HELP_BODY_QSS, app_palette, help_chip_surface, ui_font
+from foto.ui.theme import (
+    HELP_BODY_QSS,
+    app_palette,
+    help_chip_surface,
+    reapply_style,
+    set_muted,
+    ui_font,
+)
 
 # Puntuación que ya aporta su propio aire: la ficha no añade relleno del lado
 # que toca con ella, para no separar la tecla del signo que la acompaña.
 _CHIP_TRAILING_PUNCT = ",.;:!?)]}»"
 _CHIP_LEADING_PUNCT = "([{«"
+
+
+@dataclass(frozen=True)
+class HelpSection:
+    """Una sección ``##`` del documento de ayuda: ancla estable y título."""
+
+    anchor: str
+    title: str
+
+
+def help_sections(markdown: str) -> tuple[HelpSection, ...]:
+    """Las secciones ``##`` del documento, en orden, con anclas ``sN``.
+
+    El índice de la cabecera y el render comparten esta lista: las anclas
+    ``s1``, ``s2``… son estables aunque cambien los títulos, y el
+    ``# Ayuda`` inicial no se indexa. El título se recorta igual que hace el
+    parser de ``render_help``, de modo que índice y anclas coinciden 1:1.
+    """
+    sections: list[HelpSection] = []
+    for line in markdown.splitlines():
+        bare = line.strip()
+        if bare.startswith("##"):
+            sections.append(
+                HelpSection(anchor=f"s{len(sections) + 1}", title=bare[2:].strip())
+            )
+    return tuple(sections)
 
 
 def _help_markdown() -> str:
@@ -124,19 +168,40 @@ def _help_inline(text: str) -> str:
 
 
 def _help_heading(label: str, level: int) -> str:
-    size = 26 if level == 1 else 20
+    """Título del documento y de sección, con su escala y regla (§ 2.4).
+
+    ``h1``/``h2`` semánticos a 20/15 px con peso 600; la regla usa
+    ``Midlight``, más discreta que el ``Mid`` anterior. El filete va con
+    ``background-color``: el QSS del cuerpo (``color: palette(...)``) hace
+    que Qt ignore el ``color`` inline de un ``<hr>`` y lo pinte negro.
+    """
+    size = 20 if level == 1 else 15
+    tag = "h1" if level == 1 else "h2"
     return (
-        f'<p style="margin-top:{"0" if level == 1 else "18"}px; margin-bottom:6px;'
+        f'<{tag} style="margin-top:{"0" if level == 1 else "18"}px; margin-bottom:6px;'
         f" font-size:{size}px; font-weight:600;"
-        f' color:{_help_color(QPalette.WindowText)}">{label}</p>'
-        f'<hr style="color:{_help_color(QPalette.Mid)};">'
+        f' color:{_help_color(QPalette.WindowText)}">{label}</{tag}>'
+        f'<hr style="background-color:{_help_color(QPalette.Midlight)};">'
     )
+
+
+def _help_text_color() -> str:
+    """Color del texto corriente, explícito en cada bloque.
+
+    Los párrafos y celdas no pueden apoyarse en el QSS del cuerpo
+    (``color: palette(window-text)``): Qt no reinterpreta las funciones
+    ``palette(...)`` al cambiar de tema (ver ``reapply_style``) y tras un
+    cambio oscuro→claro en vivo el texto se quedaba blanco sobre la
+    superficie clara. Igual que encabezados y fichas, cada bloque lleva su
+    color inline del tema vigente en el momento del render.
+    """
+    return _help_color(QPalette.WindowText)
 
 
 def _help_paragraph(lines: list[str]) -> str:
     """Un párrafo completo: las líneas consecutivas del markdown se unen."""
     return (
-        '<p style="margin-top:0; margin-bottom:12px;">'
+        f'<p style="margin-top:0; margin-bottom:12px; color:{_help_text_color()};">'
         f"{_help_inline(' '.join(lines))}</p>"
     )
 
@@ -158,18 +223,29 @@ def _help_keys_width(tables: list[list[list[str]]]) -> int:
 
 
 def _help_row(cells: list[str], header: bool, keys_width: int) -> str:
+    color = _help_text_color()
     keys = _help_inline(cells[0]) if cells else ""
     description = _help_inline(cells[1]) if len(cells) > 1 else ""
     if header:
-        keys, description = f"<b>{keys}</b>", f"<b>{description}</b>"
+        # Cabecera de tabla: 12 px con peso 600 en fg.muted, para que no
+        # compita con los títulos de sección (§ 2.4).
+        style = f"font-size:12px; font-weight:600; color:{_help_muted()};"
+        keys = f'<span style="{style}">{keys}</span>'
+        description = f'<span style="{style}">{description}</span>'
+    tag = "th" if header else "td"
+    # Qt centra el contenido de un ``th``: la cabecera va alineada a la
+    # izquierda, como las filas de datos.
+    align = ' align="left"' if header else ""
     padding = "2px" if header else "8px"
     return (
         "<tr>"
-        f'<td width="{keys_width}" style="vertical-align:top;">'
-        f'<p style="margin-top:{padding}; margin-bottom:{padding};">{keys}</p></td>'
-        "<td style=\"vertical-align:top;\">"
-        f"<p style=\"margin-top:{padding}; margin-bottom:{padding};\">"
-        f"{description}</p></td>"
+        f'<{tag}{align} width="{keys_width}" style="vertical-align:top;">'
+        f'<p style="margin-top:{padding}; margin-bottom:{padding};'
+        f' color:{color};">{keys}</p></{tag}>'
+        f'<{tag}{align} style="vertical-align:top;">'
+        f"<p style=\"margin-top:{padding}; margin-bottom:{padding};"
+        f" color:{color};\">"
+        f"{description}</p></{tag}>"
         "</tr>"
     )
 
@@ -198,7 +274,10 @@ def render_help(markdown: str) -> str:
     puede estilar, así que el overlay renderiza el subset que usa el
     documento: encabezados ``#``/``##``, tablas de dos columnas y teclas
     entre acentos. Todo lo que no encaje en ese subset no se renderiza.
+    Las secciones ``##`` llevan antes del encabezado su ``<a name="sN">``,
+    el mismo orden que devuelven ``help_sections`` para el índice.
     """
+    sections = help_sections(markdown)
     blocks: list[tuple[str, object]] = []
     rows: list[list[str]] = []
     lines: list[str] = []
@@ -242,9 +321,13 @@ def render_help(markdown: str) -> str:
     )
 
     html: list[str] = []
+    section_index = 0
     for kind, data in blocks:
         if kind == "heading":
             label, level = data  # type: ignore[misc]
+            if level == 2 and section_index < len(sections):
+                html.append(f'<a name="{sections[section_index].anchor}"></a>')
+                section_index += 1
             html.append(_help_heading(label, level))
         elif kind == "table":
             html.append(_help_table(data, width))  # type: ignore[misc]
@@ -266,9 +349,17 @@ class HelpOverlay(QFrame):
         palette.setColor(QPalette.Window, palette.color(QPalette.AlternateBase))
         self.setPalette(palette)
 
+        self.sections = help_sections(_help_markdown())
+        self.current_section: str | None = None
+        self._pending_section: HelpSection | None = None
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(6)
+
+        layout.addWidget(self._build_header())
+        self.rule = self._build_rule()
+        layout.addWidget(self.rule)
 
         body = QTextBrowser()
         body.setFrameShape(QFrame.NoFrame)
@@ -282,6 +373,7 @@ class HelpOverlay(QFrame):
         body.setFocusPolicy(Qt.NoFocus)
         body.setLineWidth(0)
         body.setFont(ui_font(13))
+        body.setAccessibleName("atajos de teclado")
         document = body.document()
         document.setDefaultFont(ui_font(13))
         document.setDocumentMargin(0)
@@ -289,6 +381,56 @@ class HelpOverlay(QFrame):
         layout.addWidget(body)
         self.body = body
         self._render()
+
+    def _build_header(self) -> QWidget:
+        """Cabecera fija: índice de secciones y pista de cierre (§ 2.2).
+
+        No scrollea —el cuerpo lo hace debajo— y no lleva botones: el
+        cierre es solo por teclado, así que no hay «✕» ni ``QToolButton``.
+        """
+        header = QWidget(self)
+        row = QHBoxLayout(header)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+
+        self.index_label = QLabel()
+        self.index_label.setFont(ui_font(12))
+        # A 576 px el índice no cabe en una línea: se parte en dos.
+        self.index_label.setWordWrap(True)
+        self.index_label.setAccessibleName("índice de la ayuda")
+        self.index_label.setText(self._index_text())
+
+        self.hint_label = QLabel("Esc/q cerrar")
+        self.hint_label.setFont(ui_font(12))
+
+        row.addWidget(self.index_label, 1)
+        row.addWidget(self.hint_label)
+        self._apply_header_palette()
+        return header
+
+    def _index_text(self) -> str:
+        return " · ".join(
+            f"{number} {section.title}"
+            for number, section in enumerate(self.sections, 1)
+        )
+
+    def _build_rule(self) -> QFrame:
+        """Filete bajo la cabecera, con el ``Midlight`` del tema."""
+        rule = QFrame(self)
+        rule.setFrameShape(QFrame.NoFrame)
+        rule.setFixedHeight(1)
+        rule.setAutoFillBackground(True)
+        self._apply_rule_palette(rule)
+        return rule
+
+    def _apply_header_palette(self) -> None:
+        set_muted(self.index_label)
+        set_muted(self.hint_label)
+
+    def _apply_rule_palette(self, rule: QFrame) -> None:
+        palette = rule.palette()
+        palette.setColor(QPalette.Window, palette.color(QPalette.Midlight))
+        rule.setPalette(palette)
 
     def _render(self) -> None:
         """Renderiza el documento con la paleta del momento.
@@ -301,11 +443,65 @@ class HelpOverlay(QFrame):
         document = self.body.document()
         document.setTextWidth(-1)  # el navegador decide con su ancho de vista
         self.body.setHtml(render_help(_help_markdown()))
+        self._apply_line_height()
+
+    def _apply_line_height(self) -> None:
+        """Interlineado 1,4 en todos los bloques (§ 2.4).
+
+        Qt rich text ignora ``line-height`` en el CSS: se aplica bloque a
+        bloque con ``QTextBlockFormat`` después de ``setHtml``, incluidos los
+        bloques de las celdas de tabla. Se reaplica en cada ``_render``.
+        """
+        fmt = QTextBlockFormat()
+        fmt.setLineHeight(
+            140, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value
+        )
+        cursor = QTextCursor(self.body.document())
+        block = self.body.document().firstBlock()
+        while block.isValid():
+            cursor.setPosition(block.position())
+            cursor.mergeBlockFormat(fmt)
+            block = block.next()
+
+    def show_section(self, title: str | None) -> None:
+        """Abre el documento en la sección con ese título; ``None``: al inicio.
+
+        Un título que no existe en ``ayuda.md`` cae también al inicio
+        (§ 2.1). El salto queda pendiente para el siguiente pase de eventos:
+        con el overlay recién mostrado, ``scrollToAnchor`` necesita la
+        geometría ya calculada para posicionar el documento. Sin sección
+        (inicio) se restablece el scroll, también al reabrir.
+        """
+        self._pending_section = None
+        if not title:
+            bar = self.body.verticalScrollBar()
+            bar.setValue(bar.minimum())
+            self.current_section = None
+            return
+        section = next((s for s in self.sections if s.title == title), None)
+        if section is None:
+            return
+        self._pending_section = section
+        QTimer.singleShot(0, self._apply_pending_section)
+
+    def _apply_pending_section(self) -> None:
+        section, self._pending_section = self._pending_section, None
+        if section is None or not self.isVisible():
+            return
+        self.body.scrollToAnchor(section.anchor)
+        self.current_section = section.title
 
     def retheme(self) -> None:
         palette = app_palette()
         palette.setColor(QPalette.Window, palette.color(QPalette.AlternateBase))
         self.setPalette(palette)
+        self._apply_header_palette()
+        self._apply_rule_palette(self.rule)
+        # El QSS del cuerpo usa palette(window-text) y Qt no reinterpreta las
+        # funciones palette(...) al cambiar la paleta: re-asignar la cadena
+        # provoca el re-parse y el texto no se queda con el color del tema
+        # anterior (blanco sobre claro tras un cambio oscuro→claro en vivo).
+        reapply_style(self.body)
         scroll = self.body.verticalScrollBar().value()
         self._render()
         self.body.verticalScrollBar().setValue(scroll)
@@ -321,13 +517,14 @@ class HelpOverlay(QFrame):
         return max(1, metrics.lineSpacing())
 
     def keyPressEvent(self, event) -> None:
-        """Navega el scroll de la ayuda con las teclas de § 2.3.
+        """Navega la ayuda con las teclas de § 2.3.
 
         ``↑``/``↓`` y ``j``/``k`` avanzan una línea medida con la fuente;
         ``PgUp``/``PgDn``, ``Espacio``/``Shift+Espacio`` y ``Ctrl+d``/``Ctrl+u``
-        mueven páginas o medias páginas con el paso de la barra, y
-        ``Home``/``End`` van a los extremos. El resto de teclas cae a la
-        ventana, que cerrará el overlay cuando sea ``Esc`` o ``q``.
+        mueven páginas o medias páginas con el paso de la barra,
+        ``Home``/``End`` van a los extremos y ``1``–``9`` saltan a la sección
+        con ese número del índice. El resto de teclas cae a la ventana, que
+        cerrará el overlay cuando sea ``Esc`` o ``q``.
         """
         bar = self.body.verticalScrollBar()
         key = event.key()
@@ -349,6 +546,21 @@ class HelpOverlay(QFrame):
             self._scroll_by(max(1, bar.pageStep() // 2))
         elif key == Qt.Key_U and ctrl:
             self._scroll_by(-max(1, bar.pageStep() // 2))
+        elif Qt.Key_1 <= key <= Qt.Key_9 and not (
+            ctrl
+            or shift
+            or bool(event.modifiers() & Qt.AltModifier)
+            or bool(event.modifiers() & Qt.MetaModifier)
+        ):
+            # Salto a la sección N del índice; los dígitos sin sección (7–9
+            # con seis secciones) no hacen nada.
+            index = key - Qt.Key_1
+            if index < len(self.sections):
+                section = self.sections[index]
+                self.body.scrollToAnchor(section.anchor)
+                self.current_section = section.title
+            event.accept()
+            return
         else:
             super().keyPressEvent(event)
             return

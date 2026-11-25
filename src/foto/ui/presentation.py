@@ -590,6 +590,28 @@ def is_group_end(key: int, shift: bool) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Ayuda contextual
+# ---------------------------------------------------------------------------
+def help_section_for_context(
+    *, viewer_visible: bool, panel_focused: bool, grid_focused: bool
+) -> str | None:
+    """Sección de la ayuda que toca abrir según la vista actual (§ 2.1).
+
+    El visor abierto gana («Visor»); después el foco del panel de metadatos
+    y el de la rejilla. Sin contexto reconocible devuelve ``None``: la ayuda
+    abre en el inicio, sin ancla. Si el título no existiera en
+    ``ayuda.md``, el overlay también cae al inicio.
+    """
+    if viewer_visible:
+        return "Visor"
+    if panel_focused:
+        return "Panel de metadatos"
+    if grid_focused:
+        return "Rejilla"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Color atenuado (token fg.muted), parte pura
 # ---------------------------------------------------------------------------
 def muted_rgb(

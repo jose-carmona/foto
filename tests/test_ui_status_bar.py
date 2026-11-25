@@ -81,3 +81,67 @@ def test_no_callers_pass_the_canonical_location_to_the_status_bar():
         for line in text.splitlines():
             if "set_counts" in line:
                 assert "canonical" not in line, (source, line)
+
+
+# ----------------------------------------------------------------------
+# Modo AYUDA (T2.5 del plan de la ventana de ayuda)
+# ----------------------------------------------------------------------
+def test_help_mode_shows_the_keys_hint_and_the_unified_close_hint(qapp):
+    """T2.5: izquierda con las teclas y el salto 1–N; derecha, Esc/q."""
+    status = _status_bar(qapp)
+
+    status.set_counts(3, 10, "una.jpg")
+    status.set_help_mode(True, sections=6)
+
+    assert status.mode_label.text() == "AYUDA"
+    assert status.message_label.text() == (
+        "j/k · PgUp/PgDn · Home/End · 1–6 secciones"
+    )
+    assert _right_text(status) == "Esc/q cerrar"
+
+
+def test_help_mode_without_sections_omits_the_jump_hint(qapp):
+    status = _status_bar(qapp)
+
+    status.set_help_mode(True)
+
+    assert status.message_label.text() == "j/k · PgUp/PgDn · Home/End"
+    assert _right_text(status) == "Esc/q cerrar"
+
+
+def test_help_mode_right_text_survives_refresh_right(qapp):
+    """T2.5: refresh_right no vuelve a colgar el «Esc cerrar» suelto."""
+    status = _status_bar(qapp)
+
+    status.set_help_mode(True, sections=6)
+    status.refresh_right()
+
+    assert _right_text(status) == "Esc/q cerrar"
+
+
+def test_help_mode_exit_restores_the_message_and_the_normal_color(qapp):
+    """T2.5: al salir se restaura el mensaje anterior y el color normal."""
+    status = _status_bar(qapp)
+
+    status.set_counts(3, 10, "una.jpg")
+    status.show_message("filtro aplicado", 3000)
+    status.set_help_mode(True, sections=6)
+    status.set_help_mode(False)
+
+    assert status.mode_label.text() == "NORMAL"
+    assert status.message_label.text() == "filtro aplicado"
+    assert _right_text(status) == "3 de 10 · una.jpg"
+    assert status.message_label.styleSheet() == ""
+
+
+def test_restored_message_does_not_keep_the_color_of_an_earlier_error(qapp):
+    """T2.5: el color de un error previo no se cuela en el mensaje restaurado."""
+    status = _status_bar(qapp)
+
+    status.show_message("filtro aplicado", 3000)
+    status.show_error("comando desconocido")
+    status.clear_error()
+    status.set_help_mode(True, sections=6)
+    status.set_help_mode(False)
+
+    assert status.message_label.styleSheet() == ""

@@ -105,6 +105,7 @@ from foto.ui.presentation import (
     SORT_KEYS,
     build_search_index,
     find_tag_in_catalog,
+    help_section_for_context,
     location_banner_parts,
     location_banner_text,
     location_rows,
@@ -1073,15 +1074,22 @@ class PhotoWindow(QMainWindow):
         self._layout_content()
         self.status.position_popup()
         if self.help_overlay.isVisible():
-            self._center_overlay(self.help_overlay)
+            self._center_overlay(self.help_overlay, max_width=960, max_height=820)
         if self.locations_overlay.isVisible():
             self._center_overlay(self.locations_overlay)
 
-    def _center_overlay(self, overlay: QWidget) -> None:
-        """Centra un overlay informativo (ayuda, ubicaciones) sobre el contenido."""
+    def _center_overlay(
+        self, overlay: QWidget, *, max_width: int = 760, max_height: int = 760
+    ) -> None:
+        """Centra un overlay informativo (ayuda, ubicaciones) sobre el contenido.
+
+        La ayuda usa ``max_width=960`` y ``max_height=820`` (§ 2.4 del plan de
+        ayuda); el panel de ubicaciones conserva su máximo de 760. Los
+        márgenes de 64 px y los mínimos 320×260 son comunes.
+        """
         content_rect = self.content.geometry()
-        width = min(760, max(320, content_rect.width() - 64))
-        height = min(760, max(260, content_rect.height() - 64))
+        width = min(max_width, max(320, content_rect.width() - 64))
+        height = min(max_height, max(260, content_rect.height() - 64))
         x = content_rect.x() + (content_rect.width() - width) // 2
         y = content_rect.y() + (content_rect.height() - height) // 2
         overlay.setGeometry(x, y, width, height)
@@ -1726,7 +1734,9 @@ class PhotoWindow(QMainWindow):
             QApplication.quit()
             return
         if command == "help":
-            self._toggle_help()
+            # Sin contexto de vista: el prompt era el contexto y al cerrarse
+            # el foco vuelve a la rejilla. La ayuda abre al inicio (Globales).
+            self._toggle_help(contextual=False)
             return
         if command == "locations":
             # Estado de las ubicaciones de la fototeca (ADR 0010, Decisión 7).
@@ -2054,7 +2064,7 @@ class PhotoWindow(QMainWindow):
                 self._focus_current_view()
             self.status.show_message("panel oculto", 2000)
 
-    def _toggle_help(self) -> None:
+    def _toggle_help(self, contextual: bool = True) -> None:
         if self.help_overlay.isVisible():
             self.help_overlay.hide()
             self._hide_content_blocker()
@@ -2064,12 +2074,27 @@ class PhotoWindow(QMainWindow):
             # Un solo overlay abierto a la vez (docs/diseno-ui.md).
             if self.locations_overlay.isVisible():
                 self.locations_overlay.hide()
-            self._center_overlay(self.help_overlay)
+            # La sección se deduce antes de mover el foco al overlay: es el
+            # foco y la vista del momento los que deciden (§ 2.1). ``:help``
+            # pide contextual=False: viene de la línea de comandos y, al
+            # cerrarse el prompt, Qt devuelve el foco a la rejilla —un foco
+            # heredado, no un contexto de vista—, así que abre al inicio.
+            section = (
+                help_section_for_context(
+                    viewer_visible=self._viewer_visible,
+                    panel_focused=self.panel.scroll.hasFocus(),
+                    grid_focused=self.grid.hasFocus(),
+                )
+                if contextual
+                else None
+            )
+            self._center_overlay(self.help_overlay, max_width=960, max_height=820)
             self._show_content_blocker()
             self.help_overlay.show()
             self.help_overlay.raise_()
             self.help_overlay.setFocus()
-            self.status.set_help_mode(True)
+            self.help_overlay.show_section(section)
+            self.status.set_help_mode(True, sections=len(self.help_overlay.sections))
 
     def _banner_dismissed(self) -> None:
         """El aviso se cerró (Esc, «✕» o autocierre de 30 s)."""
