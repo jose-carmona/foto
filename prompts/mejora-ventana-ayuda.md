@@ -1,306 +1,412 @@
-# Mejora de la ventana de ayuda: propuesta para discutir
+# Mejora de la ventana de ayuda: plan de ejecución
 
 - **Fecha:** 2026-11-25
 - **Ámbito:** `src/foto/ui/help.py`, `src/foto/ui/theme.py`, `src/foto/ui/window.py`,
-  `src/foto/ui/panels.py`, `src/foto/resources/ayuda.md`, `docs/diseno-ui.md` y tests de UI.
-- **Estado:** propuesta. **No se ha modificado código de la aplicación.**
+  `src/foto/ui/panels.py`, `src/foto/ui/presentation.py`,
+  `src/foto/resources/ayuda.md`, `docs/diseno-ui.md` y tests de UI.
+- **Estado:** fase 0 cerrada y decisiones cerradas. Fases 1 y 2 listas para
+  ejecutar; de la fase 3 solo entra la ayuda contextual, absorbida en T2.4. **No se
+  ha modificado código de la aplicación todavía.**
 - **Objetivo:** mejorar el aspecto y la usabilidad del overlay de ayuda (`?` / `F1` /
   `:help`) sin cambiar su contrato: `ayuda.md` sigue siendo la fuente única del
   contenido y el render sigue siendo propio, con el tema activo.
 
-> Este documento es la base de discusión, no un prompt de ejecución. Las decisiones
-> abiertas están en § 8 y deben cerrarse antes de convertirlo en tareas. Las
-> referencias a líneas corresponden al estado del árbol en la fecha indicada.
+> **Seguimiento.** Este fichero es el registro de tareas. Al terminar cada una:
+> márcala `[x]` con la fecha y, si hubo desviaciones del enunciado, añade debajo una
+> línea `> Nota (fecha): …`. No reordenes ni borres tareas; si aparece una pendiente
+> nueva, añádela al final de su fase con el mismo formato. Una tarea solo está
+> cerrada con sus tests en verde y `uv run pytest` + `uv run ruff check .` completos.
+> Las tareas de código pueden empezar: T0.3 está marcada.
 
 ---
 
-## 0. Resumen
+## 0. Resumen y estado
 
 - El mayor problema no es de diseño: **las fichas de tecla son invisibles** porque
   comparten color con el fondo del overlay, y **los párrafos se rompen** porque el
   renderer trata cada línea del markdown como un párrafo.
-- Con tres arreglos de bajo riesgo (fichas, párrafos y espacios) y las teclas de
-  scroll completas, la ayuda cambia de aspecto y de uso sin tocar el contenido.
-- Encima de eso, la propuesta añade índice `1`–`9`, cabecera con cierre, tamaño
-  responsive y, opcionalmente, filtro `/`.
-- Hay ocho decisiones abiertas en § 8; ninguna bloquea la fase 1.
+- La fase 1 corrige eso y completa las teclas de scroll. No cambia el contenido.
+- La fase 2 añade índice fijo, cabecera, apertura contextual, tamaño responsive,
+  tipografía, interlineado y contenido reordenado.
+- Se descartan el filtro `/`, el cierre con ratón y la selección de texto con teclado.
 
----
-
-## 1. Cómo se ha evaluado
-
-Se ha renderizado el overlay con la plataforma `offscreen` en dos tamaños y dos temas:
-
-| Caso | Geometría del overlay | Observación |
+| Fase | Estado | Tareas |
 | --- | --- | --- |
-| 1280×800, oscuro | `(260, 32, 760, 708)` | Caben ~2,5 secciones; el documento tiene 6 |
-| 1280×800, claro | `(260, 32, 760, 708)` | Mismo resultado; las fichas tampoco se ven |
-| 640×480, oscuro | `(32, 32, 576, 388)` | Solo ~6 filas de tabla visibles |
-
-También se ha comprobado el comportamiento del teclado con el foco en el overlay y
-con el foco dentro del `QTextBrowser` tras un clic, y se ha probado qué CSS inline
-acepta Qt en rich text.
+| 0. Documento, decisiones y punto de retorno | Hecho | T0.1–T0.4 |
+| 1. Render y navegación P0 | Pendiente | T1.1–T1.5 |
+| 2. Índice, cabecera, responsive y contenido | Pendiente | T2.1–T2.11 |
+| 3. Filtro, ratón y selección | **Descartado** | — |
+| 3b. Ayuda contextual | Incluida en T2.4 | — |
 
 ---
 
-## 2. Diagnóstico
+## 1. Decisiones cerradas (2026-11-25)
 
-### 2.1 Defectos que explican el aspecto actual
+| # | Decisión | Elección | Consecuencia |
+| --- | --- | --- | --- |
+| 1 | Alcance | **Fases 1 y 2**; de la fase 3 solo la ayuda contextual | No hay filtro `/`, ni cierre con ratón, ni selección con teclado |
+| 2 | Apertura | **Según la vista actual** | `?`, `F1` y `:help` abren en la sección de la vista; sin contexto, en el inicio |
+| 3 | Índice | **Cabecera fija con índice** | El índice no scrollea; el documento conserva su título `# Ayuda` en el cuerpo |
+| 4 | Cierre con ratón | **Solo teclado** | No hay «✕» ni cierre al hacer clic fuera; `Esc` y `q` cierran |
+| 5 | Ancho | **960 px responsive** | El panel de ubicaciones conserva su máximo de 760 px |
+| 6 | Contenido | **Reordenar y condensar** | Orden: Globales, Rejilla, Visor, Panel, Comandos, Ubicaciones |
+| 7 | Interlineado | **Aplicar 1,4** | Se aplica con `QTextBlockFormat` después de `setHtml` |
+| 8 | Búsqueda | **Sin búsqueda; índice 1–9** | Se descartan el filtro `/` y `QTextDocument.find` |
+| 9 | Documento | **Un solo documento** | Este fichero contiene propuesta, decisiones, tareas y registro |
+
+---
+
+## 2. Comportamiento acordado
+
+### 2.1 Apertura contextual
+
+| Contexto | Sección |
+| --- | --- |
+| Visor abierto (`_viewer_visible`) | `Visor` |
+| Foco en el panel (`panel.scroll.hasFocus()`) | `Panel de metadatos` |
+| Foco en la rejilla (`grid.hasFocus()`) | `Rejilla` |
+| Sin contexto reconocible | Inicio (sin ancla) |
+
+- `?`, `F1` y `:help` usan el mismo criterio.
+- Si el título no existe en `ayuda.md`, se abre en el inicio.
+- Con la ayuda ya visible, `?` / `F1` la cierran como hoy; no cambian de sección.
+
+### 2.2 Cabecera fija
+
+```
+┌ 1 Globales · 2 Rejilla · 3 Visor · 4 Panel · 5 Comandos · 6 Ubicaciones   Esc/q cerrar ┐
+├──────────────────────────────────────────────────────────────────────────────────────────┤
+│ Ayuda                                                                                    │
+│ Todo funciona con el teclado: no hay menús ni ratón necesario…                           │
+│ …                                                                                        │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+- Cabecera: índice generado desde los encabezados `##` y pista `Esc/q cerrar`.
+- Sin botones ni «✕»: el cierre es solo por teclado.
+- El cuerpo conserva el título `# Ayuda`; la cabecera no lo duplica.
+- El índice no scrollea; el cuerpo sí.
+
+### 2.3 Teclas de la ayuda
+
+| Tecla | Acción |
+| --- | --- |
+| `↑` / `↓` o `j` / `k` | Una línea arriba / abajo |
+| `PgDn` / `PgUp` | Una página abajo / arriba |
+| `Espacio` / `Shift+Espacio` | Una página abajo / arriba |
+| `Home` / `End` | Principio / final de la ayuda |
+| `Ctrl+d` / `Ctrl+u` | Media página abajo / arriba |
+| `1`–`9` | Saltar a la sección N |
+| `Esc` / `q` | Cerrar la ayuda |
+
+- El paso de línea sale de las métricas de la fuente del documento, no de 40 px
+  fijos.
+- El comportamiento debe ser el mismo con el foco en el overlay y con el foco
+  dentro del navegador tras un clic. La solución más simple es que el navegador no
+  reciba foco; si se mantiene, hay que enrutar sus teclas al mismo handler.
+
+### 2.4 Tamaño, tipografía y render
+
+- Geometría de la ayuda: ancho `min(960, contenido - 64)`, alto
+  `min(820, contenido - 64)`, mínimos 320×260. El panel de ubicaciones sigue con
+  máximo 760.
+- Escala: `h1` 20 px/600, `h2` 15 px/600, cuerpo 13 px, cabecera de tabla 12 px/600
+  en `fg.muted`.
+- Interlineado 1,4 en todos los bloques; si las tablas se desbordan, aplicar solo a
+  párrafos y encabezados.
+- Fichas: fondo derivado de la superficie del overlay, texto `WindowText`, mono 12 px
+  y contraste ≥ 4,5:1 en claro y oscuro.
+- Párrafos: líneas consecutivas se unen; una línea en blanco separa párrafos.
+- Tabla: sin líneas internas, teclas ~38 % y acciones ~62 %, cabecera atenuada.
+- Reglas de sección con `Midlight`, no con `Mid`.
+
+### 2.5 Contenido
+
+- Orden: Globales, Rejilla, Visor, Panel de metadatos, Comandos, Ubicaciones.
+- La introducción añade que `q` cierra la ayuda y resume las teclas de navegación
+  internas (`PgUp`/`PgDn`, `Home`/`End`, `Espacio`, `Ctrl+d`/`Ctrl+u`, `1`–`9`).
+- «Ubicaciones» se condensa a 2–3 frases y su tabla.
+- «Panel de metadatos» reduce la prosa a una línea de contexto y su tabla.
+- `docs/diseno-ui.md` documenta las teclas nuevas, la apertura contextual, la
+  cabecera fija y el máximo de 960 px.
+
+### 2.6 Descartado por decisión
+
+- **Filtro `/` y búsqueda interna:** con seis secciones, el índice `1`–`9` es
+  suficiente.
+- **Cierre con ratón («✕» y clic fuera):** la ayuda sigue siendo teclado-primero; la
+  pista de cierre va en la cabecera y en la barra de estado.
+- **Selección de texto con teclado:** no entra en esta entrega; la selección con
+  ratón se mantiene.
+
+---
+
+## 3. Diagnóstico que motiva el plan
+
+### 3.1 Defectos
 
 | # | Hallazgo | Evidencia | Dónde |
 | --- | --- | --- | --- |
 | D1 | **Las fichas de tecla son invisibles** | `_help_chip()` usa `QPalette.AlternateBase` como fondo; `HelpOverlay` pinta su propia `Window` con ese mismo `AlternateBase`. Claro: `#fafafa` sobre `#fafafa`. Oscuro: `#383838` sobre `#383838`. | `help.py:76-84`, `help.py:222-224` |
-| D2 | **Cada línea del markdown es un párrafo** | `render_help` añade un bloque `paragraph` por cada línea no vacía. Los párrafos escritos a mano se rompen en 3–6 párrafos con huecos y frases partidas («Con el foco en el panel, las teclas» / «de la rejilla siguen operando…»). | `help.py:173-191` |
+| D2 | **Cada línea del markdown es un párrafo** | `render_help` añade un bloque `paragraph` por cada línea no vacía. Los párrafos escritos a mano se rompen en 3–6 párrafos con huecos y frases partidas. | `help.py:173-191` |
 | D3 | **Espacios dobles alrededor de las fichas** | `_help_inline` une los trozos con `" ".join(...)` y la ficha ya lleva `nbsp` de padding: «Esc  siempre», «Ctrl+q  sale». | `help.py:92-99` |
-| D4 | **Jerarquía tipográfica fuera de escala** | `h1` a 26 px y `h2` a 20 px; la guía fija títulos de 15 y 20 px. Cada encabezado lleva un `hr` con `Mid`, demasiado fuerte; la cabecera «Tecla/Acción» va en negrita a 13 px y compite con el título. | `help.py:102-109`, `help.py:128-142` |
+| D4 | **Jerarquía tipográfica fuera de escala** | `h1` a 26 px y `h2` a 20 px; la guía fija títulos de 15 y 20 px. Cada encabezado lleva un `hr` con `Mid`; la cabecera «Tecla/Acción» compite con el título. | `help.py:102-109`, `help.py:128-142` |
 | D5 | **Tamaño fijo poco adaptable** | 760×708 siempre. En 4K se queda pequeño; en 640×480 deja 388 px de alto. | `window.py:1080-1087` |
-| D6 | **Navegación de scroll incompleta e inconsistente** | Con el foco en el overlay solo funcionan ↑/↓ y j/k, con paso fijo de 40 px. `PgDn`, `PgUp`, `Home`, `End`, `Espacio` y `Ctrl+d/u` no hacen nada. Con el foco dentro del navegador (tras un clic) sí funcionan, pero las flechas pasan a 20 px. | `help.py:267-284` |
+| D6 | **Navegación de scroll incompleta** | Con el foco en el overlay solo funcionan ↑/↓ y j/k, con paso fijo de 40 px. `PgDn`, `PgUp`, `Home`, `End`, `Espacio` y `Ctrl+d/u` no hacen nada. | `help.py:267-284` |
 | D7 | **Sin índice ni orientación** | Seis secciones y ~2,5 visibles por pantalla; no hay forma de saltar ni de saber dónde se está. | `ayuda.md`, `help.py` |
-| D8 | **Sin cierre visible en el overlay** | El cierre depende de la barra de estado («Esc/q cerrar»), que además cambia a «Esc cerrar» según la ruta (`set_help_mode` vs `refresh_right`). El banner de ubicaciones sí tiene «✕». | `panels.py:564-575`, `panels.py:665-679` |
-| D9 | **Semántica de accesibilidad pobre** | Encabezados como `<p>` estilados, cabeceras de tabla como `<td><b>` y `body` sin nombre accesible. El lector de pantalla no puede navegar por secciones ni por cabeceras. | `help.py:102-142`, `help.py:230-243` |
-| D10 | **Contenido desequilibrado** | «Ubicaciones» es un manual de ~150 palabras en medio de una ayuda de atajos; «Panel de metadatos» tiene prosa larga. El valor de la ayuda son las tablas. | `ayuda.md` |
+| D8 | **Sin cierre visible en el overlay** | El cierre depende de la barra de estado, que además cambia entre «Esc/q cerrar» y «Esc cerrar». | `panels.py:564-575`, `panels.py:665-679` |
+| D9 | **Semántica de accesibilidad pobre** | Encabezados como `<p>` estilados, cabeceras de tabla como `<td><b>` y `body` sin nombre accesible. | `help.py:102-142`, `help.py:230-243` |
+| D10 | **Contenido desequilibrado** | «Ubicaciones» es un manual de ~150 palabras en medio de una ayuda de atajos; «Panel de metadatos» tiene prosa larga. | `ayuda.md` |
 
-### 2.2 Restricciones técnicas comprobadas
+### 3.2 Restricciones técnicas comprobadas
 
 - Qt rich text **sí** aplica `background-color` en un `<span>` inline, pero **ignora**
   `padding`, `border` y `border-radius` en ese contexto. La ficha puede tener fondo y
-  texto monoespaciado, pero será plana; el aire horizontal se consigue con `nbsp`,
-  como ya hace `_help_chip_pad`.
-- Qt rich text **ignora** `line-height` en el CSS inline. Si se quiere el 1,4 de la
-  guía, hay que aplicarlo con `QTextBlockFormat.setLineHeight` después de `setHtml`.
+  texto monoespaciado, pero será plana; el aire horizontal se consigue con `nbsp`.
+- Qt rich text **ignora** `line-height` en el CSS inline. Hay que aplicar 1,4 con
+  `QTextBlockFormat.setLineHeight` después de `setHtml`.
 - `<h2 style="...">` y `<th align="left">` sí funcionan y permiten mantener la
   semántica sin perder el control visual.
 
 ---
 
-## 3. Objetivos y no objetivos
+## 4. Tareas
 
-### Objetivos
+### Fase 0 — Documento, decisiones y punto de retorno
 
-1. Que las fichas de tecla se lean como fichas y la tabla se escanee de un vistazo.
-2. Que los párrafos del documento se lean como párrafos, no como líneas sueltas.
-3. Que la ayuda se pueda recorrer entera con el teclado de forma predecible.
-4. Que en ventanas pequeñas siga siendo usable y en pantallas grandes no se quede
-   diminuta.
-5. Mantener `ayuda.md` como fuente única y el render propio, sin dependencias nuevas.
+- [x] **T0.1 — Redactar la propuesta y crear el punto de retorno.**
+  - **Fecha:** 2026-11-25.
+  - **Resultado:** `prompts/mejora-ventana-ayuda.md` con diagnóstico, propuesta y
+    decisiones abiertas.
+  - **Punto de retorno:** commit `51c1c4a` (`añade propuesta de mejora de la
+    ventana de ayuda`).
+  - **Hecho cuando:** el documento existe y el árbol queda limpio tras el commit.
 
-### No objetivos
+- [x] **T0.2 — Cerrar decisiones y convertir el documento en plan accionable.**
+  - **Fecha:** 2026-11-25.
+  - **Resultado:** § 1 con las nueve decisiones cerradas, § 2 con el comportamiento
+    acordado, § 4 con las tareas de las fases 1 y 2 y el registro de avance.
+  - **Hecho cuando:** no quedan decisiones abiertas y lo descartado está registrado.
 
-- No se propone cambiar el modelo de modos ni el contrato de `?`/`F1`/`:help`.
-- No se propone empaquetar fuentes, iconos ni imágenes para las fichas.
-- No se propone reescribir el documento como HTML a mano.
-- No se propone añadir animaciones ni sombras (la guía las descarta).
-- No se propone tocar el indexador, el catálogo ni la lógica de negocio.
+- [x] **T0.3 — Revisión y visto bueno del plan.**
+  - **Fecha:** 2026-11-25.
+  - **Responsable:** proyectista.
+  - **Resultado:** visto bueno; autoriza empezar la fase 1.
+  - **Bloqueaba:** T1.1. Ya desbloqueada.
+
+- [x] **T0.4 — Commit del plan actualizado.**
+  - **Fecha:** 2026-11-25.
+  - **Hecho cuando:** el proyectista autoriza el commit, el mensaje es corto e
+    imperativo y `git status` queda limpio.
+  - **Resultado:** plan actualizado commiteado; el hash queda en el historial de git.
+
+### Fase 1 — Render y navegación P0
+
+- [ ] **T1.1 — Fichas de tecla visibles y con contraste.**
+  - **Ficheros:** `src/foto/ui/theme.py`, `src/foto/ui/help.py`,
+    `tests/test_ui_help.py`.
+  - **Cambio:** añadir a `theme.py` un token `help_chip_surface(...)` que derive la
+    superficie de la ficha de la superficie del overlay (claro: oscurecer; oscuro:
+    aclarar). `_help_chip()` lo consume y usa `WindowText` para el texto. Mantener la
+    monoespaciada de 12 px y el padding con `nbsp`.
+  - **Resultado:** en claro y oscuro la ficha se distingue del fondo; el texto
+    mantiene 4,5:1.
+  - **Tests:** aplicar `apply_light_palette` y `apply_dark_palette`, renderizar la
+    ayuda, extraer el `background-color` y el `color` de una ficha y comprobar que el
+    fondo difiere del fondo del overlay y que el contraste es ≥ 4,5:1.
+  - **Hecho cuando:** los tests nuevos pasan en ambos temas.
+
+- [ ] **T1.2 — Párrafos agrupados y con aire.**
+  - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
+  - **Cambio:** en `render_help`, acumular líneas consecutivas hasta una línea en
+    blanco, una tabla o un encabezado; emitir un solo `<p>` por bloque. Añadir
+    `margin-bottom: 12px` al párrafo.
+  - **Resultado:** un párrafo escrito en varias líneas se lee como un párrafo; no hay
+    frases partidas ni huecos accidentales.
+  - **Tests:** `render_help("l1\nl2\n\nl3")` contiene `l1 l2` en un solo párrafo y
+    `l3` en otro; no contiene `l1</p><p>l2`.
+  - **Hecho cuando:** el documento real renderiza la introducción y «Ubicaciones»
+    como párrafos completos.
+
+- [ ] **T1.3 — Espacios de ficha sin duplicar ni chocar con puntuación.**
+  - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
+  - **Cambio:** sustituir `" ".join(pieces)` por `"".join(pieces)`. Ajustar el padding
+    de la ficha según el contexto: sin `nbsp` final antes de `, . ; : ! ? ) »` y sin
+    `nbsp` inicial después de `( [ { «`. Mantener el padding en tablas y en los
+    extremos de una celda.
+  - **Resultado:** «Esc siempre», no «Esc  siempre»; «config.toml, ADR», no
+    «config.toml , ADR».
+  - **Tests:** `render_help("texto `Esc` siempre")` no contiene `Esc\u00a0\u00a0  `;
+    `render_help("texto `config.toml`, ADR")` no contiene `\u00a0</span>,`.
+  - **Hecho cuando:** los tests nuevos pasan y `_help_cell_width` sigue midiendo las
+    tablas sin partir filas.
+
+- [ ] **T1.4 — Teclas de scroll completas y con paso consistente.**
+  - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
+  - **Cambio:** ampliar `HelpOverlay.keyPressEvent` con `PgUp`/`PgDn`,
+    `Home`/`End`, `Espacio`/`Shift+Espacio` y `Ctrl+d`/`Ctrl+u`. Calcular el paso de
+    línea con `QFontMetrics` del documento y la página con `bar.pageStep()`.
+  - **Resultado:** todas las teclas de § 2.3 funcionan; el paso no cambia según dónde
+    esté el foco.
+  - **Tests:** con la ayuda abierta y el foco en el overlay, cada tecla mueve la barra
+    en la cantidad esperada; `Home` lleva al mínimo y `End` al máximo. Si se mantiene
+    el foco en el navegador, repetir el test tras un clic y comprobar el mismo paso.
+  - **Nota:** en una prueba offscreen, un `QTextBrowser` con `NoFocus` sigue
+    permitiendo la selección con ratón; si se elige esa vía, añadir una comprobación
+    de que seleccionar texto no devuelve el foco al navegador.
+  - **Hecho cuando:** los tests cubren todas las teclas y no hay regresión de j/k.
+
+- [ ] **T1.5 — Verificación de la fase 1.**
+  - **Comandos:** `uv run pytest tests/test_ui_help.py tests/test_ui_styles.py`,
+    `uv run pytest`, `uv run ruff check .`.
+  - **Revisión visual:** capturas en claro y oscuro a 1280×800 y 640×480; comprobar
+    fichas, párrafos, espacios y scroll.
+  - **Hecho cuando:** suite y ruff en verde y las capturas no muestran regresiones.
+  - **Nota:** registrar el resultado en § 7.
+
+### Fase 2 — Índice, cabecera, responsive y contenido
+
+- [ ] **T2.1 — Modelo puro de secciones y anclas.**
+  - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
+  - **Cambio:** añadir `HelpSection` (anchor, title) y
+    `help_sections(markdown) -> tuple[HelpSection, ...]`; las anclas son `s1`, `s2`, …
+    en orden de los encabezados `##`. `render_help` inserta
+    `<a name="sN"></a>` antes del encabezado correspondiente.
+  - **Resultado:** el índice y el render comparten el mismo orden; las anclas son
+    estables.
+  - **Tests:** `help_sections` devuelve los títulos en orden y `render_help` contiene
+    las mismas anclas. No se indexa el `# Ayuda` inicial.
+  - **Hecho cuando:** los tests puros pasan sin Qt y el HTML contiene las anclas.
+
+- [ ] **T2.2 — Cabecera fija con índice y pista de cierre.**
+  - **Ficheros:** `src/foto/ui/help.py`, `src/foto/ui/theme.py`,
+    `tests/test_ui_help.py`.
+  - **Cambio:** añadir a `HelpOverlay` un `QWidget` de cabecera con un `QLabel` de
+    índice (`1 Globales · 2 Rejilla · …`) y otro con `Esc/q cerrar`. El índice se
+    genera desde `self.sections`, usa `ui_font(12)` y `set_muted`; el hint va a la
+    derecha. La cabecera no scrollea; el `QTextBrowser` queda debajo.
+  - **Resultado:** el índice siempre visible; sin botones ni «✕».
+  - **Tests:** la cabecera contiene los títulos de todas las secciones; no hay
+    `QToolButton` de cierre; el índice tiene nombre accesible.
+  - **Hecho cuando:** a 960 y a 576 px el índice se lee (puede ocupar dos líneas) y no
+    tapa el cuerpo.
+
+- [ ] **T2.3 — Teclas 1–9 para saltar a secciones.**
+  - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
+  - **Cambio:** en `keyPressEvent`, si la tecla es un dígito `1`–`9` sin
+    `Ctrl`/`Alt`/`Meta`, saltar a la sección N con `body.scrollToAnchor(anchor)`.
+    Ignorar dígitos fuera de rango. Guardar la sección actual en
+    `HelpOverlay.current_section` para los tests.
+  - **Resultado:** `1`–`6` llevan a las seis secciones; `7`–`9` no hacen nada.
+  - **Tests:** pulsar `2` deja `current_section == "Rejilla"` y la barra por encima del
+    mínimo; `Home` vuelve al inicio.
+  - **Hecho cuando:** los tests pasan con la ayuda abierta desde la ventana.
+
+- [ ] **T2.4 — Apertura contextual según la vista.**
+  - **Ficheros:** `src/foto/ui/presentation.py`, `src/foto/ui/window.py`,
+    `src/foto/ui/help.py`, `tests/test_presentation.py`, `tests/test_ui_help.py`.
+  - **Cambio:** añadir a `presentation.py` una función pura
+    `help_section_for_context(*, viewer_visible, panel_focused, grid_focused) -> str | None`
+    con el mapeo de § 2.1. En `_toggle_help`, calcular la sección y llamar a
+    `help_overlay.show_section(...)` después de `show()`/`raise_()`/`setFocus()`.
+    `:help` usa el mismo camino porque llama a `_toggle_help`.
+  - **Resultado:** el visor abre en «Visor», el panel en «Panel de metadatos», la
+    rejilla en «Rejilla» y sin contexto en el inicio.
+  - **Tests:** unitarios del mapeo puro; integración con foco en rejilla y panel.
+    Para el visor, usar el mapeo puro o abrir el visor con el fixture existente.
+  - **Hecho cuando:** los tres contextos abren en su sección y un título inexistente
+    cae al inicio.
+  - **Nota:** si `scrollToAnchor` no posiciona en el primer `show`, aplicar la sección
+    pendiente en `showEvent` o con `QTimer.singleShot(0, …)`; verificar en tests con
+    `processEvents`.
+
+- [ ] **T2.5 — Barra de estado en modo AYUDA.**
+  - **Ficheros:** `src/foto/ui/panels.py`, `src/foto/ui/window.py`,
+    `tests/test_ui_status_bar.py`, `tests/test_ui_help.py`.
+  - **Cambio:** `set_help_mode(enabled, sections=0)` muestra en el área izquierda
+    `j/k · PgUp/PgDn · Home/End · 1–N secciones` y en la derecha `Esc/q cerrar`.
+    Unificar `refresh_right` para que el texto derecho sea siempre `Esc/q cerrar` en
+    modo ayuda. Al salir, restaurar el mensaje anterior y el color normal.
+  - **Resultado:** la ayuda enseña sus propias teclas sin depender de la cabecera; no
+    queda el texto «Esc cerrar» suelto.
+  - **Tests:** activar el modo ayuda, comprobar ambos textos; llamar a `refresh_right`
+    y comprobar que no cambia; salir y comprobar que se restaura el mensaje.
+  - **Hecho cuando:** los tests pasan y el mensaje no conserva el color de un error
+    anterior.
+
+- [ ] **T2.6 — Geometría responsive de 960 px.**
+  - **Ficheros:** `src/foto/ui/window.py`, `tests/test_ui_help.py`,
+    `tests/test_ui_locations.py` si cubre geometría.
+  - **Cambio:** parametrizar `_center_overlay` con `max_width` y `max_height`; la
+    ayuda usa `max_width=960` y `max_height=820`; el panel de ubicaciones conserva
+    760. Mantener la fórmula de márgenes de 64 px y los mínimos actuales.
+  - **Resultado:** a 1280×800 la ayuda mide 960 de ancho; a 640×480, 576; a 1920×1080
+    no supera 960×820.
+  - **Tests:** redimensionar la ventana y comprobar `help_overlay.width()` y que el
+    panel de ubicaciones sigue con su máximo.
+  - **Hecho cuando:** los tests pasan y no hay recortes en 640×480.
+
+- [ ] **T2.7 — Escala tipográfica, reglas y tabla.**
+  - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
+  - **Cambio:** `h1` 20 px/600, `h2` 15 px/600; cabecera de tabla 12 px/600 en
+    `fg.muted`; reglas con `Midlight`; espaciado de § 2.4. Usar `<th>` para la
+    cabecera y `<td>` para las filas.
+  - **Resultado:** el título no domina la pantalla; las tablas se escanean y la
+    cabecera no compite con el título.
+  - **Tests:** el HTML contiene `font-size:20px`, `font-size:15px`, `<th` y el color
+    atenuado; la fila de teclas conserva un único ancho de columna.
+  - **Hecho cuando:** los tests pasan y la captura a 640×480 sigue siendo legible.
+
+- [ ] **T2.8 — Interlineado 1,4.**
+  - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
+  - **Cambio:** tras `setHtml`, recorrer los bloques del documento y aplicar
+    `QTextBlockFormat.setLineHeight(140, ProportionalHeight)`. Reaplicar en cada
+    `_render` y conservar el scroll en `retheme`.
+  - **Resultado:** el texto respira como pide la guía; las tablas no se desbordan.
+  - **Tests:** el primer bloque tiene `lineHeight() == 140` y el tipo proporcional.
+  - **Hecho cuando:** el test pasa y una captura confirma que las tablas siguen
+    completas. Si alguna tabla se desborda, aplicar solo a párrafos y encabezados y
+    anotarlo.
+
+- [ ] **T2.9 — Reordenar y condensar `ayuda.md`; actualizar `docs/diseno-ui.md`.**
+  - **Ficheros:** `src/foto/resources/ayuda.md`, `docs/diseno-ui.md`,
+    `tests/test_ui_help.py`, `tests/test_ui_documented_features.py`,
+    `tests/test_ui_key_inventory.py`.
+  - **Cambio:** orden de § 2.5; introducción con `q` y las teclas internas;
+    «Ubicaciones» y «Panel de metadatos» condensados. En `docs/diseno-ui.md`, añadir
+    las teclas de § 2.3, la apertura contextual, la cabecera fija y el máximo de
+    960 px.
+  - **Resultado:** la ayuda responde primero «¿qué tecla pulso?»; todas las teclas
+    nuevas están en los tres sitios (código, guía y `ayuda.md`).
+  - **Tests:** las secciones siguen existiendo; todos los comandos documentados siguen
+    en la ayuda; las teclas nuevas aparecen en `ayuda.md` y en `docs/diseno-ui.md`.
+  - **Hecho cuando:** suite completa en verde y el documento se lee de arriba abajo
+    sin prosa sobrante.
+
+- [ ] **T2.10 — Semántica accesible.**
+  - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
+  - **Cambio:** usar `<h1>`/`<h2>` para el título y las secciones, `<th>` para la
+    cabecera de tabla y `body.setAccessibleName("atajos de teclado")`; nombre
+    accesible para el índice de la cabecera.
+  - **Resultado:** el lector de pantalla encuentra encabezados y cabeceras; el cuerpo
+    tiene nombre.
+  - **Tests:** el HTML contiene `<h1`, `<h2` y `<th`; `body.accessibleName()` es el
+    esperado. Actualizar `test_rejected_syntax_stays_out_of_the_renderer`, que hoy
+    espera `T</p>`, a la etiqueta de encabezado que se use.
+  - **Hecho cuando:** los tests pasan y no se pierde el estilo visual.
+
+- [ ] **T2.11 — Verificación de la fase 2.**
+  - **Comandos:** `uv run pytest`, `uv run ruff check .`.
+  - **Revisión visual:** 640×480, 1280×800 y 1920×1080, claro y oscuro. Comprobar
+    índice, teclas `1`–`6`, apertura contextual desde rejilla/panel/visor, cierre con
+    `Esc`/`q`, ausencia de «✕» y de cierre al hacer clic fuera, y que no hay recortes.
+  - **Documentación:** `docs/diseno-ui.md` y `ayuda.md` actualizados.
+  - **Hecho cuando:** suite y ruff en verde; capturas revisadas; `git diff` limitado a
+    los ficheros de § 6.
 
 ---
 
-## 4. Propuesta estética
-
-### 4.1 P0 — corregir lo que ya está roto
-
-**Fichas visibles y con contraste**
-
-- Añadir a `theme.py` un token de superficie de ficha, p. ej.
-  `help_chip_surface(widget) -> QColor`, derivado de la paleta del overlay con un
-  delta de luminancia mínimo y texto `WindowText`. El widget no escribe colores
-  literales: consume la capa de tokens, como el resto de la UI.
-- Valores orientativos, no vinculantes: en claro, superficie del overlay `#fafafa` y
-  ficha `#e8e8e8`; en oscuro, `#383838` y `#4b4b4b`. El texto debe mantener 4,5:1
-  sobre la ficha.
-- Mantener la monoespaciada a 12 px y el `nbsp` de padding. Aceptar la ficha plana:
-  Qt no permite radios inline y la guía prohíbe radios mayores de 6 px.
-
-**Párrafos de verdad**
-
-- Agrupar líneas consecutivas hasta una línea en blanco y emitir un solo `<p>` por
-  bloque. Las tablas y los encabezados siguen cortando el bloque.
-- Añadir un margen inferior de 10–12 px por párrafo para conservar el aire que hoy
-  dan, por accidente, los párrafos troceados.
-- Si en el futuro se quiere un salto duro dentro de un párrafo, documentar la sintaxis
-  (por ejemplo, dos espacios finales) en lugar de depender del ancho de línea.
-
-**Espacios correctos**
-
-- Cambiar `" ".join(pieces)` por `"".join(pieces)` en `_help_inline`; los espacios
-  del documento ya están donde deben. Añadir un test que compruebe que no hay doble
-  espacio ni espacio antes de puntuación alrededor de una ficha.
-
-**Tests de regresión**
-
-- Ficha: el color de fondo difiere del fondo del overlay y el contraste del texto es
-  ≥ 4,5:1 en claro y oscuro.
-- Párrafos: un párrafo del markdown con líneas consecutivas genera un único `<p>`.
-- Espacios: `render_help("texto `Esc` siempre")` no contiene `Esc  ` ni `  siempre`.
-
-### 4.2 P1 — jerarquía y ritmo
-
-**Escala tipográfica**
-
-| Elemento | Actual | Propuesto |
-| --- | --- | --- |
-| Título del documento (`#`) | 26 px / 600 | 20 px / 600 |
-| Sección (`##`) | 20 px / 600 | 15 px / 600 |
-| Cuerpo | 13 px | 13 px |
-| Cabecera de tabla | 13 px / 700 | 12 px / 600 en `fg.muted` |
-
-- Regla de separación con `Midlight` en lugar de `Mid`, o solo bajo el título. La
-  guía pide líneas solo cuando aportan estructura; seis reglas fuertes compiten con
-  las tablas.
-- Espaciado: 20–24 px entre secciones, 8 px bajo el encabezado, 12 px entre
-  párrafos, 6–8 px por fila.
-- Interlineado 1,4 aplicado con `QTextBlockFormat` si se decide asumir el coste; el
-  CSS no basta.
-
-**Tabla**
-
-- Columna de teclas ~38 % y de acciones ~62 %, alineación superior, sin líneas
-  internas. Mantener el ancho global de la columna de teclas (ya existe) para que
-  todas las tablas queden alineadas.
-- Los separadores «/» y «o» entre fichas, en `fg.muted`, para que las teclas
-  destaquen sin convertirse en decoración.
-- Cabecera de tabla en `fg.muted` y 12 px: deja de competir con el título.
-
-**Cabecera fija del overlay**
-
-```
-┌ Ayuda ───────────────────────────────── Esc/q cerrar  ✕ ┐
-│ 1 Globales  2 Rejilla  3 Visor  4 Panel  5 Comandos      │
-│ 6 Ubicaciones                                            │
-├──────────────────────────────────────────────────────────┤
-│ Globales                                                 │
-│ Funcionan en cualquier vista.                            │
-│                                                          │
-│ Tecla            Acción                                  │
-│ ? / F1           Mostrar u ocultar esta ayuda            │
-│ :                Línea de comandos                       │
-│ …                                                        │
-└──────────────────────────────────────────────────────────┘
-```
-
-- Título + pista de cierre + «✕» de 24×24 con tooltip «Cerrar (Esc)» y nombre
-  accesible, como el banner de ubicaciones. El «✕» emite una señal que la ventana
-  conecta a `_toggle_help`, para que también oculte el blocker y restaure el estado.
-- La cabecera no scrollea; el `QTextBrowser` queda debajo.
-
-### 4.3 P2 — tamaño y acabado
-
-- Geometría responsive: ancho `min(960, 78 % del contenido)`, alto
-  `min(820, 82 %)`, mínimos 320×260. En ventanas anchas, limitar la medida del texto
-  a ~72 caracteres; las tablas pueden usar todo el ancho.
-- `_center_overlay` es compartido con el panel de ubicaciones: parametrizar los
-  máximos por overlay en lugar de cambiar el comportamiento de ambos a la vez.
-- Borde de 1 px `Midlight` (hoy `Mid`); sin sombra, según la guía.
-
----
-
-## 5. Propuesta de usabilidad
-
-### 5.1 P0 — navegación completa y predecible
-
-- Añadir a `HelpOverlay.keyPressEvent`:
-  - `PgDn` / `PgUp`: una página.
-  - `Home` / `End`: principio / final.
-  - `Espacio` / `Shift+Espacio`: una página abajo / arriba.
-  - `Ctrl+d` / `Ctrl+u`: media página, coherente con la rejilla.
-- Calcular el paso de línea con las métricas de la fuente del documento, no con 40 px
-  fijos. Así el paso no depende del tamaño de fuente ni del tema.
-- Mantener ↑/↓ y j/k como están; son los que ya conoce el usuario de la rejilla.
-- Con el foco dentro del `QTextBrowser` tras un clic, el navegador ya scrollea; hay
-  que evitar que el paso cambie (20 px frente a 40 px). La forma más simple es que el
-  overlay controle siempre el scroll y el navegador no reciba foco, o que ambos usen
-  el mismo paso.
-- Documentar `q` como cierre de la ayuda en la introducción de `ayuda.md` (ya
-  funciona vía `_dispatch`, pero no aparece en el documento).
-
-### 5.2 P1 — orientación
-
-**Índice de secciones con teclas 1–9**
-
-- Generar el índice desde los encabezados del markdown, no escribirlo a mano: una
-  función pura `help_sections(markdown) -> list[tuple[str, str]]` en `help.py`, con
-  tests sin Qt.
-- Añadir anclas estables (`s1`, `s2`, …) a los encabezados y usar
-  `body.scrollToAnchor("sN")`.
-- Teclas `1`–`9`: saltan a la sección N. Si hay más de 9 secciones, las restantes no
-  tienen tecla y se llega con scroll. Documentarlo en `ayuda.md` y en
-  `docs/diseno-ui.md`.
-- El índice puede ir en la cabecera fija (§ 4.2) o como primera línea del documento.
-  La cabecera fija es mejor: sigue visible después de saltar.
-
-**Barra de estado en modo AYUDA**
-
-- El área izquierda hoy queda vacía. Mostrar una pista corta:
-  `j/k · PgUp/PgDn · 1–6 secciones`.
-- Unificar el texto derecho: `set_help_mode` pone «Esc/q cerrar» y `refresh_right`
-  pone «Esc cerrar». Debe haber una sola fuente para el texto del modo.
-
-**Ayuda contextual (opcional)**
-
-- `?` desde el visor podría abrir en «Visor»; desde el panel, en «Panel»; `:help`
-  siempre en la introducción.
-- Alternativa más predecible: abrir siempre arriba y marcar la sección actual.
-- Es una decisión de producto; ver § 8.
-
-### 5.3 P2 — búsqueda y ratón
-
-**Buscar dentro de la ayuda**
-
-- `/` dentro del overlay abre un campo inline sobre el cuerpo. Opciones:
-  1. **Filtrar** filas por tecla o descripción, conservando el encabezado de la
-     sección. `Esc` limpia y `Enter` salta a la primera coincidencia. Es lo que más
-     ahorra scroll, pero exige una función pura de filtrado del markdown y tests.
-  2. **Buscar y saltar** con `QTextDocument.find`, sin ocultar nada. Más simple, pero
-     con seis secciones y muchas filas se queda corto.
-- Si se implementa, el campo debe ser alcanzable con teclado y anunciar «sin
-  resultados» en texto, no solo con color.
-
-**Cierre con ratón**
-
-- Clic fuera del overlay (sobre el blocker) para cerrar. Hoy el blocker es un
-  `QWidget` sin `mousePressEvent`.
-- Solo debe cerrar cuando hay un overlay informativo visible; no cuando el blocker
-  está puesto por la línea de comandos.
-
-**Accesibilidad**
-
-- Usar `<h2>` para secciones y `<th>` para cabeceras de tabla.
-- `body.setAccessibleName("atajos de teclado")`.
-- Valorar `TextSelectableByKeyboard` para copiar una tecla o un comando sin ratón,
-  con cuidado de no romper j/k ni el foco.
-- Probar el overlay al 200 % de escala de texto: hoy todo usa píxeles fijos
-  (`ui_font(13)`), así que la ayuda hereda la limitación general de la UI.
-
----
-
-## 6. Contenido de `ayuda.md`
-
-La ayuda debe responder primero «¿qué tecla pulso?» y dejar la prosa en segundo plano.
-
-- **Reordenar por frecuencia:** Globales, Rejilla, Visor, Panel de metadatos,
-  Comandos, Ubicaciones. «Ubicaciones» es un caso avanzado y hoy interrumpe el flujo.
-- **Condensar «Ubicaciones»:** 2–3 frases y la tabla de `:locations`; el detalle de
-  discos ausentes ya está en `docs/diseno-ui.md` y en el ADR 0010.
-- **Acortar «Panel de metadatos»:** una línea de contexto y la tabla; el detalle de
-  chips y tooltips puede quedar en una nota breve.
-- **Introducción:** añadir que `q` también cierra la ayuda y que `?`/`F1` la
-  alternan. Mantener la explicación de `Esc` y `Ctrl+q`.
-- **Evitar líneas largas a mano:** con el renderer corregido, un párrafo puede
-  escribirse en varias líneas sin romperse; aun así, párrafos de 2–3 líneas se leen
-  mejor en 576 px de ancho.
-- No cambiar el orden de las tablas de teclas sin actualizar `docs/diseno-ui.md` y
-  los tests que comprueban que cada atajo documentado aparece en la ayuda.
-
----
-
-## 7. Plan por fases y criterios de aceptación
-
-| Fase | Contenido | Riesgo | Impacto |
-| --- | --- | --- | --- |
-| 1 | D1–D3 + D6: fichas, párrafos, espacios y teclas de scroll; tests de regresión | Bajo; no cambia contenido | Alto: se ve inmediatamente |
-| 2 | D4, D5, D7–D10: tipografía, tamaño responsive, índice, cabecera/cierre, barra de estado, semántica y contenido | Medio | Alto: la ayuda pasa de «documento» a «herramienta» |
-| 3 | Filtro `/`, ayuda contextual, cierre con ratón y selección con teclado | Alto; opcional | Medio |
-
-### Criterios de aceptación
+## 5. Criterios de aceptación globales
 
 - [ ] En claro y oscuro, las fichas se distinguen del fondo y el texto mantiene
       4,5:1.
@@ -309,47 +415,56 @@ La ayuda debe responder primero «¿qué tecla pulso?» y dejar la prosa en segu
 - [ ] No hay espacios dobles ni espacios antes de puntuación alrededor de fichas.
 - [ ] Con el foco en el overlay funcionan ↑/↓, j/k, PgUp/PgDn, Home/End,
       Espacio/Shift+Espacio y Ctrl+d/Ctrl+u, con el mismo paso.
-- [ ] El índice salta a todas las secciones y las anclas son estables.
-- [ ] El overlay se ve bien a 640×480 y a 1920×1080, y no supera el 82 % de alto.
-- [ ] `?`, `F1`, `:help`, `Esc`, `q` y el «✕» cierran/abren como se documenta.
-- [ ] `uv run pytest` y `uv run ruff check .` en verde.
+- [ ] `1`–`9` saltan a las secciones existentes y las anclas son estables.
+- [ ] La ayuda abre en la sección de la vista actual (rejilla, panel o visor) y en el
+      inicio si no hay contexto.
+- [ ] La cabecera fija muestra el índice y `Esc/q cerrar`; no hay «✕» ni cierre con
+      ratón.
+- [ ] El overlay se ve bien a 640×480 y a 1920×1080; el ancho máximo es 960 px y el
+      panel de ubicaciones conserva 760.
+- [ ] El interlineado es 1,4 y las tablas no se desbordan.
+- [ ] `?`, `F1`, `:help`, `Esc` y `q` se comportan como se documenta.
 - [ ] `docs/diseno-ui.md` y `src/foto/resources/ayuda.md` actualizados con las teclas
       nuevas.
+- [ ] `uv run pytest` y `uv run ruff check .` en verde.
 
 ---
 
-## 8. Decisiones abiertas
+## 6. Ficheros y tests afectados
 
-Estas son las preguntas que hay que cerrar antes de ejecutar. Ninguna bloquea la
-fase 1.
-
-1. **Alcance del rediseño.** ¿Solo arreglos visuales (fase 1), o también índice y
-   cabecera (fase 2), o el paquete completo con filtro (fase 3)?
-2. **Apertura contextual.** ¿`?` debe abrir en la sección de la vista actual o
-   siempre en la introducción? La primera es más útil; la segunda, más predecible.
-3. **Índice.** ¿Cabecera fija con índice y «✕», o índice como primera línea del
-   documento para no añadir chrome? La cabecera fija es más útil; el documento
-   queda más limpio sin ella.
-4. **Cierre con ratón.** ¿Se añade el «✕» y el clic fuera, o se mantiene la ayuda
-   estrictamente teclado-primero con la pista de la barra de estado?
-5. **Ancho.** ¿Se amplía el overlay a 960 px como máximo (y se parametriza también
-   el panel de ubicaciones), o se mantiene 760 px para no cambiar la composición?
-6. **Contenido.** ¿Se reordena y condensa `ayuda.md` en esta entrega, o se deja el
-   texto intacto y solo se corrige el render? Reordenar es barato, pero cambia la
-   ayuda que el usuario ya conoce.
-7. **Interlineado.** ¿Se aplica 1,4 con `QTextBlockFormat` (más código, más aire) o
-   se acepta el interlineado por defecto de Qt?
-8. **Filtro.** ¿Merece la pena el filtro `/` para seis secciones, o el índice 1–9 es
-   suficiente? El filtro es la mejora más potente para documentos largos, pero
-   también la más costosa de mantener.
+| Fichero | Cambio previsto |
+| --- | --- |
+| `src/foto/ui/help.py` | Fichas, párrafos, espacios, scroll, secciones/anclas, cabecera, índice, tipografía, interlineado, semántica |
+| `src/foto/ui/theme.py` | Token de superficie de ficha y QSS de la cabecera si hace falta |
+| `src/foto/ui/window.py` | Geometría responsive y apertura contextual |
+| `src/foto/ui/panels.py` | Pista de la barra de estado en modo AYUDA; unificar el texto derecho |
+| `src/foto/ui/presentation.py` | `help_section_for_context` puro |
+| `src/foto/resources/ayuda.md` | Reordenar/condensar y documentar las teclas nuevas |
+| `docs/diseno-ui.md` | Teclas de la ayuda, apertura contextual, cabecera y tamaño |
+| `tests/test_ui_help.py` | Fichas, párrafos, espacios, scroll, secciones, índice, cabecera, contexto, tipografía, interlineado |
+| `tests/test_ui_status_bar.py` | Pista y textos del modo AYUDA |
+| `tests/test_presentation.py` | Mapeo puro de contexto |
+| `tests/test_ui_documented_features.py` | Comandos y secciones documentados |
+| `tests/test_ui_key_inventory.py` | Si el inventario de teclas de la ventana cambia |
+| `tests/test_ui_locations.py` | Geometría del panel de ubicaciones, si aplica |
 
 ---
 
-## 9. Alternativas descartadas
+## 7. Registro de avance
+
+| Fecha | Tarea | Nota |
+| --- | --- | --- |
+| 2026-11-25 | T0.1 | Propuesta redactada; punto de retorno `51c1c4a`. |
+| 2026-11-25 | T0.2 | Decisiones cerradas; documento convertido en plan accionable. |
+| 2026-11-25 | T0.3 | Visto bueno del proyectista; autoriza la fase 1. |
+| 2026-11-25 | T0.4 | Plan actualizado commiteado. |
+
+---
+
+## 8. Alternativas técnicas descartadas
 
 - **Fichas con imágenes generadas.** Permitirían esquinas redondeadas y bordes, pero
-  pierden el texto accesible, no escalan con la fuente y añaden caché y pintura. No
-  compensa para una ficha de tecla.
+  pierden el texto accesible, no escalan con la fuente y añaden caché y pintura.
 - **Tabla HTML con celdas de ficha.** Permitiría fondo y borde por celda, pero
   convierte cada fila en una tabla anidada y complica el reflujo en ventanas
   estrechas.
@@ -359,34 +474,7 @@ fase 1.
   puede estilar; es la razón por la que existe el renderer propio.
 - **Un `QListView` o un widget por fila.** Da más control visual, pero multiplica el
   código y el coste de accesibilidad para una pantalla de solo lectura.
-
----
-
-## 10. Ficheros y tests afectados
-
-| Fichero | Cambio previsto |
-| --- | --- |
-| `src/foto/ui/help.py` | Renderer de párrafos, fichas, índice/anclas, teclas de scroll, cabecera opcional |
-| `src/foto/ui/theme.py` | Token de superficie de ficha y, si aplica, QSS de la cabecera |
-| `src/foto/ui/window.py` | Geometría responsive, señal de cierre, apertura contextual opcional |
-| `src/foto/ui/panels.py` | Pista de la barra de estado en modo AYUDA; unificar el texto derecho |
-| `src/foto/resources/ayuda.md` | Reordenar/condensar, documentar teclas nuevas |
-| `docs/diseno-ui.md` | Tabla de teclas de la ayuda y criterios de la ventana |
-| `tests/test_ui_help.py` | Fichas, párrafos, espacios, índice, teclas de scroll |
-| `tests/test_ui_key_inventory.py` | Si las teclas nuevas entran en el inventario de la ventana |
-| `tests/test_ui_documented_features.py` | Si se añaden comandos o se reordena el documento |
-
----
-
-## 11. De propuesta a ejecución
-
-Cuando § 8 esté cerrado:
-
-1. Convertir las fases 1–3 en tareas `T1.1`, `T1.2`, … con resultado esperado y
-   tests, siguiendo el formato de los prompts de `prompts/`.
-2. Empezar por la fase 1: es independiente del contenido y se puede revisar con dos
-   capturas (claro/oscuro) y la suite en verde.
-3. No mezclar la fase 1 con el rediseño de la cabecera: si algo falla, el diff debe
-   poder revertirse sin perder los arreglos de render.
-4. Mantener `ayuda.md` como fuente única; cualquier tecla nueva se documenta en los
-   tres sitios: código, `docs/diseno-ui.md` y `ayuda.md`.
+- **Filtro `/` o `QTextDocument.find`.** Descartado por decisión: el índice `1`–`9`
+  cubre la navegación de seis secciones.
+- **Cierre con ratón y selección con teclado.** Descartados por decisión: la ayuda
+  sigue siendo teclado-primero y la selección con ratón se mantiene.
