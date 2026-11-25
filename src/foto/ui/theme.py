@@ -2,7 +2,8 @@
 
 Reúne, en un único punto de ``foto.ui``, dos cosas: los tokens sobre
 ``QPalette`` —las paletas clara y oscura, los colores derivados (texto
-atenuado, error, acento) y la tipografía común (``ui_font``)— y las plantillas
+atenuado, error, acento y superficie de las fichas de ayuda) y la tipografía
+común (``ui_font``)— y las plantillas
 QSS de los widgets (``GRID_QSS``, ``PANEL_SCROLL_QSS``, ``COMPLETION_QSS``,
 ``PROMPT_QSS`` y ``HELP_BODY_QSS``, compuestas sobre ``_SCROLLBAR_QSS``), que
 los widgets aplican en su constructor y re-aplican vía ``reapply_style`` al
@@ -82,6 +83,28 @@ def _muted_from_palette(palette: QPalette) -> QColor:
 def muted_color(widget: QWidget) -> QColor:
     """Token fg.muted: texto atenuado con contraste suficiente."""
     return _muted_from_palette(widget.palette())
+
+
+def help_chip_surface(palette: QPalette | None = None) -> QColor:
+    """Token ``help.chip.surface``: fondo de las fichas de tecla de la ayuda.
+
+    Deriva de la superficie del overlay —``AlternateBase``, que
+    ``HelpOverlay`` usa como ``Window``— y no de la ventana: en un tema claro
+    la oscurece y en uno oscuro la aclara. Si el resultado perdiera el
+    contraste mínimo de 4,5:1 con ``WindowText``, se acerca al fondo en
+    pasos pequeños hasta recuperarlo; con las paletas de la aplicación la
+    primera derivación ya lo cumple.
+    """
+    palette = app_palette() if palette is None else palette
+    surface = palette.color(QPalette.AlternateBase)
+    text = palette.color(QPalette.WindowText)
+    light = surface.lightness() > 128
+    chip = surface.darker(112) if light else surface.lighter(135)
+    for _ in range(20):
+        if _contrast_ratio(chip, text) >= 4.5:
+            break
+        chip = chip.lighter(106) if light else chip.darker(106)
+    return chip
 
 
 def _accent_for(palette: QPalette, background: QColor) -> QColor:

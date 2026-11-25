@@ -4,9 +4,8 @@
 - **Ámbito:** `src/foto/ui/help.py`, `src/foto/ui/theme.py`, `src/foto/ui/window.py`,
   `src/foto/ui/panels.py`, `src/foto/ui/presentation.py`,
   `src/foto/resources/ayuda.md`, `docs/diseno-ui.md` y tests de UI.
-- **Estado:** fase 0 cerrada y decisiones cerradas. Fases 1 y 2 listas para
-  ejecutar; de la fase 3 solo entra la ayuda contextual, absorbida en T2.4. **No se
-  ha modificado código de la aplicación todavía.**
+- **Estado:** fases 0 y 1 cerradas y decisiones cerradas. La fase 2 está lista
+  para ejecutar; de la fase 3 solo entra la ayuda contextual, absorbida en T2.4.
 - **Objetivo:** mejorar el aspecto y la usabilidad del overlay de ayuda (`?` / `F1` /
   `:help`) sin cambiar su contrato: `ayuda.md` sigue siendo la fuente única del
   contenido y el render sigue siendo propio, con el tema activo.
@@ -16,7 +15,7 @@
 > línea `> Nota (fecha): …`. No reordenes ni borres tareas; si aparece una pendiente
 > nueva, añádela al final de su fase con el mismo formato. Una tarea solo está
 > cerrada con sus tests en verde y `uv run pytest` + `uv run ruff check .` completos.
-> Las tareas de código pueden empezar: T0.3 está marcada.
+> Las tareas de código pueden empezar: la fase 1 está cerrada y la fase 2 lista.
 
 ---
 
@@ -33,7 +32,7 @@
 | Fase | Estado | Tareas |
 | --- | --- | --- |
 | 0. Documento, decisiones y punto de retorno | Hecho | T0.1–T0.4 |
-| 1. Render y navegación P0 | Pendiente | T1.1–T1.5 |
+| 1. Render y navegación P0 | Hecho | T1.1–T1.5 |
 | 2. Índice, cabecera, responsive y contenido | Pendiente | T2.1–T2.11 |
 | 3. Filtro, ratón y selección | **Descartado** | — |
 | 3b. Ayuda contextual | Incluida en T2.4 | — |
@@ -202,7 +201,8 @@
 
 ### Fase 1 — Render y navegación P0
 
-- [ ] **T1.1 — Fichas de tecla visibles y con contraste.**
+- [x] **T1.1 — Fichas de tecla visibles y con contraste.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/theme.py`, `src/foto/ui/help.py`,
     `tests/test_ui_help.py`.
   - **Cambio:** añadir a `theme.py` un token `help_chip_surface(...)` que derive la
@@ -216,7 +216,8 @@
     fondo difiere del fondo del overlay y que el contraste es ≥ 4,5:1.
   - **Hecho cuando:** los tests nuevos pasan en ambos temas.
 
-- [ ] **T1.2 — Párrafos agrupados y con aire.**
+- [x] **T1.2 — Párrafos agrupados y con aire.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
   - **Cambio:** en `render_help`, acumular líneas consecutivas hasta una línea en
     blanco, una tabla o un encabezado; emitir un solo `<p>` por bloque. Añadir
@@ -228,7 +229,8 @@
   - **Hecho cuando:** el documento real renderiza la introducción y «Ubicaciones»
     como párrafos completos.
 
-- [ ] **T1.3 — Espacios de ficha sin duplicar ni chocar con puntuación.**
+- [x] **T1.3 — Espacios de ficha sin duplicar ni chocar con puntuación.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
   - **Cambio:** sustituir `" ".join(pieces)` por `"".join(pieces)`. Ajustar el padding
     de la ficha según el contexto: sin `nbsp` final antes de `, . ; : ! ? ) »` y sin
@@ -241,7 +243,8 @@
   - **Hecho cuando:** los tests nuevos pasan y `_help_cell_width` sigue midiendo las
     tablas sin partir filas.
 
-- [ ] **T1.4 — Teclas de scroll completas y con paso consistente.**
+- [x] **T1.4 — Teclas de scroll completas y con paso consistente.**
+  - **Fecha:** 2026-11-25.
   - **Ficheros:** `src/foto/ui/help.py`, `tests/test_ui_help.py`.
   - **Cambio:** ampliar `HelpOverlay.keyPressEvent` con `PgUp`/`PgDn`,
     `Home`/`End`, `Espacio`/`Shift+Espacio` y `Ctrl+d`/`Ctrl+u`. Calcular el paso de
@@ -255,14 +258,24 @@
     permitiendo la selección con ratón; si se elige esa vía, añadir una comprobación
     de que seleccionar texto no devuelve el foco al navegador.
   - **Hecho cuando:** los tests cubren todas las teclas y no hay regresión de j/k.
+  - **Resultado:** el cuerpo usa `Qt.NoFocus`; las teclas llegan siempre al overlay y
+    un clic sobre el texto no le devuelve el foco.
 
-- [ ] **T1.5 — Verificación de la fase 1.**
+- [x] **T1.5 — Verificación de la fase 1.**
+  - **Fecha:** 2026-11-25.
   - **Comandos:** `uv run pytest tests/test_ui_help.py tests/test_ui_styles.py`,
     `uv run pytest`, `uv run ruff check .`.
   - **Revisión visual:** capturas en claro y oscuro a 1280×800 y 640×480; comprobar
     fichas, párrafos, espacios y scroll.
   - **Hecho cuando:** suite y ruff en verde y las capturas no muestran regresiones.
   - **Nota:** registrar el resultado en § 7.
+  - **Resultado:** las tres órdenes en verde. Las fichas se distinguen en ambos temas,
+    los párrafos se leen completos, no hay espacios duplicados y el scroll responde;
+    la geometría sigue siendo la de la fase 2 (760×708 y 576×388).
+  - **Nota (2026-11-25):** el fixture `qapp` de `tests/test_ui_help.py` aplica
+    `_apply_system_font` y es autouse: sin una `QApplication` con fuente resuelta, Qt
+    aborta al medir las fichas en la plataforma `offscreen` y el comando por módulos
+    del plan no arrancaba.
 
 ### Fase 2 — Índice, cabecera, responsive y contenido
 
@@ -408,12 +421,12 @@
 
 ## 5. Criterios de aceptación globales
 
-- [ ] En claro y oscuro, las fichas se distinguen del fondo y el texto mantiene
+- [x] En claro y oscuro, las fichas se distinguen del fondo y el texto mantiene
       4,5:1.
-- [ ] Un párrafo del markdown con líneas consecutivas se renderiza como un solo
+- [x] Un párrafo del markdown con líneas consecutivas se renderiza como un solo
       párrafo; no hay frases partidas.
-- [ ] No hay espacios dobles ni espacios antes de puntuación alrededor de fichas.
-- [ ] Con el foco en el overlay funcionan ↑/↓, j/k, PgUp/PgDn, Home/End,
+- [x] No hay espacios dobles ni espacios antes de puntuación alrededor de fichas.
+- [x] Con el foco en el overlay funcionan ↑/↓, j/k, PgUp/PgDn, Home/End,
       Espacio/Shift+Espacio y Ctrl+d/Ctrl+u, con el mismo paso.
 - [ ] `1`–`9` saltan a las secciones existentes y las anclas son estables.
 - [ ] La ayuda abre en la sección de la vista actual (rejilla, panel o visor) y en el
@@ -458,6 +471,11 @@
 | 2026-11-25 | T0.2 | Decisiones cerradas; documento convertido en plan accionable. |
 | 2026-11-25 | T0.3 | Visto bueno del proyectista; autoriza la fase 1. |
 | 2026-11-25 | T0.4 | Plan actualizado commiteado. |
+| 2026-11-25 | T1.1 | Token `help_chip_surface`; fichas visibles con contraste ≥ 4,5:1 en claro y oscuro. |
+| 2026-11-25 | T1.2 | Líneas consecutivas se unen en un párrafo con `margin-bottom: 12px`. |
+| 2026-11-25 | T1.3 | Unión sin espacios añadidos y relleno contextual ante puntuación. |
+| 2026-11-25 | T1.4 | Teclas de scroll completas; cuerpo con `Qt.NoFocus` para no perder el foco. |
+| 2026-11-25 | T1.5 | Suite y ruff en verde; capturas 1280×800 y 640×480 en claro y oscuro revisadas. |
 
 ---
 

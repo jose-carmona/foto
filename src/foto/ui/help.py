@@ -20,7 +20,12 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFrame, QTextBrowser, QVBoxLayout, QWidget
 
 from foto.ui.presentation import muted_rgb
-from foto.ui.theme import HELP_BODY_QSS, app_palette, ui_font
+from foto.ui.theme import HELP_BODY_QSS, app_palette, help_chip_surface, ui_font
+
+# Puntuación que ya aporta su propio aire: la ficha no añade relleno del lado
+# que toca con ella, para no separar la tecla del signo que la acompaña.
+_CHIP_TRAILING_PUNCT = ",.;:!?)]}»"
+_CHIP_LEADING_PUNCT = "([{«"
 
 
 def _help_markdown() -> str:
@@ -73,30 +78,49 @@ def _help_cell_width(cell: str) -> int:
     return total
 
 
-def _help_chip(text: str) -> str:
-    """Ficha de tecla: monoespaciada, sobre la superficie secundaria."""
+def _help_chip(text: str, *, pad_left: bool = True, pad_right: bool = True) -> str:
+    """Ficha de tecla: monoespaciada, sobre la superficie derivada del tema."""
     mono = QFontDatabase.systemFont(QFontDatabase.FixedFont).family()
     return (
-        f'<span style="background-color:{_help_color(QPalette.AlternateBase)};'
+        f'<span style="background-color:{help_chip_surface().name(QColor.HexArgb)};'
         f" color:{_help_color(QPalette.WindowText)};"
         f" font-family:'{mono}'; font-size:12px;"
-        f'">{_help_chip_pad(text)}</span>'
+        f'">{_help_chip_pad(text, left=pad_left, right=pad_right)}</span>'
     )
 
 
-def _help_chip_pad(text: str) -> str:
+def _help_chip_pad(text: str, *, left: bool = True, right: bool = True) -> str:
     """Texto de la ficha con su margen interior, para medir con métricas."""
-    return f"\u00a0\u00a0{text}\u00a0\u00a0"
+    padding = "\u00a0\u00a0"
+    return f"{padding if left else ''}{text}{padding if right else ''}"
 
 
 def _help_inline(text: str) -> str:
-    """Convierte ``teclas`` entre acentos en fichas; el resto queda igual."""
-    pieces = []
-    for index, chunk in enumerate(text.split("`")):
+    """Convierte ``teclas`` entre acentos en fichas; el resto queda igual.
+
+    Las fichas ya llevan su propio relleno, así que los trozos se unen sin
+    espacios añadidos (``" ".join`` duplicaba los que el texto ya tenía). El
+    relleno se recorta en el lado que toca con puntuación que no lo necesita:
+    una ficha entre paréntesis se lee ``(Esc)``.
+    """
+    chunks = text.split("`")
+    pieces: list[str] = []
+    for index, chunk in enumerate(chunks):
         if not chunk:
             continue
-        pieces.append(_help_chip(chunk) if index % 2 else chunk)
-    return " ".join(pieces)
+        if index % 2 == 0:
+            pieces.append(chunk)
+            continue
+        before = chunks[index - 1][-1:] if index > 0 else ""
+        after = chunks[index + 1][:1] if index + 1 < len(chunks) else ""
+        pieces.append(
+            _help_chip(
+                chunk,
+                pad_left=not before or before not in _CHIP_LEADING_PUNCT,
+                pad_right=not after or after not in _CHIP_TRAILING_PUNCT,
+            )
+        )
+    return "".join(pieces)
 
 
 def _help_heading(label: str, level: int) -> str:
@@ -106,6 +130,14 @@ def _help_heading(label: str, level: int) -> str:
         f" font-size:{size}px; font-weight:600;"
         f' color:{_help_color(QPalette.WindowText)}">{label}</p>'
         f'<hr style="color:{_help_color(QPalette.Mid)};">'
+    )
+
+
+def _help_paragraph(lines: list[str]) -> str:
+    """Un párrafo completo: las líneas consecutivas del markdown se unen."""
+    return (
+        '<p style="margin-top:0; margin-bottom:12px;">'
+        f"{_help_inline(' '.join(lines))}</p>"
     )
 
 
@@ -169,10 +201,17 @@ def render_help(markdown: str) -> str:
     """
     blocks: list[tuple[str, object]] = []
     rows: list[list[str]] = []
+    lines: list[str] = []
+
+    def flush_paragraph() -> None:
+        if lines:
+            blocks.append(("paragraph", list(lines)))
+            lines.clear()
 
     for line in markdown.splitlines():
         bare = line.strip()
         if bare.startswith("|"):
+            flush_paragraph()
             cells = [cell.strip() for cell in bare.strip("|").split("|")]
             if all(set(cell) <= {"-", ":", " "} for cell in cells):
                 continue  # separador de cabecera
@@ -182,13 +221,17 @@ def render_help(markdown: str) -> str:
             blocks.append(("table", rows))
             rows = []
         if not bare:
+            flush_paragraph()
             continue
         if bare.startswith("##"):
+            flush_paragraph()
             blocks.append(("heading", (bare[2:].strip(), 2)))
         elif bare.startswith("#"):
+            flush_paragraph()
             blocks.append(("heading", (bare[1:].strip(), 1)))
         else:
-            blocks.append(("paragraph", bare))
+            lines.append(bare)
+    flush_paragraph()
     if rows:
         blocks.append(("table", rows))
 
@@ -206,7 +249,7 @@ def render_help(markdown: str) -> str:
         elif kind == "table":
             html.append(_help_table(data, width))  # type: ignore[misc]
         else:
-            html.append(f"<p>{_help_inline(data)}</p>")  # type: ignore[misc]
+            html.append(_help_paragraph(data))  # type: ignore[misc]
     return "".join(html)
 
 
@@ -233,6 +276,10 @@ class HelpOverlay(QFrame):
         body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # El foco se queda en el overlay: si un clic se lo llevara al
+        # navegador, las teclas dejarían de llegar a ``keyPressEvent``. Con
+        # ``NoFocus`` la selección con ratón sigue funcionando.
+        body.setFocusPolicy(Qt.NoFocus)
         body.setLineWidth(0)
         body.setFont(ui_font(13))
         document = body.document()
@@ -264,24 +311,48 @@ class HelpOverlay(QFrame):
         self.body.verticalScrollBar().setValue(scroll)
         self.update()
 
-    def keyPressEvent(self, event) -> None:
-        """Mueve el scroll de la ayuda con las flechas o con ``j``/``k``.
+    def _scroll_by(self, delta: int) -> None:
+        bar = self.body.verticalScrollBar()
+        bar.setValue(bar.value() + delta)
 
-        El resto de teclas cae a la ventana, que cerrará el overlay cuando
-        sea ``Esc`` o ``q``.
+    def _line_step(self) -> int:
+        """Paso de una línea: las métricas de la fuente del documento."""
+        metrics = QFontMetrics(self.body.document().defaultFont())
+        return max(1, metrics.lineSpacing())
+
+    def keyPressEvent(self, event) -> None:
+        """Navega el scroll de la ayuda con las teclas de § 2.3.
+
+        ``↑``/``↓`` y ``j``/``k`` avanzan una línea medida con la fuente;
+        ``PgUp``/``PgDn``, ``Espacio``/``Shift+Espacio`` y ``Ctrl+d``/``Ctrl+u``
+        mueven páginas o medias páginas con el paso de la barra, y
+        ``Home``/``End`` van a los extremos. El resto de teclas cae a la
+        ventana, que cerrará el overlay cuando sea ``Esc`` o ``q``.
         """
         bar = self.body.verticalScrollBar()
         key = event.key()
-        step = 40
+        shift = bool(event.modifiers() & Qt.ShiftModifier)
+        ctrl = bool(event.modifiers() & Qt.ControlModifier)
         if key in (Qt.Key_Down, Qt.Key_J):
-            bar.setValue(bar.value() + step)
-            event.accept()
+            self._scroll_by(self._line_step())
+        elif key in (Qt.Key_Up, Qt.Key_K):
+            self._scroll_by(-self._line_step())
+        elif key == Qt.Key_PageDown or (key == Qt.Key_Space and not shift):
+            self._scroll_by(bar.pageStep())
+        elif key == Qt.Key_PageUp or (key == Qt.Key_Space and shift):
+            self._scroll_by(-bar.pageStep())
+        elif key == Qt.Key_Home:
+            bar.setValue(bar.minimum())
+        elif key == Qt.Key_End:
+            bar.setValue(bar.maximum())
+        elif key == Qt.Key_D and ctrl:
+            self._scroll_by(max(1, bar.pageStep() // 2))
+        elif key == Qt.Key_U and ctrl:
+            self._scroll_by(-max(1, bar.pageStep() // 2))
+        else:
+            super().keyPressEvent(event)
             return
-        if key in (Qt.Key_Up, Qt.Key_K):
-            bar.setValue(bar.value() - step)
-            event.accept()
-            return
-        super().keyPressEvent(event)
+        event.accept()
 
     def focusNextPrevChild(self, next: bool) -> bool:
         return True
