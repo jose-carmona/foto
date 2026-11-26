@@ -125,6 +125,24 @@ def _format_size(size: int) -> str:
     return f"{size} B"
 
 
+def _app_icon() -> QIcon:
+    """Icono de la aplicación empaquetado con ella (``foto/resources``).
+
+    Se carga en memoria (``read_bytes`` + ``QPixmap.loadFromData``) en vez
+    de pasarse una ruta a ``QIcon``: el recurso viaja dentro del paquete y
+    no hay que materializar un fichero temporal para que Qt lo lea.
+    """
+    from importlib import resources
+
+    import foto
+
+    data = (resources.files(foto) / "resources" / "icono.png").read_bytes()
+    pixmap = QPixmap()
+    if not pixmap.loadFromData(data):
+        return QIcon()
+    return QIcon(pixmap)
+
+
 def _placeholder_icon(path: Path) -> QIcon:
     pixmap = QPixmap(THUMB_W, THUMB_H)
     pixmap.fill(Qt.transparent)
@@ -610,6 +628,9 @@ def main() -> None:
     args = _build_ui_parser().parse_args(sys.argv[1:])
     app = QApplication(sys.argv)
     app.setApplicationName("foto")
+    # Icono de la app (dock de macOS incluido): se fija en la aplicación
+    # antes de crear cualquier ventana, para que todas lo hereden.
+    app.setWindowIcon(_app_icon())
     apply_theme(app)
 
     try:
