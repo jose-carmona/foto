@@ -11,7 +11,7 @@ from typing import TypeVar
 
 from foto.storage.availability import AVAILABLE, UNAVAILABLE, availability_state
 from foto.storage.catalog import TIER_RANK, Catalog
-from foto.storage.tags import TagAssignment
+from foto.storage.tags import TagAssignment, normalize_tag_name
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".heic", ".raf", ".cr2", ".nef", ".arw", ".dng", ".png", ".tif", ".tiff"}
 
@@ -188,6 +188,8 @@ def load_from_catalog[T](
     catalog: Catalog,
     factory: Callable[..., T] = CatalogPhoto,  # type: ignore[assignment]
     should_continue: Callable[[], bool] | None = None,
+    *,
+    system_tag: str | None = None,
 ) -> list[T]:
     """Carga fotos desde el catálogo SQLite (solo ubicaciones activas).
 
@@ -216,13 +218,37 @@ def load_from_catalog[T](
     comprobada por foto. Cuando devuelve ``False`` se corta con
     ``LibraryLoadCancelled`` y no se devuelve lista parcial. Es un callable
     puro: el núcleo sigue sin conocer Qt ni a la UI.
+
+    ``system_tag`` (A.1/A.2 del informe de arranque, ADR 0006) es el nombre
+    de una etiqueta de sistema. Se filtra en SQL vía
+    ``catalog.list_present_files(system_tag=...)`` y el diccionario
+    ``grouped`` se recorta **antes** del bucle que llama a ``factory``, de
+    modo que no se construye ningún objeto para las fotos que no cumplen. El
+    predicado es el de ``CatalogPhoto.favorite`` más la comprobación del
+    nombre normalizado: ``kind='system'``, estado ``confirmed``/``suggested``
+    y nombre igual al solicitado (``fav`` es hoy la única etiqueta de sistema,
+    pero comprobar el nombre mantiene la paridad con la cláusula SQL). Con
+    ``None`` el comportamiento es el de siempre: sin filtro.
     """
-    rows = catalog.list_present_files()
+    rows = catalog.list_present_files(system_tag=system_tag)
     grouped: dict[str, list] = {}
     for row in rows:
         grouped.setdefault(row["photo_hash"], []).append(row)
 
     assignments = catalog.tag_assignments()
+
+    if system_tag is not None:
+        normalized = normalize_tag_name(system_tag)
+        grouped = {
+            photo_hash: items
+            for photo_hash, items in grouped.items()
+            if any(
+                tag.kind == "system"
+                and tag.status in ("confirmed", "suggested")
+                and normalize_tag_name(tag.tag_name) == normalized
+                for tag in assignments.get(photo_hash, ())
+            )
+        }
 
     # Disponibilidad por ubicación, evaluada una vez por raíz distinta.
     # (Ojo: ``setdefault`` evalúa su argumento siempre; con 25k filas eran

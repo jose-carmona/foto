@@ -48,6 +48,75 @@ _WHITESPACE = re.compile(r"\s+")
 
 TIER_RANK: dict[str, int] = {"fast": 0, "archive": 1}
 
+# Sentencia de apariciones presentes, partida en dos para no repetir la lista
+# de columnas al añadir el filtro por etiqueta de sistema. La concatenación
+# sin filtro es byte a byte la consulta histórica de ``list_present_files``.
+_PRESENT_FILES_SELECT = """
+            SELECT
+                f.location_id,
+                f.rel_path,
+                f.photo_hash,
+                f.size,
+                loc.path AS location_path,
+                loc.name AS location_name,
+                loc.tier AS location_tier,
+                p.file_type,
+                p.extension,
+                p.width,
+                p.height,
+                p.captured_at,
+                p.camera_make,
+                p.camera_model,
+                p.lens_model,
+                p.iso,
+                p.f_number,
+                p.exposure_time,
+                p.focal_length,
+                p.gps_latitude,
+                p.gps_longitude,
+                p.place_country,
+                p.place_country_code,
+                p.place_state,
+                p.place_city,
+                p.place_municipality,
+                p.place_display_name,
+                p.place_address_json,
+                p.orientation,
+                p.metadata_status
+            FROM files f
+            JOIN locations loc ON loc.id = f.location_id
+            JOIN photos p ON p.hash = f.photo_hash
+            WHERE f.status = 'present' AND loc.state = 'active'
+            """
+
+_PRESENT_FILES_ORDER = """ORDER BY f.rel_path
+            """
+
+_PRESENT_FILES_SQL = _PRESENT_FILES_SELECT + _PRESENT_FILES_ORDER
+
+# Predicado de etiqueta de sistema (ADR 0006, Decisiones 4 y 6): el nombre
+# normalizado se liga con ``?``; nunca se interpola en la sentencia. El
+# correlativo es el hash de la foto, no la aparición: todas las apariciones
+# presentes de una foto etiquetada siguen viajando.
+_SYSTEM_TAG_EXISTS_SQL = """AND EXISTS (
+                SELECT 1
+                  FROM photo_tags pt
+                  JOIN tags t ON t.id = pt.tag_id
+                 WHERE pt.photo_hash = p.hash
+                   AND pt.status IN ('confirmed', 'suggested')
+                   AND t.kind = 'system'
+                   AND t.name_normalized = ?
+            )
+            """
+
+# Comprobación barata para decidir si vale la pena filtrar, sin leer filas.
+_SYSTEM_TAG_EXISTS_ANY_SQL = (
+    "SELECT 1 FROM photo_tags pt "
+    "JOIN tags t ON t.id = pt.tag_id "
+    "WHERE pt.status IN ('confirmed', 'suggested') "
+    "AND t.kind = 'system' AND t.name_normalized = ? LIMIT 1"
+)
+
 
 def _utcnow_iso() -> str:
     """Marca de tiempo ISO-8601 con segundos, como en el resto del catálogo."""
@@ -1562,7 +1631,9 @@ class Catalog:
         """Asignaciones foto–etiqueta por hash (delega en ``storage.tags``)."""
         return assignments_by_hash(self._conn)
 
-    def list_present_files(self) -> list[sqlite3.Row]:
+    def list_present_files(
+        self, system_tag: str | None = None
+    ) -> list[sqlite3.Row]:
         """Apariciones presentes de ubicaciones activas, con su contexto.
 
         Devuelve cada fila de ``files`` con los metadatos de su foto y la
@@ -1570,48 +1641,44 @@ class Catalog:
         ``name`` y ``tier`` salen de la BD, que es la única verdad de
         rutas para la UI (ADR 0010, Decisión 7). Las filas de ubicaciones
         ``deleted`` no se muestran: están pendientes de ``--prune``.
+
+        ``system_tag`` es el nombre de una etiqueta de sistema (ADR 0006).
+        Con ``None`` la consulta es la histórica, sin filtro. Con un nombre
+        se normaliza y se liga como parámetro en una subconsulta ``EXISTS``
+        de la propia sentencia SQL: solo viajan las fotos con una asignación
+        ``confirmed``/``suggested`` de esa etiqueta. El predicado corre sobre
+        el **hash de la foto**, no sobre la aparición: todas las apariciones
+        presentes de una foto etiquetada siguen viajando, de modo que la
+        elección canónica por ``tier`` y el ``other_locations`` no cambian.
+        Las mismas columnas y el mismo orden en ambos casos.
         """
-        rows = self._conn.execute(
-            """
-            SELECT
-                f.location_id,
-                f.rel_path,
-                f.photo_hash,
-                f.size,
-                loc.path AS location_path,
-                loc.name AS location_name,
-                loc.tier AS location_tier,
-                p.file_type,
-                p.extension,
-                p.width,
-                p.height,
-                p.captured_at,
-                p.camera_make,
-                p.camera_model,
-                p.lens_model,
-                p.iso,
-                p.f_number,
-                p.exposure_time,
-                p.focal_length,
-                p.gps_latitude,
-                p.gps_longitude,
-                p.place_country,
-                p.place_country_code,
-                p.place_state,
-                p.place_city,
-                p.place_municipality,
-                p.place_display_name,
-                p.place_address_json,
-                p.orientation,
-                p.metadata_status
-            FROM files f
-            JOIN locations loc ON loc.id = f.location_id
-            JOIN photos p ON p.hash = f.photo_hash
-            WHERE f.status = 'present' AND loc.state = 'active'
-            ORDER BY f.rel_path
-            """
-        ).fetchall()
+        if system_tag is None:
+            rows = self._conn.execute(_PRESENT_FILES_SQL).fetchall()
+        else:
+            normalized = normalize_tag_name(system_tag)
+            rows = self._conn.execute(
+                _PRESENT_FILES_SELECT + _SYSTEM_TAG_EXISTS_SQL + _PRESENT_FILES_ORDER,
+                (normalized,),
+            ).fetchall()
         return list(rows)
+
+    def has_system_tag(self, system_tag: str) -> bool:
+        """Indica si alguna foto tiene vigente la etiqueta de sistema dada.
+
+        Consulta directa con ``SELECT 1 … LIMIT 1`` (no ``_scalar``: aquí
+        interesa solo la existencia, no un conteo): es la comprobación barata
+        que decide si merece la pena filtrar sin leer las filas de ``files``.
+        Cuenta ``confirmed`` y ``suggested``, nunca ``rejected`` (ADR 0006,
+        Decisión 6), y resuelve la etiqueta por ``kind='system'`` y nombre
+        normalizado, jamás por ``id`` (Decisión 4). ``False`` si la etiqueta
+        existe pero no tiene asignaciones vigentes.
+        """
+        normalized = normalize_tag_name(system_tag)
+        row = self._conn.execute(
+            _SYSTEM_TAG_EXISTS_ANY_SQL,
+            (normalized,),
+        ).fetchone()
+        return row is not None
 
     def _scalar(self, query: str, parameters: Sequence[object] = ()) -> int:
         row = self._conn.execute(query, parameters).fetchone()
