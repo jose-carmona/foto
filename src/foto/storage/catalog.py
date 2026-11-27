@@ -48,10 +48,11 @@ _WHITESPACE = re.compile(r"\s+")
 
 TIER_RANK: dict[str, int] = {"fast": 0, "archive": 1}
 
-# Sentencia de apariciones presentes, partida en dos para no repetir la lista
-# de columnas al añadir el filtro por etiqueta de sistema. La concatenación
-# sin filtro es byte a byte la consulta histórica de ``list_present_files``.
-_PRESENT_FILES_SELECT = """
+# Sentencia de apariciones presentes, partida en columnas / FROM-WHERE / ORDER
+# para no repetir ninguna de las tres al añadir el filtro por etiqueta de
+# sistema ni al contar fotos. La concatenación sin filtro es byte a byte la
+# consulta histórica de ``list_present_files``.
+_PRESENT_FILES_COLUMNS = """
             SELECT
                 f.location_id,
                 f.rel_path,
@@ -83,16 +84,27 @@ _PRESENT_FILES_SELECT = """
                 p.place_address_json,
                 p.orientation,
                 p.metadata_status
-            FROM files f
+            """
+
+# ``FROM`` y ``WHERE`` compartidos por la consulta de apariciones y por el
+# recuento de fotos: los mismos ``JOIN`` y el mismo filtro de presencia y de
+# ubicación activa, sin duplicar la lista de columnas.
+_PRESENT_FILES_FROM = """FROM files f
             JOIN locations loc ON loc.id = f.location_id
             JOIN photos p ON p.hash = f.photo_hash
             WHERE f.status = 'present' AND loc.state = 'active'
             """
 
+_PRESENT_FILES_SELECT = _PRESENT_FILES_COLUMNS + _PRESENT_FILES_FROM
+
 _PRESENT_FILES_ORDER = """ORDER BY f.rel_path
             """
 
 _PRESENT_FILES_SQL = _PRESENT_FILES_SELECT + _PRESENT_FILES_ORDER
+
+# Recuento de fotos presentes: ``DISTINCT`` sobre el hash porque una foto
+# puede tener varias apariciones presentes (ADR 0010), que no son fotos nuevas.
+_PRESENT_COUNT_SQL = "SELECT COUNT(DISTINCT f.photo_hash) " + _PRESENT_FILES_FROM
 
 # Predicado de etiqueta de sistema (ADR 0006, Decisiones 4 y 6): el nombre
 # normalizado se liga con ``?``; nunca se interpola en la sentencia. El
@@ -1661,6 +1673,18 @@ class Catalog:
                 (normalized,),
             ).fetchall()
         return list(rows)
+
+    def count_present_photos(self) -> int:
+        """Número de fotos con apariciones presentes en ubicaciones activas.
+
+        Cuenta fotos, no apariciones: ``COUNT(DISTINCT f.photo_hash)`` sobre
+        los mismos ``JOIN`` y ``WHERE`` de ``list_present_files`` (una foto
+        puede tener varias copias en ubicaciones distintas, ADR 0010). Es el
+        total que la barra de estado muestra desde la fase 1 del arranque en
+        dos fases (A.3), sin filtrar por etiqueta de sistema. Sin índices ni
+        migraciones nuevas.
+        """
+        return self._scalar(_PRESENT_COUNT_SQL)
 
     def has_system_tag(self, system_tag: str) -> bool:
         """Indica si alguna foto tiene vigente la etiqueta de sistema dada.

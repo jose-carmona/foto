@@ -73,7 +73,7 @@ from PySide6.QtWidgets import (
 
 from foto.core.errors import CatalogError, TagError
 from foto.core.thumbnails import eviction_candidates
-from foto.storage.tags import Tag, normalize_tag_name, toggle_favorite
+from foto.storage.tags import FAVORITE_TAG, Tag, normalize_tag_name, toggle_favorite
 from foto.ui.canvas import ImageLoadTask, PhotoViewer
 from foto.ui.grid import (
     FAVORITE_ROLE,
@@ -442,6 +442,19 @@ class PhotoWindow(QMainWindow):
         self._library_loading = False
         self._populate_active = False
         self._populate_state: _PopulateState | None = None
+        # Arranque en dos fases (A.3): total de fotos presentes conocido desde
+        # la fase 1, fotos de la fase 2 esperando a que acabe el populate en
+        # curso y cierre diferido del estado de carga tras el append.
+        self._total_count: int | None = None
+        self._pending_append: list[Photo] = []
+        self._append_on_done: Callable[[], None] | None = None
+        # El append de la fase 2 inserta al final, así que el orden de la
+        # rejilla deja de ser el canónico hasta que se recompone (bugfix A.3):
+        # se hace solo cuando el filtro ``fav`` se quita o se pide ``:sort``,
+        # para no pagar el repopulado en el arranque ni mientras ``fav`` siga
+        # activo, donde la vista es idéntica.
+        self._order_needs_restore = False
+        self._canonical_order_dirty = False
         self._closing = False
         self._populate_timer = QTimer(self)
         self._populate_timer.setSingleShot(True)
@@ -562,7 +575,7 @@ class PhotoWindow(QMainWindow):
         quit_action.triggered.connect(QApplication.quit)
         self.addAction(quit_action)
 
-        self.status.set_counts(len(photos), len(photos), photos[0].name if photos else "")
+        self._update_counts()
         if self._populate_grid(photos):
             # Populate por lotes (T2.4): la primera selección y los recuentos
             # esperan al último lote.
@@ -666,6 +679,130 @@ class PhotoWindow(QMainWindow):
         self._populate_timer.start()
         return True
 
+    def append_photos(self, photos: list[Photo]) -> None:
+        """Funde la fase 2 en la rejilla sin repoblarla (A.3/A.4).
+
+        Añade las fotos al final, reutilizando ``_populate_range`` con un
+        ``_PopulateState`` en modo append: ``grid.clear()`` no se llama, las
+        cachés de visibles y el índice de búsqueda se amplían —nunca se
+        reconstruyen—, y cada ítem nace oculto o visible según el filtro
+        vigente en el momento de insertarlo. La selección y el scroll se
+        guardan antes y se restauran al terminar. Si el append supera
+        ``POPULATE_SYNC_LIMIT`` sigue por lotes con ``_populate_timer`` y el
+        llamador puede diferir su trabajo final en ``_append_on_done``,
+        que ``_finish_populate`` ejecuta al terminar la última tanda.
+
+        Nota de diseño: al insertar al final, el orden tras la fase 2 es
+        «favoritas primero, resto después». Con ``:tag fav`` la vista es
+        idéntica a la de la fase 1; ``:sort <clave>`` vuelve al orden
+        canónico completo cuando se pide.
+        """
+        if not photos:
+            return
+        current_item = self.grid.currentItem()
+        current_key = (
+            current_item.data(PHOTO_ROLE) if current_item is not None else None
+        )
+        scroll_value = self.grid.verticalScrollBar().value()
+
+        self.photos.update({photo.key: photo for photo in photos})
+        # El índice de búsqueda solo crece: reconstruirlo sobre la biblioteca
+        # completa costaría lo que la fase 1 se ahorró. ``/`` encuentra una
+        # foto no favorita nada más llegar la fase 2.
+        self._search_index.update(build_search_index(photos))
+
+        # Las cabeceras ya insertadas se reutilizan para no duplicar la del
+        # grupo con el que continúa el append.
+        headers: dict[str, QListWidgetItem] = {}
+        current_group: str | None = None
+        for row in range(self.grid.count()):
+            item = self.grid.item(row)
+            if item is None:
+                continue
+            if item.data(HEADER_ROLE):
+                headers[str(item.data(GROUP_ROLE))] = item
+            else:
+                group = item.data(GROUP_ROLE)
+                if group is not None:
+                    current_group = str(group)
+
+        state = _PopulateState(
+            ordered=sorted_photos(photos, self._sort_key),
+            index=0,
+            row=self.grid.count(),
+            current_group=current_group,
+            headers=headers,
+        )
+        self._populate_state = state
+        self._populate_active = True
+        self._order_needs_restore = True
+
+        def _restore_and_finalize() -> None:
+            self._restore_after_populate(current_key)
+            self.grid.verticalScrollBar().setValue(scroll_value)
+            if self._append_on_done is not None:
+                self._append_on_done()
+            self._after_append_inserted()
+
+        state.on_done = _restore_and_finalize
+
+        if len(state.ordered) <= POPULATE_SYNC_LIMIT:
+            self._populate_range(len(state.ordered))
+            self._finish_populate()
+            return
+        self._populate_timer.start()
+
+    def _after_append_inserted(self) -> None:
+        """Marca el orden no canónico que deja la fase 2 (bugfix A.3).
+
+        Con ``fav`` activo la vista es idéntica, así que solo se apunta el
+        trabajo pendiente; si el filtro ya se quitó (o cambió) mientras el
+        append corría, se recompone ahora mismo.
+        """
+        self._order_needs_restore = False
+        self._canonical_order_dirty = True
+        if self._tag_filter != FAVORITE_TAG:
+            self._restore_canonical_order()
+
+    def _restore_canonical_order(self) -> None:
+        """Reordena la rejilla por ``_sort_key`` sin perder selección ni scroll.
+
+        El append de la fase 2 inserta al final para no repoblar ni vaciar la
+        rejilla; eso deja las favoritas delante del resto. Al quitar ``fav``
+        (o al ordenar explícitamente) hay que reconstruir el orden canónico
+        sobre ``self.photos``, que ya contiene la biblioteca completa. Se
+        reutiliza el populate por lotes, con las señales bloqueadas y el
+        ``on_done`` restaurando la selección y el scroll que había antes.
+        """
+        if not (self._canonical_order_dirty or self._order_needs_restore):
+            return
+        self._canonical_order_dirty = False
+        self._order_needs_restore = False
+        # Si la fase 2 aún estaba en curso, su append queda sustituido por
+        # esta recomposición (que ya incluye todas las fotos en memoria).
+        self._pending_append = []
+        finalizar = self._append_on_done
+        self._append_on_done = None
+        item = self.grid.currentItem()
+        current_key = item.data(PHOTO_ROLE) if item is not None else None
+        scroll_value = self.grid.verticalScrollBar().value()
+
+        def _after() -> None:
+            self._restore_after_populate(current_key)
+            self.grid.verticalScrollBar().setValue(scroll_value)
+            if finalizar is not None:
+                finalizar()
+
+        self.grid.blockSignals(True)
+        try:
+            self._populate_grid(list(self.photos.values()))
+            if self._populate_active:
+                self._populate_state.on_done = _after
+            else:
+                _after()
+        finally:
+            self.grid.blockSignals(False)
+
     def _populate_range(self, count: int) -> None:
         """Inserta los siguientes ``count`` ítems de la sesión en curso (T2.4).
 
@@ -748,11 +885,8 @@ class PhotoWindow(QMainWindow):
         self.grid.update_header_widths()
         self._update_empty_state()
         # Recuentos al día lote a lote: la barra refleja lo visible durante
-        # el populate (T2.4).
-        photo = self._current_photo()
-        self.status.set_counts(
-            self._visible_count(), len(self.photos), photo.name if photo else ""
-        )
+        # el populate (T2.4) y, en la fase 2, el total de la fase 1 (A.3).
+        self._update_counts()
         if state.index >= len(state.ordered):
             self._finish_populate()
             return
@@ -763,7 +897,7 @@ class PhotoWindow(QMainWindow):
         self._populate_timer.start()
 
     def _finish_populate(self) -> None:
-        """Pases finales del populate, síncrono o por lotes (T2.4)."""
+        """Pases finales del populate, síncrono o por lotes (T2.4, A.3)."""
         state = self._populate_state
         self._populate_timer.stop()
         self._populate_state = None
@@ -781,6 +915,17 @@ class PhotoWindow(QMainWindow):
         self._update_empty_state()
         if state is not None and state.on_done is not None:
             state.on_done()
+        # A.3: si la fase 2 llegó mientras aún corría el populate de la fase 1,
+        # se aplica aquí —después del ``on_done`` que restauró la selección—,
+        # sin solapar dos sesiones y sin perder scroll ni filtro. El cierre
+        # del estado de carga se difiere al final de este append si vuelve a
+        # quedar populate por lotes.
+        pending = self._pending_append
+        if pending:
+            self._pending_append = []
+            self.append_photos(pending)
+            if self._populate_active:
+                self._library_loading = True
 
     def _cancel_populate(self) -> None:
         """Cancela cualquier populate por lotes en curso (T2.4, T2.6).
@@ -838,6 +983,21 @@ class PhotoWindow(QMainWindow):
         self._library_loading = loading
         self._update_empty_state()
 
+    def _refresh_location_banner(self, photos: list[Photo]) -> None:
+        """Recompone el banner de ubicaciones ausentes (ADR 0010, Decisión 6).
+
+        Usa las mismas funciones puras que ``set_library``. Tras la fase 2
+        hay que repetirlo con la biblioteca completa: con solo las favoritas
+        de la fase 1 el recuento de «fotos no visibles» saldría corto.
+        """
+        self._banner_text = location_banner_text(self._locations, photos)
+        banner_parts = location_banner_parts(self._locations, photos)
+        if self._banner_text and banner_parts is not None:
+            self.banner.set_contents(*banner_parts, self._banner_text)
+            self.banner.show()
+        else:
+            self.banner.hide()
+
     def set_library(
         self,
         photos: list[Photo],
@@ -845,6 +1005,7 @@ class PhotoWindow(QMainWindow):
         tags: Sequence[Tag] = (),
         locations: Sequence[LocationStatus] = (),
         initial_tag_filter: str | None = None,
+        total_count: int | None = None,
     ) -> None:
         """Sustituye la biblioteca cargada por el worker (T2.3, ADR 0011).
 
@@ -864,21 +1025,19 @@ class PhotoWindow(QMainWindow):
         self.tag_catalog = tuple(tags)
         self._locations = tuple(locations)
         self.locations_overlay.set_locations(location_rows(self._locations))
-        self._banner_text = location_banner_text(self._locations, photos)
-        banner_parts = location_banner_parts(self._locations, photos)
-        if self._banner_text and banner_parts is not None:
-            self.banner.set_contents(*banner_parts, self._banner_text)
-            self.banner.show()
-        else:
-            self.banner.hide()
+        self._refresh_location_banner(photos)
         self._layout_content()
-        self.set_photos(photos, tag_filter=initial_tag_filter)
+        self.set_photos(
+            photos, tag_filter=initial_tag_filter, total_count=total_count
+        )
 
     def set_photos(
         self,
         photos: list[Photo],
         thumbnails: dict[str, QIcon] | None = None,
         tag_filter: str | None = None,
+        *,
+        total_count: int | None = None,
     ) -> None:
         """Sustituye la biblioteca visible conservando la foto actual si sigue.
 
@@ -888,6 +1047,11 @@ class PhotoWindow(QMainWindow):
         el filtro vigente al insertarlo (T2.4), de modo que un arranque con
         filtro no paga la rejilla completa. Sin argumento el filtro queda
         retirado, igual que antes.
+
+        ``total_count`` (A.3) es el total de fotos presentes del catálogo,
+        conocido en la fase 1 aunque entonces solo existan las favoritas en
+        memoria. La barra muestra «4 de 29567» desde el primer lote. Con
+        ``None`` se limpia y se vuelve a ``len(photos)`` (demo y tests).
         """
         viewer_was_visible = self._viewer_visible
         self._image_cache.clear()
@@ -908,6 +1072,7 @@ class PhotoWindow(QMainWindow):
         self._filter_text = ""
         self._search_origin = None
         self._tag_filter = tag_filter
+        self._total_count = total_count
         self.status.set_pinned(f"etiqueta: {tag_filter}" if tag_filter else "")
         self.grid.blockSignals(True)
         try:
@@ -937,10 +1102,7 @@ class PhotoWindow(QMainWindow):
             first = self._grid_items.get(self._visible_keys_cache[0])
             if first is not None:
                 self.grid.setCurrentItem(first)
-        photo = self._current_photo()
-        self.status.set_counts(
-            self._visible_count(), len(self.photos), photo.name if photo else ""
-        )
+        self._update_counts()
 
     def _restore_after_populate(self, current_key: str | None) -> None:
         """Restaura la foto actual tras un populate, conservándola si sigue."""
@@ -965,9 +1127,7 @@ class PhotoWindow(QMainWindow):
     def _after_set_photos_tail(self, viewer_was_visible: bool) -> None:
         """Trabajo post-populate de ``set_photos`` (idéntico al de siempre)."""
         self.status.clear_error()
-        photo = self._current_photo()
-        filename = photo.name if photo else ""
-        self.status.set_counts(self._visible_count(), len(self.photos), filename)
+        self._update_counts()
         self._update_empty_state()
         self._on_current_changed(self.grid.currentItem(), None)
         if viewer_was_visible and not self.photos:
@@ -1436,8 +1596,7 @@ class PhotoWindow(QMainWindow):
             # abrirlo, ``toggle_panel`` y ``_focus_panel`` lo rellenan con la
             # foto actual.
             self.panel.set_photo(photo)
-        filename = photo.name if photo else ""
-        self.status.set_counts(self._visible_count(), len(self.photos), filename)
+        self._update_counts()
         if self._viewer_visible:
             if photo is None:
                 self._close_viewer()
@@ -1561,6 +1720,21 @@ class PhotoWindow(QMainWindow):
 
     def _visible_count(self) -> int:
         return len(self._visible_keys_cache)
+
+    def _update_counts(self) -> None:
+        """Recuentos de la barra, con el total conocido de la fase 1 (A.3).
+
+        Todas las puntadas que actualizan la barra pasan por aquí: con
+        ``_total_count`` (el ``catalog.count_present_photos()`` que llega con
+        la fase 1) el total es la biblioteca completa aunque solo existan las
+        favoritas en memoria; sin él —demo y tests actuales— se mantiene
+        ``len(self.photos)``, es decir, el comportamiento de siempre.
+        """
+        total = self._total_count if self._total_count is not None else len(self.photos)
+        photo = self._current_photo()
+        self.status.set_counts(
+            self._visible_count(), total, photo.name if photo else ""
+        )
 
     def _position_empty_label(self) -> None:
         if not self.empty_label.isVisible():
@@ -1694,9 +1868,7 @@ class PhotoWindow(QMainWindow):
         if self._viewer_visible and self._visible_count() == 0:
             self._close_viewer()
 
-        photo = self._current_photo()
-        filename = photo.name if photo else ""
-        self.status.set_counts(self._visible_count(), len(self.photos), filename)
+        self._update_counts()
         self._update_empty_state()
         self._schedule_visible_thumbnails()
 
@@ -1808,14 +1980,24 @@ class PhotoWindow(QMainWindow):
         # ser relevante: el filtro aplicado o retirado es la respuesta.
         self.status.clear_error()
         self.status.set_pinned(f"etiqueta: {name}" if name else "")
+        # Bugfix A.3: al retirar/cambiar ``fav`` la rejilla debe pasar al
+        # orden canónico; con ``fav`` activo la vista ya coincide.
+        if name != FAVORITE_TAG:
+            self._restore_canonical_order()
         self._apply_filter(self._filter_text)
 
     def _sort_grid(self, key: str) -> None:
         # Repetir la misma clave no repuebla: la rejilla ya está en ese
-        # orden (R10). El mensaje es el mismo que el del reordenado hecho.
-        if key == self._sort_key:
+        # orden (R10). Salvo que la fase 2 haya dejado el orden no canónico:
+        # entonces ``:sort date`` basta por sí solo, sin el doble salto
+        # por otra clave que hacía falta antes (bugfix A.3).
+        if key == self._sort_key and not (
+            self._canonical_order_dirty or self._order_needs_restore
+        ):
             self.status.show_message(f"ordenado por {key}", 3000)
             return
+        self._canonical_order_dirty = False
+        self._order_needs_restore = False
 
         current = self.grid.currentItem()
         current_key = current.data(PHOTO_ROLE) if current else None

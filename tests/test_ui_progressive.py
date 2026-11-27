@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QListWidgetItem
 
@@ -85,6 +85,25 @@ def _bombear(qapp, condicion, intentos: int = 4000) -> bool:
             return True
         time.sleep(0.002)
     return condicion()
+
+
+def _fase_inicial(
+    photos=None, tags=None, locations=None, *, total: int = 1, has_more: bool = False
+):
+    """``LibraryFirstPhase`` con datos puros para los tests del worker (A.3)."""
+    return app_module.LibraryFirstPhase(
+        photos=[FIVE_PHOTOS[0]] if photos is None else photos,
+        tags=["etiqueta"] if tags is None else tags,
+        locations=("ubicación",) if locations is None else locations,
+        total=total,
+        has_more=has_more,
+    )
+
+
+def _fases_vacias():
+    """Resultado sin fase 2: la fase 1 ya era la biblioteca completa."""
+    first = _fase_inicial(photos=[], total=0)
+    return app_module.LibraryLoadPhases(first=first, remaining=[])
 
 
 # ----------------------------------------------------------------------
@@ -500,50 +519,67 @@ def test_late_populate_batch_after_shutdown_is_ignored(qapp, progresivo):
 # T2.3 — el worker de carga
 # ----------------------------------------------------------------------
 def test_worker_emits_loaded_with_pure_data(qapp, tmp_path, monkeypatch):
-    """La señal entrega ``(fotos, etiquetas, ubicaciones)`` sin objetos Qt."""
+    """La fase 1 entrega ``(fotos, tags, ubicaciones, total, has_more)`` puro."""
 
-    def fake_load_library(path, meta, *, should_continue=None):
+    def fake_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
         assert should_continue is not None
         assert should_continue() is True
-        return [FIVE_PHOTOS[0]], ["etiqueta"], ("ubicación",)
+        first = _fase_inicial(total=1)
+        on_first_phase(first)
+        return app_module.LibraryLoadPhases(first=first, remaining=[])
 
-    monkeypatch.setattr(app_module, "load_library", fake_load_library)
+    monkeypatch.setattr(app_module, "load_library_phases", fake_load_library_phases)
     worker = app_module.LibraryLoadWorker(tmp_path, tmp_path)
     results: list = []
-    worker.loaded.connect(lambda p, t, l: results.append((p, t, l)))
+    completed: list = []
+    worker.loaded.connect(
+        lambda p, t, l, total, more: results.append((p, t, l, total, more))
+    )
+    worker.library_complete.connect(lambda rest: completed.append(rest))
     worker.failed.connect(lambda m: results.append(("failed", m)))
 
     worker.load()
 
-    assert results == [([FIVE_PHOTOS[0]], ["etiqueta"], ("ubicación",))]
+    assert results == [([FIVE_PHOTOS[0]], ["etiqueta"], ("ubicación",), 1, False)]
+    assert completed == [[]]
 
 
 def test_worker_cancel_discards_the_result(qapp, tmp_path, monkeypatch):
     """Cancelado antes de cargar: la guardia corta y no se emite nada."""
 
-    def fake_load_library(path, meta, *, should_continue=None):
+    def fake_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
         assert should_continue() is False
         raise LibraryLoadCancelled
 
-    monkeypatch.setattr(app_module, "load_library", fake_load_library)
+    monkeypatch.setattr(app_module, "load_library_phases", fake_load_library_phases)
     worker = app_module.LibraryLoadWorker(tmp_path, tmp_path)
     results: list = []
+    completed: list = []
     worker.loaded.connect(lambda *a: results.append("loaded"))
+    worker.library_complete.connect(lambda rest: completed.append(rest))
     worker.failed.connect(lambda *a: results.append("failed"))
 
     worker.cancel()
     worker.load()
 
     assert results == []
+    # Una sola emisión final también en cancelación (criterio 6).
+    assert completed == [[]]
 
 
 def test_worker_reports_load_failures(qapp, tmp_path, monkeypatch):
     """El fallo de la carga llega por ``failed`` con el mensaje del guard."""
 
-    def fake_load_library(path, meta, *, should_continue=None):
+    def fake_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
         raise RuntimeError("No se pudo abrir el catálogo: boom")
 
-    monkeypatch.setattr(app_module, "load_library", fake_load_library)
+    monkeypatch.setattr(app_module, "load_library_phases", fake_load_library_phases)
     worker = app_module.LibraryLoadWorker(tmp_path, tmp_path)
     results: list = []
     worker.loaded.connect(lambda *a: results.append("loaded"))
@@ -557,10 +593,12 @@ def test_worker_reports_load_failures(qapp, tmp_path, monkeypatch):
 def test_worker_reports_sqlite_errors(qapp, tmp_path, monkeypatch):
     """Un ``sqlite3.Error`` del catálogo llega por ``failed`` (A2)."""
 
-    def fake_load_library(path, meta, *, should_continue=None):
+    def fake_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(app_module, "load_library", fake_load_library)
+    monkeypatch.setattr(app_module, "load_library_phases", fake_load_library_phases)
     worker = app_module.LibraryLoadWorker(tmp_path, tmp_path)
     results: list = []
     worker.loaded.connect(lambda *a: results.append("loaded"))
@@ -574,10 +612,12 @@ def test_worker_reports_sqlite_errors(qapp, tmp_path, monkeypatch):
 def test_worker_reports_unexpected_errors(qapp, tmp_path, monkeypatch):
     """Ninguna excepción escapa del worker: también llega por ``failed``."""
 
-    def fake_load_library(path, meta, *, should_continue=None):
+    def fake_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
         raise ValueError("boom")
 
-    monkeypatch.setattr(app_module, "load_library", fake_load_library)
+    monkeypatch.setattr(app_module, "load_library_phases", fake_load_library_phases)
     worker = app_module.LibraryLoadWorker(tmp_path, tmp_path)
     results: list = []
     worker.loaded.connect(lambda *a: results.append("loaded"))
@@ -588,6 +628,53 @@ def test_worker_reports_unexpected_errors(qapp, tmp_path, monkeypatch):
     assert results
     assert results[0].startswith("Fallo inesperado al cargar el catálogo:")
     assert "boom" in results[0]
+
+
+def test_worker_emits_two_phases_in_order(qapp, tmp_path, monkeypatch):
+    """A.3: ``loaded`` (fase 1) antes que ``library_complete`` (fase 2).
+
+    El worker se bloquea a propósito entre ambas entregas para comprobar
+    que el hilo sigue vivo al recibir la fase 1 y que solo se detiene al
+    terminar, cuando llega la única emisión final.
+    """
+    liberar = threading.Event()
+    resto = [FIVE_PHOTOS[1]]
+
+    def fake_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
+        first = _fase_inicial(photos=FIVE_PHOTOS[:4], total=29_567, has_more=True)
+        on_first_phase(first)
+        liberar.wait(2.0)  # el hilo sigue vivo mientras la UI recibe la fase 1
+        return app_module.LibraryLoadPhases(first=first, remaining=resto)
+
+    monkeypatch.setattr(app_module, "load_library_phases", fake_load_library_phases)
+    worker = app_module.LibraryLoadWorker(tmp_path, tmp_path)
+    thread = QThread(qapp)
+    worker.moveToThread(thread)
+    senales: list = []
+    worker.loaded.connect(
+        lambda p, t, l, total, more: (
+            senales.append(("loaded", len(p), len(t), total, more)),
+            senales.append(("vivo", thread.isRunning())),
+            liberar.set(),
+        )
+    )
+    worker.library_complete.connect(
+        lambda rest: senales.append(("complete", rest))
+    )
+    thread.started.connect(worker.load)
+    worker.library_complete.connect(thread.quit)
+    thread.start()
+    assert _bombear(qapp, lambda: not thread.isRunning()), "el hilo no se detuvo"
+    qapp.processEvents()
+
+    assert senales[:2] == [
+        ("loaded", 4, 1, 29_567, True),
+        ("vivo", True),
+    ]
+    assert senales[2:] == [("complete", resto)]
+    thread.wait(1000)
 
 
 # ----------------------------------------------------------------------
@@ -715,13 +802,12 @@ def test_main_window_shows_a_loading_state_and_then_the_library(qapp, tmp_path):
         window.close()
 
 
-def test_main_window_opens_with_the_fav_tag_filter(qapp, tmp_path):
+def test_main_window_opens_with_the_fav_tag_filter(qapp, tmp_path, monkeypatch):
     """Historia de usuario: la app abre con «:tag fav» ya aplicado.
 
-    Con favoritas en el catálogo, la biblioteca entra con el filtro de
-    etiqueta activo antes del populate: solo las favoritas quedan visibles
-    y el indicador «etiqueta: fav» queda fijado en la barra. Una biblioteca
-    sin favoritas arranca sin filtro: el filtro dejaría la app vacía.
+    A.3 añade un estado intermedio: la fase 1 entrega solo la favorita con
+    el aviso «cargando el resto…» y un solo ítem en la rejilla; al llegar la
+    fase 2 el indicador pasa a «etiqueta: fav» sin perder el filtro.
     """
     from foto.storage.tags import toggle_favorite
     from tests.conftest import write_image
@@ -737,10 +823,32 @@ def test_main_window_opens_with_the_fav_tag_filter(qapp, tmp_path):
     finally:
         connection.close()
 
+    compuerta = threading.Event()
+    real = app_module.load_library_phases
+
+    def pausada(*args, **kwargs):
+        callback = kwargs.get("on_first_phase")
+
+        def on_first(first):
+            callback(first)
+            compuerta.wait(2.0)
+
+        kwargs["on_first_phase"] = on_first
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "load_library_phases", pausada)
     window = app_module.MainWindow(root, _config(root), metadata)
     try:
         window.show()
-        qapp.processEvents()
+        assert _bombear(
+            qapp, lambda: window._has_more and len(window.photos) == 1
+        ), "no llegó la fase 1"
+        # Estado intermedio: una sola favorita y un solo ítem creado.
+        assert len(window._grid_items) == 1
+        assert "cargando el resto" in window.status._pinned
+        assert window._library_loading is True
+
+        compuerta.set()
         cargada = lambda: len(window.photos) == 2 and not window._populate_active
         assert _bombear(qapp, cargada), "la carga no terminó"
         assert window._tag_filter == "fav"
@@ -749,6 +857,7 @@ def test_main_window_opens_with_the_fav_tag_filter(qapp, tmp_path):
         assert window._visible_keys_cache == [favorita.key]
         assert len(window._grid_items) == 2
     finally:
+        compuerta.set()
         window.close()
 
 
@@ -811,10 +920,14 @@ def test_worker_thread_stops_after_failure(qapp, tmp_path, monkeypatch):
     metadata = root / ".foto"
     metadata.mkdir(parents=True)
 
-    def failing_load_library(path, meta, *, should_continue=None):
+    def failing_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(app_module, "load_library", failing_load_library)
+    monkeypatch.setattr(
+        app_module, "load_library_phases", failing_load_library_phases
+    )
     avisos: list = []
     salidas: list = []
     monkeypatch.setattr(
@@ -843,13 +956,15 @@ def test_main_window_close_mid_load_cancels_cleanly(qapp, tmp_path, monkeypatch)
     write_image(root / "2024" / "una.jpg", b"visibles")
     metadata = _seed_catalog(root, "sha256:" + "d" * 64)
 
-    def slow_load_library(path, meta, *, should_continue=None):
+    def slow_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
         time.sleep(0.05)  # carga «en marcha» cuando la ventana se cierra
         if should_continue is not None and not should_continue():
             raise LibraryLoadCancelled
-        return [], [], ()
+        return _fases_vacias()
 
-    monkeypatch.setattr(app_module, "load_library", slow_load_library)
+    monkeypatch.setattr(app_module, "load_library_phases", slow_load_library_phases)
     window = app_module.MainWindow(root, _config(root), metadata)
     window.show()
     qapp.processEvents()
@@ -878,13 +993,15 @@ def test_quit_mid_load_cancels_the_worker_about_to_quit(
     write_image(root / "2024" / "una.jpg", b"visibles")
     metadata = _seed_catalog(root, "sha256:" + "d" * 64)
 
-    def slow_load_library(path, meta, *, should_continue=None):
+    def slow_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
         time.sleep(0.2)  # sigue en carga cuando llegue el ``quit``
         if should_continue is not None and not should_continue():
             raise LibraryLoadCancelled
-        return [], [], ()
+        return _fases_vacias()
 
-    monkeypatch.setattr(app_module, "load_library", slow_load_library)
+    monkeypatch.setattr(app_module, "load_library_phases", slow_load_library_phases)
     window = app_module.MainWindow(root, _config(root), metadata)
     window.show()
     qapp.processEvents()

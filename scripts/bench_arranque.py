@@ -273,6 +273,83 @@ def _interaccion(
     return geometria_fiable, jk, filtro
 
 
+def _arranque_dos_fases(app, raiz: Path, metadata: Path, esperado_total: int):
+    """Mide primer píxel, fase 1 y populate completo sin esperas fijas.
+
+    El fin de la fase 1 se detecta en el ``on_done`` del populate (envuelto
+    aquí) con dos guardas: que el bench haya contado ya una emisión de
+    ``loaded`` y que no se haya registrado todavía la fase 1. Así no hay
+    carrera con la fase 2 ni hace falta dormir un tiempo concreto.
+    """
+    t0 = time.perf_counter()
+    window = MainWindow(raiz, _config(raiz), metadata)
+    cargas: list[int] = []
+    fase1: dict[str, float | int | None] = {
+        "tiempo": None,
+        "items": None,
+        "fotos": None,
+    }
+
+    def contar_loaded(*_args) -> None:
+        cargas.append(1)
+
+    window._loader.loaded.connect(contar_loaded)
+    terminar = window._finish_populate
+
+    def finish_wrapped() -> None:
+        terminar()
+        if cargas and fase1["tiempo"] is None:
+            fase1["tiempo"] = time.perf_counter()
+            fase1["items"] = len(window._grid_items)
+            fase1["fotos"] = len(window.photos)
+
+    window._finish_populate = finish_wrapped
+    window.show()
+    app.processEvents()
+    t1 = time.perf_counter()
+    while fase1["tiempo"] is None:
+        app.processEvents()
+    while window._populate_active or len(window._grid_items) < esperado_total:
+        app.processEvents()
+    t3 = time.perf_counter()
+    window.close()
+    app.processEvents()
+    return t1 - t0, fase1["tiempo"] - t0, t3 - t0, fase1["items"], fase1["fotos"]
+
+
+def _favoritas_primero(app, raiz: Path, metadata: Path, args) -> None:
+    """Modo A.3/A.5: solo la sección (c), con fase 1 separada y veredicto."""
+    esperado_fav = args.fotos // 20  # ``_construir_biblioteca`` marca 1 de cada 20
+    pixeles: list[float] = []
+    primeras: list[float] = []
+    completos: list[float] = []
+    items: list[int] = []
+    fotos: list[int] = []
+    for _ in range(args.repeticiones):
+        pixel, fase1, completo, n_items, n_fotos = _arranque_dos_fases(
+            app, raiz, metadata, args.fotos
+        )
+        pixeles.append(pixel)
+        primeras.append(fase1)
+        completos.append(completo)
+        items.append(int(n_items))
+        fotos.append(int(n_fotos))
+    print("(c) arranque en dos fases (favoritas primero):")
+    print(f"  primer píxel (ventana + estado de carga): {_linea(pixeles)}")
+    print(f"  fase 1 (favoritas navegables):             {_linea(primeras)}")
+    print(f"  populate completo ({args.fotos} fotos):       {_linea(completos)}")
+    print(
+        f"  ítems creados en la fase 1: {items[0]} (esperado: {esperado_fav}) · "
+        f"fotos en memoria: {fotos[0]}"
+    )
+    mediana = statistics.median(primeras)
+    veredicto = "OK" if mediana < 1.0 else "FALLA"
+    print(
+        f"  veredicto fase 1 < 1000 ms: {veredicto} "
+        f"(mediana {mediana * 1000:.1f} ms)"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fotos", type=int, default=25_000)
@@ -284,6 +361,10 @@ def main() -> None:
     parser.add_argument("--interaccion", action="store_true",
                         help="mide j/k y el filtro incremental (fase 2); sin el "
                              "flag el comportamiento (a)/(b)/(c) no cambia")
+    parser.add_argument("--favoritas-primero", action="store_true",
+                        help="arranque en dos fases (A.3): mide la fase 1 por "
+                             "separado y cuenta los ítems creados; omite (a), "
+                             "(b) y (d)")
     args = parser.parse_args()
 
     from PySide6.QtWidgets import QApplication
@@ -297,6 +378,14 @@ def main() -> None:
         print(f"  construcción del catálogo (no se mide): {construccion:.1f} s")
         print(f"  condición de filesystem: {'con originales' if args.originales else 'sin originales'}")
         print()
+
+        # A.3/A.5: modo de arranque en dos fases. Se omiten (a), (b) y (d).
+        if args.favoritas_primero:
+            from PySide6.QtWidgets import QApplication
+
+            app = QApplication.instance() or QApplication([])
+            _favoritas_primero(app, raiz, metadata, args)
+            return
 
         # (a) load_photos completo, con repetición.
         tiempos = _medir(args.repeticiones, lambda: load_photos(raiz, metadata))

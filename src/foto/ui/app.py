@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QSize, Qt, QThread, Signal, Slot
@@ -209,17 +210,25 @@ def load_photos(library_path: Path, metadata_dir: Path | None = None) -> list[Ph
 
 
 def _photos_from(
-    catalog: Catalog, should_continue: Callable[[], bool] | None = None
+    catalog: Catalog,
+    should_continue: Callable[[], bool] | None = None,
+    *,
+    system_tag: str | None = None,
 ) -> list[Photo]:
     """Fotos desde un ``Catalog`` ya abierto (T1.3): sin abrir conexiones.
 
     Los objetos se materializan una sola vez (T1.4): la fábrica de
     ``load_from_catalog`` es ``Photo.from_catalog``, no hay copia campo a
     campo posterior. ``should_continue`` (T2.3) reenvía la guardia de
-    cancelación del arranque progresivo (ADR 0011).
+    cancelación del arranque progresivo (ADR 0011). ``system_tag`` (A.1/A.2)
+    se reenvía al filtro en SQL para materializar solo las favoritas en la
+    fase 1 del arranque en dos fases (A.3).
     """
     return load_from_catalog(
-        catalog, factory=Photo.from_catalog, should_continue=should_continue
+        catalog,
+        factory=Photo.from_catalog,
+        should_continue=should_continue,
+        system_tag=system_tag,
     )
 
 
@@ -260,6 +269,26 @@ def _locations_from(catalog: Catalog) -> tuple[LocationStatus, ...]:
     return (*active, *deleted)
 
 
+def _library_snapshot(
+    catalog: Catalog,
+    should_continue: Callable[[], bool] | None = None,
+    system_tag: str | None = None,
+) -> tuple[list[Photo], list[Tag], tuple[LocationStatus, ...]]:
+    """Fotos, etiquetas y ubicaciones desde un catálogo ya abierto (A.3).
+
+    Extraído de ``load_library`` para que esa función y el arranque en dos
+    fases compartan exactamente la misma lectura. No abre ni cierra ninguna
+    conexión: el llamador es dueño del catálogo. ``system_tag`` se reenvía a
+    ``_photos_from`` para materializar solo las fotos con esa etiqueta de
+    sistema; ``should_continue`` se comprueba también entre fotos y antes de
+    leer etiquetas y ubicaciones, igual que en ``load_library``.
+    """
+    photos = _photos_from(catalog, should_continue, system_tag=system_tag)
+    if should_continue is not None and not should_continue():
+        raise LibraryLoadCancelled
+    return photos, _tags_from(catalog), _locations_from(catalog)
+
+
 def load_library(
     library_path: Path,
     metadata_dir: Path | None = None,
@@ -297,14 +326,122 @@ def load_library(
         raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
 
     try:
-        photos = _photos_from(catalog, should_continue)
+        return _library_snapshot(catalog, should_continue)
+    finally:
+        catalog.close()
+
+
+@dataclass(frozen=True)
+class LibraryFirstPhase:
+    """Primera entrega del arranque en dos fases (A.3).
+
+    Con favoritas, ``photos`` contiene solo ellas y ``has_more`` es ``True``:
+    la ventana puede poblar la rejilla con esos ítems y dejar el resto para la
+    fase 2. Sin favoritas, ``photos`` es ya la biblioteca completa y
+    ``has_more`` es ``False``, así que no hay segunda entrega. ``total`` es el
+    recuento de fotos presentes del catálogo, no el de ítems cargados, para
+    que la barra muestre «4 de 29567» desde el primer momento.
+    """
+
+    photos: list[Photo]
+    tags: list[Tag]
+    locations: tuple[LocationStatus, ...]
+    total: int
+    has_more: bool
+
+
+@dataclass(frozen=True)
+class LibraryLoadPhases:
+    """Resultado completo del arranque en dos fases (A.3).
+
+    ``remaining`` contiene solo las fotos **no** incluidas en
+    ``first.photos``: la unión de ambas listas es la biblioteca completa sin
+    claves repetidas.
+    """
+
+    first: LibraryFirstPhase
+    remaining: list[Photo]
+
+
+def load_library_phases(
+    library_path: Path,
+    metadata_dir: Path | None = None,
+    *,
+    should_continue: Callable[[], bool] | None = None,
+    on_first_phase: Callable[[LibraryFirstPhase], None] | None = None,
+) -> LibraryLoadPhases:
+    """Carga la biblioteca en dos fases sobre una única conexión solo-lectura.
+
+    Convención del contrato de señales del worker (A.3): este función abre el
+    catálogo una sola vez, lee primero etiquetas y ubicaciones —que hacen
+    falta para el banner y para resolver ``:tag`` antes del primer lote— y
+    calcula el total de fotos presentes. Después materializa la fase 1 (solo
+    favoritas cuando las hay, completa cuando no) y llama a
+    ``on_first_phase`` **antes** de empezar la fase 2; el worker aprovecha
+    ese callback para emitir la primera fase por señal encolada hacia la UI.
+    Por último materializa la biblioteca completa y entrega en ``remaining``
+    solo las fotos que no estaban en la primera fase.
+
+    ``should_continue`` se reenvía a ambas materializaciones y se comprueba
+    también entre fases: al cortar se lanza ``LibraryLoadCancelled`` y no se
+    entregan resultados parciales. La conexión se cierra siempre en ``finally``.
+    No se crea ningún objeto Qt, no se escribe nada y no se abre la BD dos
+    veces (ADR 0011, Decisiones 3 y 4).
+    """
+    resolved_dir = _metadata_dir_for(library_path, metadata_dir)
+    catalog_path = resolved_dir / CATALOG_FILE_NAME
+    if not catalog_path.exists():
+        raise FileNotFoundError(
+            "No hay catálogo en la metainformación de la fototeca. Ejecuta "
+            "'foto-index' para crearlo."
+        )
+
+    try:
+        catalog = Catalog.open_read_only(catalog_path)
+    except CatalogError as exc:
+        raise RuntimeError(f"No se pudo abrir el catálogo: {exc}") from exc
+
+    try:
+        # El banner y el filtro ``fav`` hacen falta antes del primer lote.
+        tags = _tags_from(catalog)
+        locations = _locations_from(catalog)
+        total = catalog.count_present_photos()
+
+        use_fav = (
+            find_tag_in_catalog(FAVORITE_TAG, tags) is not None
+            and catalog.has_system_tag(FAVORITE_TAG)
+        )
         if should_continue is not None and not should_continue():
             raise LibraryLoadCancelled
-        return (
-            photos,
-            _tags_from(catalog),
-            _locations_from(catalog),
+        first_photos, _, _ = _library_snapshot(
+            catalog,
+            should_continue,
+            FAVORITE_TAG if use_fav else None,
         )
+        if should_continue is not None and not should_continue():
+            raise LibraryLoadCancelled
+
+        first = LibraryFirstPhase(
+            photos=first_photos,
+            tags=tags,
+            locations=locations,
+            total=total,
+            has_more=use_fav,
+        )
+        if on_first_phase is not None:
+            on_first_phase(first)
+
+        remaining: list[Photo] = []
+        if first.has_more:
+            if should_continue is not None and not should_continue():
+                raise LibraryLoadCancelled
+            first_keys = {photo.key for photo in first.photos}
+            remaining = [
+                photo
+                for photo in _library_snapshot(catalog, should_continue)[0]
+                if photo.key not in first_keys
+            ]
+        return LibraryLoadPhases(first=first, remaining=remaining)
     finally:
         catalog.close()
 
@@ -375,12 +512,23 @@ class LibraryLoadWorker(QObject):
     Cancelación (T2.6): ``cancel()`` marca la carga como descartada; la
     guardia ``should_continue`` corta el recorrido con
     ``LibraryLoadCancelled`` en la foto siguiente y el worker vuelve sin
-    emitir nada. Cerrar la ventana a mitad no deja resultados parciales ni
-    escrituras pendientes (la lectura es ``mode=ro``).
+    entregar fotos. Al ser **un único worker** el que abre la conexión y
+    emite las dos fases (A.3), ``cancel()`` cubre ambas: cerrar la ventana a
+    mitad no deja resultados parciales ni escrituras pendientes (la lectura
+    es ``mode=ro``).
+
+    Contrato de señales (A.3): el worker abre la BD una sola vez y entrega
+    dos emisiones desde el mismo hilo. ``loaded`` llega con la fase 1 y el
+    total de fotos presentes; ``library_complete`` llega una sola vez al
+    terminar, con las fotos restantes (``[]`` si no hay fase 2 o si se
+    canceló). Es esta última señal —y no ``loaded``— la que detiene el hilo.
     """
 
-    #: ``(fotos, etiquetas, ubicaciones)``: datos puros listos para la ventana.
-    loaded = Signal(object, object, object)
+    #: ``(fotos, etiquetas, ubicaciones, total, has_more)``: fase 1, con el
+    #: recuento de la biblioteca completa para la barra de estado.
+    loaded = Signal(object, object, object, int, bool)
+    #: ``(fotos restantes)``: única emisión final, incluso al cancelar.
+    library_complete = Signal(object)
     #: Mensaje de error fatal de arranque (mismo guard que antes del show).
     failed = Signal(str)
 
@@ -394,36 +542,53 @@ class LibraryLoadWorker(QObject):
         """Descarta el resultado de la carga en curso (T2.6)."""
         self._cancelled = True
 
+    @Slot(object)
+    def _emit_first(self, first: LibraryFirstPhase) -> None:
+        """Entrega la fase 1 (datos puros + total) en el hilo de UI por señal."""
+        self.loaded.emit(
+            first.photos, first.tags, first.locations, first.total, first.has_more
+        )
+
     @Slot()
     def load(self) -> None:
-        """Ejecuta la carga completa y la entrega por señal."""
+        """Carga las dos fases en el mismo hilo y entrega ambas por señal."""
+        emitted = False
         try:
-            photos, tags, locations = load_library(
-                self._library_path,
-                self._metadata_dir,
-                should_continue=lambda: not self._cancelled,
-            )
-        except LibraryLoadCancelled:
-            return
-        except sqlite3.Error as exc:
-            if not self._cancelled:
-                self.failed.emit(str(exc))
-            return
-        except (OSError, RuntimeError) as exc:
-            if not self._cancelled:
-                self.failed.emit(str(exc))
-            return
-        except Exception as exc:  # límite del worker: ninguna excepción escapa
-            # Ninguna excepción puede escapar de un hilo de fondo: si lo
-            # hiciera, el slot moriría y la ventana quedaría en «Cargando…»
-            # para siempre. Se registra y se entrega por ``failed``.
-            logger.exception("fallo inesperado al cargar el catálogo")
-            if not self._cancelled:
-                self.failed.emit(f"Fallo inesperado al cargar el catálogo: {exc}")
-            return
-        if self._cancelled:
-            return
-        self.loaded.emit(photos, tags, locations)
+            try:
+                phases = load_library_phases(
+                    self._library_path,
+                    self._metadata_dir,
+                    should_continue=lambda: not self._cancelled,
+                    on_first_phase=self._emit_first,
+                )
+            except LibraryLoadCancelled:
+                return
+            except sqlite3.Error as exc:
+                if not self._cancelled:
+                    self.failed.emit(str(exc))
+                return
+            except (OSError, RuntimeError) as exc:
+                if not self._cancelled:
+                    self.failed.emit(str(exc))
+                return
+            except Exception as exc:  # límite del worker: ninguna excepción escapa
+                # Ninguna excepción puede escapar de un hilo de fondo: si lo
+                # hiciera, el slot moriría y la ventana quedaría en «Cargando…»
+                # para siempre. Se registra y se entrega por ``failed``.
+                logger.exception("fallo inesperado al cargar el catálogo")
+                if not self._cancelled:
+                    self.failed.emit(f"Fallo inesperado al cargar el catálogo: {exc}")
+                return
+            if self._cancelled:
+                return
+            self.library_complete.emit(phases.remaining)
+            emitted = True
+        finally:
+            # Una sola emisión final por llamada: también en cancelación, en
+            # fallo y cuando no hay fase 2. Es la señal que conecta a
+            # ``thread.quit``, así que el hilo muere siempre al terminar.
+            if not emitted:
+                self.library_complete.emit([])
 
 
 class MainWindow(PhotoWindow):
@@ -470,6 +635,13 @@ class MainWindow(PhotoWindow):
         self.set_library_loading(True)
         self.status.set_pinned("cargando el catálogo…")
         self._load_cancelled = False
+        # Arranque en dos fases (A.3): el total de fotos presentes llega con
+        # la fase 1 y la barra lo muestra antes de que exista la fase 2;
+        # ``_pending_append`` guarda el resto si la fase 2 llega mientras el
+        # populate de la fase 1 aún corre por lotes.
+        self._total_count: int | None = None
+        self._has_more = False
+        self._pending_append: list[Photo] = []
         self._start_library_load(library_path, resolved_dir)
 
     def _start_library_load(self, library_path: Path, metadata_dir: Path) -> None:
@@ -478,10 +650,13 @@ class MainWindow(PhotoWindow):
         self._loader_thread = QThread(self)
         self._loader.moveToThread(self._loader_thread)
         self._loader.loaded.connect(self._on_library_loaded)
+        self._loader.library_complete.connect(self._on_library_complete)
         self._loader.failed.connect(self._on_library_failed)
-        # El hilo es corto: termina al entregar el resultado, en éxito y en
-        # fallo (``quit`` es seguro e idempotente).
-        self._loader.loaded.connect(self._loader_thread.quit)
+        # El hilo es corto: termina al entregar el resultado final, en éxito
+        # y en fallo (``quit`` es seguro e idempotente). A.3: antes ``loaded``
+        # detenía el hilo, lo que mataría al worker al entregar la fase 1 y
+        # dejaría sin cargar el resto; ahora solo lo hace ``library_complete``.
+        self._loader.library_complete.connect(self._loader_thread.quit)
         self._loader.failed.connect(self._loader_thread.quit)
         self._loader_thread.started.connect(self._loader.load)
         self._loader_thread.finished.connect(self._loader.deleteLater)
@@ -506,6 +681,11 @@ class MainWindow(PhotoWindow):
         espera a las tareas activas) y el trabajo en fondo de la ventana
         (timers del populate, pool de decodificación del visor).
 
+        Arranque en dos fases (A.3): hay **un único worker** que abre la
+        conexión de solo lectura y emite ambas fases, así que ``cancel()``
+        cubre la fase 1 y la fase 2 con la misma guardia; no hace falta
+        cancelar dos hilos ni descartar dos resultados por separado.
+
         Antes solo cubría el worker de carga y el servicio de miniaturas
         quedaba solo en el ``closeEvent``: al salir con ``Ctrl+q``
         mientras se cargaban miniaturas, las tareas en vuelo emitían hacia
@@ -527,8 +707,15 @@ class MainWindow(PhotoWindow):
             service.shutdown()
         super().shutdown_background_work()
 
-    def _on_library_loaded(self, photos, tags, locations) -> None:
-        """Resultado de la carga: la biblioteca entra de una vez (T2.3)."""
+    def _on_library_loaded(self, photos, tags, locations, total, has_more) -> None:
+        """Fase 1 del arranque (A.3): favoritas, total y estado de carga.
+
+        Con ``has_more`` la fase 1 ya es solo la biblioteca filtrada en SQL;
+        el filtro ``fav`` se activa igual que antes, pero sin crear ítems para
+        las fotos que faltan. La barra muestra desde aquí «4 de 29567» y el
+        aviso «cargando el resto de la biblioteca…», que ``set_photos``
+        sobrescribiría con «etiqueta: fav» si se fijara antes.
+        """
         if self._load_cancelled:
             return
         try:
@@ -545,27 +732,64 @@ class MainWindow(PhotoWindow):
             QApplication.exit(1)
             return
         self.tag_connection = tag_connection
-        # Historia de usuario: la app abre con el filtro «:tag fav» activo,
-        # de modo que la rejilla arranca solo con las favoritas y la carga
-        # es más ligera: el populate nace con las no favoritas ya ocultas
-        # (T2.4). Solo si hay favoritas que ver: sin ninguna, el filtro
-        # dejaría la app vacía al abrir, y una biblioteca sin favoritas no
-        # tiene nada que ahorrar. La etiqueta ``fav`` la siembran siempre
-        # los catálogos migrados, así que basta con comprobar que el
-        # vocabulario la conoce, igual que haría ``:tag fav``.
+        # Con ``has_more`` la lista ya trae solo favoritas, así que basta
+        # con que el vocabulario conozca ``fav``. Sin fase 2 la fase 1 es la
+        # biblioteca completa y se mantiene el comportamiento de siempre:
+        # no se activa ningún filtro.
         initial_tag_filter = (
             FAVORITE_TAG
-            if find_tag_in_catalog(FAVORITE_TAG, tags) and any(
-                photo.favorite for photo in photos
-            )
+            if has_more and find_tag_in_catalog(FAVORITE_TAG, tags)
             else None
         )
+        self._total_count = total
+        self._has_more = has_more
         self.set_library(
             photos,
             tags=tags,
             locations=locations,
             initial_tag_filter=initial_tag_filter,
+            total_count=total,
         )
+        if has_more:
+            self.set_library_loading(True)
+            self.status.set_pinned("cargando el resto de la biblioteca…")
+
+    def _on_library_complete(self, remaining: list[Photo]) -> None:
+        """Fase 2 del arranque (A.3): funde el resto sin repoblar la rejilla.
+
+        Sin favoritas (``has_more`` era ``False``) la fase 1 ya era la
+        biblioteca completa y aquí no se toca nada. Con cancelación tampoco.
+        Si el populate de la fase 1 sigue en curso, el append se deja a
+        ``_finish_populate`` para no solapar dos sesiones y no perder la
+        selección que restaura su ``on_done``.
+        """
+        if self._load_cancelled or not self._has_more:
+            return
+        self._has_more = False
+        self.status.set_pinned(
+            f"etiqueta: {self._tag_filter}" if self._tag_filter else ""
+        )
+        self._append_on_done = self._finish_two_phase_startup
+        if self._populate_active:
+            self._pending_append = list(remaining)
+            return
+        self.append_photos(remaining)
+        if not self._populate_active:
+            self._finish_two_phase_startup()
+
+    def _finish_two_phase_startup(self) -> None:
+        """Cierra el estado de carga cuando el append de la fase 2 terminó.
+
+        Se difiere al ``on_done`` del populate por lotes para que la barra
+        siga diciendo «cargando el resto…» mientras quedan ítems por
+        insertar. El banner se recalcula con la biblioteca ya completa: con
+        solo las favoritas de la fase 1 su recuento de fotos no visibles
+        estaría incompleto (ADR 0010).
+        """
+        self._append_on_done = None
+        self._refresh_location_banner(list(self.photos.values()))
+        self.set_library_loading(False)
+        self._update_counts()
 
     def _on_library_failed(self, message: str) -> None:
         """Error fatal de arranque tras el show (T2.2, ADR 0011).
