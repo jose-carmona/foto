@@ -442,11 +442,9 @@ compuesta) y **se implementa antes que este**. Colisión resuelta por orden
 de ejecución: **el v6 es el del ADR 0010** y este esquema pasa a
 `SCHEMA_VERSION = 7`, migrando desde el v6 vigente. Nada más cambia: la
 columna, su índice parcial y todas las reglas de la Decisión 9 quedan
-como estaban. Las menciones de «v6» que queden en el prompt
-`prompts/indexado-fototeca-apple-photos.md` (p. ej. su T3.2) se ajustarán
-al reanudar esa feature.
+como estaban.
 
-### Nota de implementación (2026-11-22, paso 3 del prompt)
+### Nota de implementación (2026-11-22, paso 3)
 
 Implementado el paso 3 con el esquema v7 y la fase `apple-import`
 (`INDEXING_PHASES = ("scan", "geocode", "apple-import")`, despacho por

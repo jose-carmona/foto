@@ -222,9 +222,8 @@ Para recuperar la coherencia lógica:
 
 ### Nota de corrección (2026-11-13)
 
-La implementación del paso 2 (prompt
-`prompts/implementar-adr-0008-ubicaciones.md`) cambió el comportamiento de
-la UI respecto al texto original de este ADR: `foto` pasa a admitir
+La implementación del paso 2 cambió el comportamiento de la UI respecto al
+texto original de este ADR: `foto` pasa a admitir
 `--config`, `--library` y `--metadata` (mismas cadenas que los CLIs) y la
 UI **nunca escribe** `[metadata].path`; el diálogo de primera ejecución
 sigue persistiendo solo `[library].path`. La frase original «En la UI no

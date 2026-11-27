@@ -3,9 +3,8 @@
 - **Estado:** aceptada
 - **Fecha:** 2026-11-19
 - **Decide:** Jose
-- **Ámbito:** arranque de la UI con bibliotecas grandes (25k+ fotos). Origen:
-  `prompts/rendimiento-arranque-ui-25k.md`, paso 2 (T2.1–T2.7). Complementa al
-  ADR 0003 (consumo del índice), que no cambia en lo que respecta a *qué* lee
+- **Ámbito:** arranque de la UI con bibliotecas grandes (25k+ fotos). Complementa
+  al ADR 0003 (consumo del índice), que no cambia en lo que respecta a *qué* lee
   el visor ni *desde dónde*: solo decide *cuándo* y *en qué hilo*.
 
 ## Contexto

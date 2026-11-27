@@ -1,6 +1,6 @@
 """Composición de las cuatro regiones de la ventana (refabricación visual).
 
-Fija los invariantes de ``prompts/refabricacion-visual-visor.md``: la rejilla y
+Fija los invariantes de la ventana: la rejilla y
 la zona de estado están siempre visibles; el panel de metadatos ocupa el lateral
 derecho por encima de la zona de estado, sin alterar esta; mostrar el panel de
 foto deja la zona de rejilla en un título de grupo y una única fila de celdas;

@@ -15,8 +15,7 @@
   implementación; ver Decisión 4). Quedan fuera la política de emplazamiento
   y el traslado
   entre ubicaciones (feature futura), el soporte de volúmenes remotos y el
-  vídeo. Base: prompt
-  `prompts/fototeca-distribuida-multi-ubicacion.md` (§ 0, § 3 y § 7).
+  vídeo.
 
 ## Contexto
 

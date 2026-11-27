@@ -317,6 +317,11 @@ Resumen operativo:
 ## Flujo de trabajo
 
 - Cambios pequeños y revisables. Nada de refactors masivos no pedidos.
+- Cuando te pidan preparar una feature nueva, escribe primero el informe de
+  investigación y planificación y después el prompt de ejecución autocontenido,
+  siguiendo `prompts/_plantilla-investigacion-planificacion.md` y
+  `prompts/_plantilla-ejecucion.md`. El informe no modifica código; el agente de
+  programación ejecuta solo el prompt de ejecución, que lo cita por sección.
 - Si implementas una funcionalidad del roadmap, marca su casilla en el
   `README.md` y ajusta la documentación afectada.
 - No hagas `git commit`, `git push` ni cambios de configuración de git sin

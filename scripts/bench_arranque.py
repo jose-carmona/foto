@@ -1,9 +1,7 @@
 """Benchmark de arranque de la UI con un catálogo sintético de 25 000 fotos.
 
-Instrumentalización del prompt ``prompts/rendimiento-arranque-ui-25k.md``
-(T1.1 y T2.7): construye una biblioteca de prueba con catálogo SQLite real y
-mide el pipeline de arranque. No es un test de pytest: es un script de
-medición reproducible.
+Construye una biblioteca de prueba con catálogo SQLite real y mide el pipeline
+de arranque. No es un test de pytest: es un script de medición reproducible.
 
 Condiciones medidas (cada una con repetición, se reporta el mínimo):
 

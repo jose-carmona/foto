@@ -13,7 +13,7 @@ Las invariantes de la ventana no cambian: cuatro regiones —zona de rejilla
 panel de metadatos y panel de foto—; los paneles solo cambian la dimensión de
 la zona de rejilla; su comportamiento —navegación, grupos, scroll,
 selección— es idéntico en todos los estados, y la miniatura seleccionada
-queda siempre a la vista. Esto lo fija prompts/refabricacion-visual-visor.md.
+queda siempre a la vista.
 
 `Photo.path` y las miniaturas las aporta la app real, que consume el catálogo
 y arranca con los paneles ocultos, como fija docs/diseno-ui.md. La demo con
