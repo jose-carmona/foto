@@ -22,6 +22,7 @@ import pytest
 from foto.ui import presentation
 from foto.ui.models import LocationStatus, Photo, PhotoTag
 from foto.ui.presentation import (
+    DEFAULT_SORT,
     KEY_0,
     KEY_4,
     KEY_5,
@@ -43,6 +44,7 @@ from foto.ui.presentation import (
     photo_place_details,
     photo_search_text,
     photo_sort_value,
+    prepare_photos,
     sorted_photos,
     unavailable_locations,
     vertical_row_target,
@@ -224,6 +226,32 @@ def test_build_search_index_matches_the_per_photo_document():
     index = build_search_index(photos)
 
     assert index == {photo.key: photo_search_text(photo) for photo in photos}
+
+
+def test_prepare_photos_matches_the_index_and_order_computed_in_the_ui():
+    """Fase B: el par entregado por el worker es idéntico al recalculado.
+
+    Tanto el diccionario de búsqueda como la lista ordenada se comparan
+    carácter a carácter y en el mismo orden, con la clave de orden por
+    defecto y con otra distinta.
+    """
+    photos = [
+        _photo("playa.jpg", "2024/costa", other_locations=("2025/copia.jpg",)),
+        _photo("Añoño.JPG", "2024", camera="Cámara Óptica"),
+        _photo("montana.jpg"),
+    ]
+
+    prepared = prepare_photos(photos)
+
+    assert prepared.search_index == build_search_index(photos)
+    assert prepared.ordered == sorted_photos(photos, DEFAULT_SORT)
+    assert [photo.key for photo in prepared.ordered] == [
+        photo.key for photo in sorted_photos(photos, DEFAULT_SORT)
+    ]
+    # Una clave explícita se respeta: la preparación no fija la ordenación.
+    by_camera = prepare_photos(photos, key="camera")
+    assert by_camera.ordered == sorted_photos(photos, "camera")
+    assert by_camera.search_index == prepared.search_index
 
 
 # ----------------------------------------------------------------------

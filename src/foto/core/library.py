@@ -138,9 +138,46 @@ def _format_iso(value: int | None) -> str:
     return str(value)
 
 
+def _has_iso_time(value: str) -> bool:
+    """Reconoce por posiciones el prefijo ISO ``AAAA-MM-DDTHH:MM``.
+
+    Comprueba los separadores y los cinco grupos numéricos sin expresiones
+    regulares ni parseo de fechas: es el filtro barato del camino caliente.
+    Una sola comprobación de ASCII sobre los 16 primeros caracteres mantiene
+    la paridad con ``fromisoformat`` (que rechaza dígitos unicode) sin pagar
+    dos llamadas por grupo.
+    """
+    if len(value) < 16:
+        return False
+    prefix = value[:16]
+    return (
+        value[4] == "-"
+        and value[7] == "-"
+        and value[10] in "T "
+        and value[13] == ":"
+        and prefix.isascii()
+        and prefix[0:4].isdigit()
+        and prefix[5:7].isdigit()
+        and prefix[8:10].isdigit()
+        and prefix[11:13].isdigit()
+        and prefix[14:16].isdigit()
+    )
+
+
 def _format_taken(captured_at: str | None) -> str:
+    """Devuelve la fecha de captura como ``AAAA-MM-DD HH:MM``.
+
+    El catálogo ya guarda marcas ISO con hora (``AAAA-MM-DDTHH:MM…``), así
+    que en el camino caliente basta con tomar los primeros 16 caracteres y
+    cambiar la ``T`` por un espacio: ni parseo ni ``strftime``. El *fallback*
+    con ``datetime.fromisoformat(...).strftime(...)`` se reserva para los
+    casos raros (fechas sin hora u horas no ISO) y conserva su manejo de
+    errores: lo que no se pueda parsear se devuelve tal cual.
+    """
     if not captured_at:
         return ""
+    if _has_iso_time(captured_at):
+        return captured_at[:16].replace("T", " ")
     try:
         dt = datetime.fromisoformat(captured_at)
         return dt.strftime("%Y-%m-%d %H:%M")
@@ -175,6 +212,16 @@ def _format_dimensions(width: int | None, height: int | None) -> str:
     if width and height:
         return f"{width} × {height} px"
     return ""
+
+
+def _suffix_from_name(name: str) -> str:
+    """Extensión de la hoja ``name``, con la semántica de ``Path(name).suffix``.
+
+    Se usa cuando el catálogo no trae extensión: decide por el último punto
+    del nombre (``a.b.JPG`` → ``.JPG``, ``.oculto`` → ``""``). No toca el
+    sistema de ficheros; solo consulta el nombre ya separado de la ruta.
+    """
+    return Path(name).suffix
 
 
 def _tier_rank(tier: str | None) -> int:
@@ -229,6 +276,13 @@ def load_from_catalog[T](
     y nombre igual al solicitado (``fav`` es hoy la única etiqueta de sistema,
     pero comprobar el nombre mantiene la paridad con la cláusula SQL). Con
     ``None`` el comportamiento es el de siempre: sin filtro.
+
+    B.3 (T1.8): la raíz de cada ubicación se convierte en ``Path`` una sola
+    vez y el padre se resuelve una sola vez por directorio distinto; la hoja
+    se une por nombre después. El resultado es idéntico para ficheros
+    regulares y para hojas inexistentes. Salvedad de T1.8: una foto-hoja que
+    fuera un enlace simbólico queda sin resolver, mostrando la misma imagen
+    a través del enlace.
     """
     rows = catalog.list_present_files(system_tag=system_tag)
     grouped: dict[str, list] = {}
@@ -259,14 +313,16 @@ def load_from_catalog[T](
         if location_path not in states:
             states[location_path] = availability_state(Path(location_path))
 
-    # Resolución de rutas (T1.8): ``(raíz / rel_path).resolve()`` ejecuta
-    # ``realpath``, que lanza un ``lstat`` por componente —~11 por foto con
-    # 25k fotos, más que el ``stat()`` de tamaño que quitó T1.2. El padre se
-    # resuelve una vez por directorio distinto y la hoja se une por nombre:
-    # el resultado es idéntico para ficheros regulares (el caso real; una
-    # foto-hoja que fuera un enlace simbólico quedaría sin resolver, misma
-    # imagen a través del enlace) y también cuando la hoja no existe.
-    resolved_parents: dict[str, Path] = {}
+    # Resolución de rutas (B.3 / T1.8): ``(raíz / rel_path).resolve()``
+    # ejecuta ``realpath``, que lanza un ``lstat`` por componente —~11 por
+    # foto con 25k fotos, más que el ``stat()`` de tamaño que quitó T1.2. La
+    # raíz se convierte en ``Path`` una vez y el padre se resuelve una vez
+    # por ``(raíz, directorio)``; la hoja se une por nombre. El resultado es
+    # idéntico para ficheros regulares (el caso real; una foto-hoja que fuera
+    # un enlace simbólico quedaría sin resolver, misma imagen a través del
+    # enlace) y también cuando la hoja no existe.
+    location_roots: dict[str, Path] = {}
+    resolved_parents: dict[tuple[str, str], Path] = {}
 
     photos: list[T] = []
     for photo_hash, items in grouped.items():
@@ -283,21 +339,25 @@ def load_from_catalog[T](
         canonical = items_sorted[0]
         others = items_sorted[1:]
 
-        location_path = Path(canonical["location_path"])
-        rel_path = Path(canonical["rel_path"])
-        parent_key = str(location_path / rel_path.parent)
+        location_path = str(canonical["location_path"])
+        root = location_roots.get(location_path)
+        if root is None:
+            root = Path(location_path)
+            location_roots[location_path] = root
+
+        # Las rutas del catálogo son POSIX: una sola división de cadena por
+        # foto, sin construir un ``Path`` para la ruta relativa completa.
+        rel = str(canonical["rel_path"])
+        parent, _, name = rel.rpartition("/")
+        folder = parent.replace(os.sep, "/") if parent else "."
+        parent_key = (location_path, folder)
         resolved_parent = resolved_parents.get(parent_key)
         if resolved_parent is None:
-            resolved_parent = (location_path / rel_path.parent).resolve()
+            resolved_parent = (root / parent).resolve()
             resolved_parents[parent_key] = resolved_parent
-        full_path = resolved_parent / rel_path.name
-        folder = str(rel_path.parent)
-        if folder == ".":
-            folder = "."
-        else:
-            folder = folder.replace(os.sep, "/")
+        full_path = resolved_parent / name
 
-        extension = canonical["extension"] or rel_path.suffix
+        extension = canonical["extension"] or _suffix_from_name(name)
         file_type = canonical["file_type"] or ""
         fmt = file_type.upper() if file_type else extension.lstrip(".").upper() or "—"
 
@@ -308,7 +368,7 @@ def load_from_catalog[T](
 
         camera = _format_camera(canonical["camera_make"], canonical["camera_model"])
         photo = factory(
-            name=rel_path.name,
+            name=name,
             taken=_format_taken(canonical["captured_at"]),
             camera=camera,
             lens=canonical["lens_model"] or "",

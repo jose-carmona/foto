@@ -33,7 +33,7 @@ from foto.storage.resolver import resolve_locations, resolve_metadata_dir
 from foto.storage.tags import FAVORITE_TAG, Tag, connect_read_write
 from foto.ui.grid import THUMB_H, THUMB_W
 from foto.ui.models import LocationStatus, Photo
-from foto.ui.presentation import find_tag_in_catalog
+from foto.ui.presentation import PreparedPhotos, find_tag_in_catalog, prepare_photos
 from foto.ui.theme import apply_theme, ui_font
 from foto.ui.thumbnails import ThumbnailService
 from foto.ui.window import (
@@ -341,6 +341,10 @@ class LibraryFirstPhase:
     ``has_more`` es ``False``, así que no hay segunda entrega. ``total`` es el
     recuento de fotos presentes del catálogo, no el de ítems cargados, para
     que la barra muestre «4 de 29567» desde el primer momento.
+
+    ``prepared`` (Fase B) es el índice y el orden de estas fotos ya calculados
+    en el hilo del worker. La UI los consume sin recalcularlos; con ``None``
+    (demo, tests y datos mínimos) recae en el camino de siempre.
     """
 
     photos: list[Photo]
@@ -348,6 +352,7 @@ class LibraryFirstPhase:
     locations: tuple[LocationStatus, ...]
     total: int
     has_more: bool
+    prepared: PreparedPhotos | None = None
 
 
 @dataclass(frozen=True)
@@ -356,11 +361,13 @@ class LibraryLoadPhases:
 
     ``remaining`` contiene solo las fotos **no** incluidas en
     ``first.photos``: la unión de ambas listas es la biblioteca completa sin
-    claves repetidas.
+    claves repetidas. ``remaining_prepared`` (Fase B) es el índice y el orden
+    ya calculados de esas fotos; es ``None`` cuando no hay fase 2.
     """
 
     first: LibraryFirstPhase
     remaining: list[Photo]
+    remaining_prepared: PreparedPhotos | None = None
 
 
 def load_library_phases(
@@ -381,6 +388,12 @@ def load_library_phases(
     ese callback para emitir la primera fase por señal encolada hacia la UI.
     Por último materializa la biblioteca completa y entrega en ``remaining``
     solo las fotos que no estaban en la primera fase.
+
+    Fase B: el índice de búsqueda y el orden de cada fase se precalculan aquí,
+    dentro del hilo del worker, con ``prepare_photos``; la fase 1 se entrega
+    ya preparada en el callback y la fase 2 en ``remaining_prepared``. La
+    decisión de ``use_fav``, el ``total``, la única apertura de BD, el cierre
+    en ``finally`` y la guardia ``should_continue`` no cambian.
 
     ``should_continue`` se reenvía a ambas materializaciones y se comprueba
     también entre fases: al cortar se lanza ``LibraryLoadCancelled`` y no se
@@ -421,17 +434,21 @@ def load_library_phases(
         if should_continue is not None and not should_continue():
             raise LibraryLoadCancelled
 
+        # Fase B: el índice y el orden se calculan en este hilo, antes de
+        # entregar la fase 1 al callback (el contrato A.3 no se mueve).
         first = LibraryFirstPhase(
             photos=first_photos,
             tags=tags,
             locations=locations,
             total=total,
             has_more=use_fav,
+            prepared=prepare_photos(first_photos),
         )
         if on_first_phase is not None:
             on_first_phase(first)
 
         remaining: list[Photo] = []
+        remaining_prepared: PreparedPhotos | None = None
         if first.has_more:
             if should_continue is not None and not should_continue():
                 raise LibraryLoadCancelled
@@ -441,7 +458,12 @@ def load_library_phases(
                 for photo in _library_snapshot(catalog, should_continue)[0]
                 if photo.key not in first_keys
             ]
-        return LibraryLoadPhases(first=first, remaining=remaining)
+            remaining_prepared = prepare_photos(remaining)
+        return LibraryLoadPhases(
+            first=first,
+            remaining=remaining,
+            remaining_prepared=remaining_prepared,
+        )
     finally:
         catalog.close()
 
@@ -517,18 +539,20 @@ class LibraryLoadWorker(QObject):
     mitad no deja resultados parciales ni escrituras pendientes (la lectura
     es ``mode=ro``).
 
-    Contrato de señales (A.3): el worker abre la BD una sola vez y entrega
-    dos emisiones desde el mismo hilo. ``loaded`` llega con la fase 1 y el
-    total de fotos presentes; ``library_complete`` llega una sola vez al
-    terminar, con las fotos restantes (``[]`` si no hay fase 2 o si se
+    Contrato de señales (A.3 + Fase B): el worker abre la BD una sola vez y
+    entrega dos emisiones desde el mismo hilo. ``loaded`` llega con la fase 1,
+    el total de fotos presentes y el índice y orden ya preparados;
+    ``library_complete`` llega una sola vez al terminar, con las fotos
+    restantes y su preparación (``([], None)`` si no hay fase 2 o si se
     canceló). Es esta última señal —y no ``loaded``— la que detiene el hilo.
     """
 
-    #: ``(fotos, etiquetas, ubicaciones, total, has_more)``: fase 1, con el
-    #: recuento de la biblioteca completa para la barra de estado.
-    loaded = Signal(object, object, object, int, bool)
-    #: ``(fotos restantes)``: única emisión final, incluso al cancelar.
-    library_complete = Signal(object)
+    #: ``(fotos, etiquetas, ubicaciones, total, has_more, prepared)``: fase 1,
+    #: con el recuento de la biblioteca completa y su índice/orden precalculado.
+    loaded = Signal(object, object, object, int, bool, object)
+    #: ``(fotos restantes, prepared restante)``: única emisión final, incluso
+    #: al cancelar.
+    library_complete = Signal(object, object)
     #: Mensaje de error fatal de arranque (mismo guard que antes del show).
     failed = Signal(str)
 
@@ -544,9 +568,14 @@ class LibraryLoadWorker(QObject):
 
     @Slot(object)
     def _emit_first(self, first: LibraryFirstPhase) -> None:
-        """Entrega la fase 1 (datos puros + total) en el hilo de UI por señal."""
+        """Entrega la fase 1 (datos puros + total + preparación) por señal."""
         self.loaded.emit(
-            first.photos, first.tags, first.locations, first.total, first.has_more
+            first.photos,
+            first.tags,
+            first.locations,
+            first.total,
+            first.has_more,
+            first.prepared,
         )
 
     @Slot()
@@ -581,14 +610,16 @@ class LibraryLoadWorker(QObject):
                 return
             if self._cancelled:
                 return
-            self.library_complete.emit(phases.remaining)
+            self.library_complete.emit(
+                phases.remaining, phases.remaining_prepared
+            )
             emitted = True
         finally:
             # Una sola emisión final por llamada: también en cancelación, en
             # fallo y cuando no hay fase 2. Es la señal que conecta a
             # ``thread.quit``, así que el hilo muere siempre al terminar.
             if not emitted:
-                self.library_complete.emit([])
+                self.library_complete.emit([], None)
 
 
 class MainWindow(PhotoWindow):
@@ -707,14 +738,18 @@ class MainWindow(PhotoWindow):
             service.shutdown()
         super().shutdown_background_work()
 
-    def _on_library_loaded(self, photos, tags, locations, total, has_more) -> None:
-        """Fase 1 del arranque (A.3): favoritas, total y estado de carga.
+    def _on_library_loaded(
+        self, photos, tags, locations, total, has_more, prepared=None
+    ) -> None:
+        """Fase 1 del arranque (A.3 + Fase B): favoritas, total y preparación.
 
         Con ``has_more`` la fase 1 ya es solo la biblioteca filtrada en SQL;
         el filtro ``fav`` se activa igual que antes, pero sin crear ítems para
         las fotos que faltan. La barra muestra desde aquí «4 de 29567» y el
         aviso «cargando el resto de la biblioteca…», que ``set_photos``
-        sobrescribiría con «etiqueta: fav» si se fijara antes.
+        sobrescribiría con «etiqueta: fav» si se fijara antes. ``prepared``
+        (Fase B) viaja desde el worker y evita reconstruir el índice y el
+        orden en el hilo de UI; con ``None`` se recalcula como siempre.
         """
         if self._load_cancelled:
             return
@@ -749,19 +784,22 @@ class MainWindow(PhotoWindow):
             locations=locations,
             initial_tag_filter=initial_tag_filter,
             total_count=total,
+            prepared=prepared,
         )
         if has_more:
             self.set_library_loading(True)
             self.status.set_pinned("cargando el resto de la biblioteca…")
 
-    def _on_library_complete(self, remaining: list[Photo]) -> None:
-        """Fase 2 del arranque (A.3): funde el resto sin repoblar la rejilla.
+    def _on_library_complete(
+        self, remaining: list[Photo], prepared: PreparedPhotos | None = None
+    ) -> None:
+        """Fase 2 del arranque (A.3 + Fase B): funde el resto sin repoblar.
 
         Sin favoritas (``has_more`` era ``False``) la fase 1 ya era la
         biblioteca completa y aquí no se toca nada. Con cancelación tampoco.
-        Si el populate de la fase 1 sigue en curso, el append se deja a
-        ``_finish_populate`` para no solapar dos sesiones y no perder la
-        selección que restaura su ``on_done``.
+        Si el populate de la fase 1 sigue en curso, el append y su
+        preparación se dejan a ``_finish_populate`` para no solapar dos
+        sesiones y no perder la selección que restaura su ``on_done``.
         """
         if self._load_cancelled or not self._has_more:
             return
@@ -772,8 +810,9 @@ class MainWindow(PhotoWindow):
         self._append_on_done = self._finish_two_phase_startup
         if self._populate_active:
             self._pending_append = list(remaining)
+            self._pending_prepared = prepared
             return
-        self.append_photos(remaining)
+        self.append_photos(remaining, prepared=prepared)
         if not self._populate_active:
             self._finish_two_phase_startup()
 

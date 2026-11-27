@@ -28,7 +28,7 @@ from foto.ui import window as window_module
 from foto.ui.canvas import ImageLoadTask
 from foto.ui.grid import GROUP_ROLE, HEADER_ROLE, PHOTO_ROLE, THUMB_H, THUMB_W
 from foto.ui.models import LocationStatus, Photo, PhotoTag
-from foto.ui.presentation import photo_group
+from foto.ui.presentation import photo_group, prepare_photos
 from foto.ui.thumbnails import ThumbnailTask
 from foto.ui.window import PhotoWindow
 from tests.ui_factories import make_photo
@@ -97,6 +97,7 @@ def _fase_inicial(
         locations=("ubicación",) if locations is None else locations,
         total=total,
         has_more=has_more,
+        prepared=None,
     )
 
 
@@ -294,6 +295,100 @@ def test_tag_filter_mid_populate_keeps_live_filter(qapp, progresivo):
         assert window._filter_text == "a.jpg"
         assert window._tag_filter == "fav"
         assert window._visible_keys_cache == [photos[0].key]
+    finally:
+        window.close()
+
+
+def _verificar_recuentos_y_navegacion(window, claves: list[str]) -> None:
+    """Recuentos, posiciones y ``0``/``$`` sobre las claves visibles dadas."""
+    assert window._visible_keys_cache == claves
+    assert window._visible_positions_by_key == {
+        key: indice for indice, key in enumerate(claves)
+    }
+    assert len(window.grid._visible_rows) == len(claves)
+    assert window.status._idle_right.startswith(f"{len(claves)} de ")
+    if not claves:
+        return
+    window._dispatch("group_first")
+    assert window._current_photo().key == claves[0]
+    window._dispatch("group_last")
+    assert window._current_photo().key == claves[-1]
+
+
+def test_finish_populate_skips_filter_pass_when_filter_did_not_change(qapp, progresivo):
+    """B.4: sin cambio de filtro, la pasada final de ``_apply_filter`` se omite."""
+    window = _ventana(qapp, FIVE_PHOTOS)
+    llamadas: list[str] = []
+    original = window._apply_filter
+
+    def contada(texto: str) -> None:
+        llamadas.append(texto)
+        original(texto)
+
+    window._apply_filter = contada
+    try:
+        assert window._populate_active
+        assert _bombear(qapp, lambda: not window._populate_active)
+        # Los lotes ya dejaron todo coherente: ninguna pasada al terminar.
+        assert llamadas == []
+        claves = [foto.key for foto in reversed(FIVE_PHOTOS)]
+        assert window._visible_keys_cache == claves
+        assert window._current_photo().key == claves[0]
+        _verificar_recuentos_y_navegacion(window, claves)
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("accion", ["search", "tag"])
+def test_finish_populate_reapplies_filter_when_it_changed_between_batches(
+    qapp, progresivo, accion
+):
+    """B.4: si el filtro cambia entre lotes, la pasada final sí se ejecuta."""
+    if accion == "tag":
+        fav = PhotoTag(name="fav", kind="system", status="confirmed", source="manual")
+        fotos = [
+            make_photo(
+                f"{letra}.jpg",
+                f"2024-05-0{indice} 08:00",
+                tags=(fav,) if indice == 1 else (),
+            )
+            for indice, letra in enumerate("abcde", start=1)
+        ]
+    else:
+        fotos = FIVE_PHOTOS
+    window = _ventana(qapp, fotos)
+    llamadas: list[str] = []
+    original = window._apply_filter
+
+    def contada(texto: str) -> None:
+        llamadas.append(texto)
+        original(texto)
+
+    window._apply_filter = contada
+    try:
+        assert _bombear(qapp, lambda: len(window._grid_items) >= 2)
+        if accion == "search":
+            window._apply_filter("a.jpg")
+        else:
+            window._set_tag_filter("fav")
+        assert llamadas
+        assert _bombear(qapp, lambda: not window._populate_active)
+        # La pasada final se ejecutó de nuevo con el filtro vigente.
+        assert len(llamadas) >= 2
+        assert llamadas[-1] == ("a.jpg" if accion == "search" else "")
+        esperadas = [fotos[0].key]
+        # El resultado coincide con un recálculo completo de la visibilidad.
+        assert window._visible_keys_cache == esperadas
+        assert all(
+            key in window._search_index
+            and (
+                "a.jpg" in window._search_index[key]
+                if accion == "search"
+                else key == esperadas[0]
+            )
+            for key in window._visible_keys_cache
+        )
+        _verificar_recuentos_y_navegacion(window, esperadas)
     finally:
         window.close()
 
@@ -535,15 +630,19 @@ def test_worker_emits_loaded_with_pure_data(qapp, tmp_path, monkeypatch):
     results: list = []
     completed: list = []
     worker.loaded.connect(
-        lambda p, t, l, total, more: results.append((p, t, l, total, more))
+        lambda p, t, l, total, more, prep: results.append(
+            (p, t, l, total, more, prep)
+        )
     )
-    worker.library_complete.connect(lambda rest: completed.append(rest))
+    worker.library_complete.connect(lambda rest, prep: completed.append((rest, prep)))
     worker.failed.connect(lambda m: results.append(("failed", m)))
 
     worker.load()
 
-    assert results == [([FIVE_PHOTOS[0]], ["etiqueta"], ("ubicación",), 1, False)]
-    assert completed == [[]]
+    assert results == [
+        ([FIVE_PHOTOS[0]], ["etiqueta"], ("ubicación",), 1, False, None)
+    ]
+    assert completed == [([], None)]
 
 
 def test_worker_cancel_discards_the_result(qapp, tmp_path, monkeypatch):
@@ -560,7 +659,7 @@ def test_worker_cancel_discards_the_result(qapp, tmp_path, monkeypatch):
     results: list = []
     completed: list = []
     worker.loaded.connect(lambda *a: results.append("loaded"))
-    worker.library_complete.connect(lambda rest: completed.append(rest))
+    worker.library_complete.connect(lambda rest, prep: completed.append((rest, prep)))
     worker.failed.connect(lambda *a: results.append("failed"))
 
     worker.cancel()
@@ -568,7 +667,7 @@ def test_worker_cancel_discards_the_result(qapp, tmp_path, monkeypatch):
 
     assert results == []
     # Una sola emisión final también en cancelación (criterio 6).
-    assert completed == [[]]
+    assert completed == [([], None)]
 
 
 def test_worker_reports_load_failures(qapp, tmp_path, monkeypatch):
@@ -654,14 +753,14 @@ def test_worker_emits_two_phases_in_order(qapp, tmp_path, monkeypatch):
     worker.moveToThread(thread)
     senales: list = []
     worker.loaded.connect(
-        lambda p, t, l, total, more: (
+        lambda p, t, l, total, more, prep: (
             senales.append(("loaded", len(p), len(t), total, more)),
             senales.append(("vivo", thread.isRunning())),
             liberar.set(),
         )
     )
     worker.library_complete.connect(
-        lambda rest: senales.append(("complete", rest))
+        lambda rest, prep: senales.append(("complete", rest))
     )
     thread.started.connect(worker.load)
     worker.library_complete.connect(thread.quit)
@@ -675,6 +774,51 @@ def test_worker_emits_two_phases_in_order(qapp, tmp_path, monkeypatch):
     ]
     assert senales[2:] == [("complete", resto)]
     thread.wait(1000)
+
+
+def test_worker_emits_prepared_data_in_order(qapp, tmp_path, monkeypatch):
+    """Fase B: ambas entregas traen índice y orden calculados en el worker."""
+    first_prepared = prepare_photos(FIVE_PHOTOS[:4])
+    remaining = [FIVE_PHOTOS[4]]
+    remaining_prepared = prepare_photos(remaining)
+
+    def fake_load_library_phases(
+        path, meta, *, should_continue=None, on_first_phase=None
+    ):
+        first = app_module.LibraryFirstPhase(
+            photos=FIVE_PHOTOS[:4],
+            tags=[],
+            locations=(),
+            total=5,
+            has_more=True,
+            prepared=first_prepared,
+        )
+        on_first_phase(first)
+        return app_module.LibraryLoadPhases(
+            first=first,
+            remaining=remaining,
+            remaining_prepared=remaining_prepared,
+        )
+
+    monkeypatch.setattr(app_module, "load_library_phases", fake_load_library_phases)
+    worker = app_module.LibraryLoadWorker(tmp_path, tmp_path)
+    first_seen: list = []
+    complete_seen: list = []
+    worker.loaded.connect(
+        lambda photos, tags, locations, total, has_more, prepared: first_seen.append(
+            (photos, prepared)
+        )
+    )
+    worker.library_complete.connect(
+        lambda rest, prepared: complete_seen.append((rest, prepared))
+    )
+
+    worker.load()
+
+    assert first_seen == [(FIVE_PHOTOS[:4], first_prepared)]
+    assert complete_seen == [(remaining, remaining_prepared)]
+    assert first_seen[0][1].search_index
+    assert complete_seen[0][1].ordered == remaining
 
 
 # ----------------------------------------------------------------------

@@ -39,10 +39,12 @@ def _apply_system_font(app: QApplication) -> None:
     resuelve para ella —la «tipografía del sistema» del diseño, sin
     empaquetar familias ni imponer un tema—; se conservan el resto de
     propiedades (tamaño, peso) de la fuente que había. En las plataformas
-    que ya fijan su fuente (cocoa: ``.AppleSystemUIFont``) la comprobación
-    es un no-op de pocos ms. Idempotente: una segunda pasada no encuentra
-    sustitución.
+    que ya fijan su fuente (cocoa: ``.AppleSystemUIFont``) la resolución es
+    un no-op y se omite del todo: medía ~197 ms en la primera pasada del
+    arranque. Idempotente: una segunda pasada no encuentra sustitución.
     """
+    if QGuiApplication.platformName() == "cocoa":
+        return
     current = app.font()
     resolved = QFontInfo(current).family()
     if not resolved or resolved == current.family():

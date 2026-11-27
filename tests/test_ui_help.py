@@ -30,10 +30,12 @@ from foto.ui.help import (
     help_sections,
     render_help,
 )
-from foto.ui.models import Photo
+from foto.ui.models import LocationStatus, Photo
+from foto.ui.presentation import location_rows
 from foto.ui.theme import (
     _apply_system_font,
     _contrast_ratio,
+    app_palette,
     apply_dark_palette,
     apply_light_palette,
 )
@@ -733,3 +735,89 @@ def test_locations_overlay_keeps_its_760_maximum(qapp):
         760, window.content.geometry().width() - 64
     )
     assert window.locations_overlay.width() == 760
+
+
+# ----------------------------------------------------------------------
+# Fase B (B.5b): overlays construidos bajo demanda
+# ----------------------------------------------------------------------
+def _location_status() -> LocationStatus:
+    return LocationStatus(
+        name="usb",
+        tier="archive",
+        path=Path("/Volumes/FotoVault"),
+        state="active",
+        available=False,
+        photo_count=3,
+    )
+
+
+def test_overlays_are_not_built_during_startup(qapp):
+    """B.5b: ningún overlay se construye al arrancar; cada uno nace al abrirse."""
+    window = _make_window(qapp)
+    estado = _location_status()
+    window._locations = (estado,)
+    try:
+        assert window._help_overlay is None
+        assert window._locations_overlay is None
+
+        window._dispatch("help")
+        qapp.processEvents()
+
+        assert window._help_overlay is not None
+        assert window.help_overlay.isVisible()
+        assert window._locations_overlay is None
+
+        window._toggle_locations()
+        qapp.processEvents()
+
+        assert window._locations_overlay is not None
+        assert window.locations_overlay.isVisible()
+        assert window.locations_overlay._rows == location_rows((estado,))
+        assert not window.help_overlay.isVisible()
+    finally:
+        window.close()
+
+
+def test_retheme_before_opening_overlay_does_not_build_it(qapp):
+    """B.5b: retemar antes de abrir no crea el overlay; el creado usa el tema."""
+    window = _make_window(qapp)
+    try:
+        window.retheme()
+        qapp.processEvents()
+        assert window._help_overlay is None
+        assert window._locations_overlay is None
+
+        window._toggle_help()
+        qapp.processEvents()
+
+        assert window.help_overlay.isVisible()
+        assert window.help_overlay.palette().color(QPalette.Window) == (
+            app_palette().color(QPalette.AlternateBase)
+        )
+    finally:
+        window.close()
+
+
+def test_help_and_locations_close_behaviour_is_unchanged(qapp):
+    """B.5b: un solo overlay abierto, con blocker y foco como siempre."""
+    window = _make_window(qapp)
+    try:
+        window._toggle_help()
+        qapp.processEvents()
+        assert window.help_overlay.isVisible()
+        assert window.help_overlay.hasFocus()
+        assert window.content_blocker.isVisible()
+
+        window._toggle_locations()
+        qapp.processEvents()
+        assert window.locations_overlay.isVisible()
+        assert window.locations_overlay.hasFocus()
+        assert not window.help_overlay.isVisible()
+        assert window.content_blocker.isVisible()
+
+        window._dispatch("escape")
+        qapp.processEvents()
+        assert not window.locations_overlay.isVisible()
+        assert not window.content_blocker.isVisible()
+    finally:
+        window.close()

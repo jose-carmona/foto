@@ -103,6 +103,7 @@ from foto.ui.panels import MetadataPanel, StatusBar
 from foto.ui.presentation import (
     DEFAULT_SORT,
     SORT_KEYS,
+    PreparedPhotos,
     build_search_index,
     find_tag_in_catalog,
     help_section_for_context,
@@ -396,7 +397,9 @@ class PhotoWindow(QMainWindow):
         # (``set_photos``) o las etiquetas de una foto (``_toggle_favorite``).
         # ``_apply_filter`` consulta el dict en vez de reconstruir 25k
         # documentos en cada pulsación.
-        self._search_index = build_search_index(photos)
+        # El arranque progresivo construye la ventana vacía: ni siquiera
+        # vale la pena construir un índice vacío en el hilo de UI (Fase B).
+        self._search_index = build_search_index(photos) if photos else {}
         self._sort_key = DEFAULT_SORT
         self.thumbnails = dict(thumbnails or {})
         # ``search_text`` es solo la consulta confirmada con Enter; el filtro
@@ -442,11 +445,19 @@ class PhotoWindow(QMainWindow):
         self._library_loading = False
         self._populate_active = False
         self._populate_state: _PopulateState | None = None
+        # Fase B (B.4): instantáneo del filtro efectivo al abrir cada sesión
+        # de populate y flag que marca si cambió mientras corría. Si no
+        # cambió, ``_finish_populate`` se ahorra la pasada final completa.
+        self._populate_filter_snapshot: tuple[str, str | None] = ("", None)
+        self._filter_changed_during_populate = False
         # Arranque en dos fases (A.3): total de fotos presentes conocido desde
         # la fase 1, fotos de la fase 2 esperando a que acabe el populate en
         # curso y cierre diferido del estado de carga tras el append.
         self._total_count: int | None = None
         self._pending_append: list[Photo] = []
+        # Fase B: la fase 2 preparada por el worker espera junto al append
+        # diferido para no recalcular índice ni orden en el hilo de UI.
+        self._pending_prepared: PreparedPhotos | None = None
         self._append_on_done: Callable[[], None] | None = None
         # El append de la fase 2 inserta al final, así que el orden de la
         # rejilla deja de ser el canónico hasta que se recompone (bugfix A.3):
@@ -522,15 +533,18 @@ class PhotoWindow(QMainWindow):
         outer_layout.addWidget(self.status, 0)
         self.setCentralWidget(outer)
 
-        self.help_overlay = HelpOverlay(self)
-        self.help_overlay.hide()
+        # Fase B (B.5b): los overlays de ayuda y ubicaciones arrancan ocultos
+        # y no se construyen hasta que el usuario los abre. Las propiedades
+        # ``help_overlay``/``locations_overlay`` mantienen la API de siempre
+        # y los crean bajo demanda con el tema y los datos vigentes.
+        self._help_overlay: HelpOverlay | None = None
+        self._locations_overlay: LocationsOverlay | None = None
 
         # Panel de ubicaciones (ADR 0010, Decisión 7): los datos salen del
-        # catálogo vía la app real; en demo y pruebas, vacío.
+        # catálogo vía la app real; en demo y pruebas, vacío. Se guardan aquí
+        # para que el overlay, si llega a crearse, nazca ya con las filas
+        # correctas sin pagar el coste durante el arranque.
         self._locations = tuple(locations)
-        self.locations_overlay = LocationsOverlay(self)
-        self.locations_overlay.set_locations(location_rows(self._locations))
-        self.locations_overlay.hide()
 
         # Banner de ubicaciones no disponibles (T4.2): sus textos son puros
         # (presentation.location_banner_text y location_banner_parts) y solo
@@ -594,6 +608,33 @@ class PhotoWindow(QMainWindow):
             self._on_color_scheme_changed
         )
 
+    @property
+    def help_overlay(self) -> HelpOverlay:
+        """Overlay de ayuda, creado la primera vez que se consulta (Fase B)."""
+        if self._help_overlay is None:
+            self._ensure_help_overlay()
+        return self._help_overlay
+
+    @property
+    def locations_overlay(self) -> LocationsOverlay:
+        """Panel de ubicaciones, creado la primera vez que se consulta."""
+        if self._locations_overlay is None:
+            self._ensure_locations_overlay()
+        return self._locations_overlay
+
+    def _ensure_help_overlay(self) -> None:
+        """Construye el overlay de ayuda oculto, con el tema ya vigente."""
+        if self._help_overlay is None:
+            self._help_overlay = HelpOverlay(self)
+            self._help_overlay.hide()
+
+    def _ensure_locations_overlay(self) -> None:
+        """Construye el panel de ubicaciones con los datos ya guardados."""
+        if self._locations_overlay is None:
+            self._locations_overlay = LocationsOverlay(self)
+            self._locations_overlay.set_locations(location_rows(self._locations))
+            self._locations_overlay.hide()
+
     def retheme(self) -> None:
         palette = app_palette()
         self.setPalette(palette)
@@ -605,8 +646,12 @@ class PhotoWindow(QMainWindow):
         self.viewer.retheme()
         self.panel.retheme()
         self.status.retheme()
-        self.help_overlay.retheme()
-        self.locations_overlay.retheme()
+        # B.5b: un retema antes de abrir los overlays no debe construirlos;
+        # si algún día existen, el creado después ya recibe el tema vigente.
+        if self._help_overlay is not None:
+            self._help_overlay.retheme()
+        if self._locations_overlay is not None:
+            self._locations_overlay.retheme()
         self.banner.retheme()
         for label in self.findChildren(QLabel):
             if label.property("fotoMuted"):
@@ -638,7 +683,9 @@ class PhotoWindow(QMainWindow):
         self.grid.addItem(item)
         return item
 
-    def _populate_grid(self, photos: list[Photo]) -> bool:
+    def _populate_grid(
+        self, photos: list[Photo], *, prepared: PreparedPhotos | None = None
+    ) -> bool:
         """Ordena una vez e inserta la rejilla: síncrona o por lotes (T2.4).
 
         Por debajo de ``POPULATE_SYNC_LIMIT`` (demo, pruebas y bibliotecas
@@ -656,19 +703,29 @@ class PhotoWindow(QMainWindow):
         funcionan a medio populate, y ``_grid_items`` y la caché de
         visibles se mantienen coherentes lote a lote.
 
+        ``prepared`` (Fase B) trae el orden ya calculado por el worker; se
+        usa tal cual durante el arranque. Con ``None`` (demo, tests y
+        acciones del usuario) se ordena aquí como siempre.
+
         Devuelve ``True`` si el populate quedó aplazado en lotes: el
         llamador debe diferir su trabajo post-populate asignándolo a
         ``self._populate_state.on_done`` (``_finish_populate`` lo ejecuta
         al terminar el último lote).
         """
         self._cancel_populate()
+        self._snapshot_populate_filter()
         self.grid.clear()
         self._grid_items.clear()
         # Una sola pasada de orden antes del primer lote; los grupos se
         # calculan por foto dentro de cada lote (R9). La visibilidad se
         # evalúa por ítem al insertarlo, contra el filtro vigente en ese
-        # momento.
-        ordered = sorted_photos(photos, self._sort_key)
+        # momento. Fase B: durante el arranque el orden ya viene del worker.
+        if prepared is not None:
+            ordered = prepared.ordered
+        elif not photos:
+            ordered = []
+        else:
+            ordered = sorted_photos(photos, self._sort_key)
         state = _PopulateState(ordered=ordered)
         self._populate_state = state
         self._populate_active = True
@@ -679,7 +736,9 @@ class PhotoWindow(QMainWindow):
         self._populate_timer.start()
         return True
 
-    def append_photos(self, photos: list[Photo]) -> None:
+    def append_photos(
+        self, photos: list[Photo], *, prepared: PreparedPhotos | None = None
+    ) -> None:
         """Funde la fase 2 en la rejilla sin repoblarla (A.3/A.4).
 
         Añade las fotos al final, reutilizando ``_populate_range`` con un
@@ -692,6 +751,11 @@ class PhotoWindow(QMainWindow):
         llamador puede diferir su trabajo final en ``_append_on_done``,
         que ``_finish_populate`` ejecuta al terminar la última tanda.
 
+        ``prepared`` (Fase B) trae el índice y el orden del resto ya
+        calculados en el worker: el índice solo crece con él y el estado
+        inicial del populate es su lista ordenada. Con ``None`` se calculan
+        aquí, como antes.
+
         Nota de diseño: al insertar al final, el orden tras la fase 2 es
         «favoritas primero, resto después». Con ``:tag fav`` la vista es
         idéntica a la de la fase 1; ``:sort <clave>`` vuelve al orden
@@ -699,6 +763,7 @@ class PhotoWindow(QMainWindow):
         """
         if not photos:
             return
+        self._snapshot_populate_filter()
         current_item = self.grid.currentItem()
         current_key = (
             current_item.data(PHOTO_ROLE) if current_item is not None else None
@@ -709,7 +774,11 @@ class PhotoWindow(QMainWindow):
         # El índice de búsqueda solo crece: reconstruirlo sobre la biblioteca
         # completa costaría lo que la fase 1 se ahorró. ``/`` encuentra una
         # foto no favorita nada más llegar la fase 2.
-        self._search_index.update(build_search_index(photos))
+        self._search_index.update(
+            prepared.search_index
+            if prepared is not None
+            else build_search_index(photos)
+        )
 
         # Las cabeceras ya insertadas se reutilizan para no duplicar la del
         # grupo con el que continúa el append.
@@ -727,7 +796,11 @@ class PhotoWindow(QMainWindow):
                     current_group = str(group)
 
         state = _PopulateState(
-            ordered=sorted_photos(photos, self._sort_key),
+            ordered=(
+                prepared.ordered
+                if prepared is not None
+                else sorted_photos(photos, self._sort_key)
+            ),
             index=0,
             row=self.grid.count(),
             current_group=current_group,
@@ -781,6 +854,7 @@ class PhotoWindow(QMainWindow):
         # Si la fase 2 aún estaba en curso, su append queda sustituido por
         # esta recomposición (que ya incluye todas las fotos en memoria).
         self._pending_append = []
+        self._pending_prepared = None
         finalizar = self._append_on_done
         self._append_on_done = None
         item = self.grid.currentItem()
@@ -907,10 +981,16 @@ class PhotoWindow(QMainWindow):
         self._library_loading = False
         self.grid.update_header_widths()
         # Normalización final del filtro (T2.4): cada ítem nace con la
-        # visibilidad del filtro de su lote; esta pasada íntegra garantiza
-        # cabeceras, caché de visibles y recuentos coherentes al terminar.
+        # visibilidad del filtro de su lote. B.4: si el filtro no cambió
+        # mientras corría la sesión, los lotes ya dejaron cabeceras, caché de
+        # visibles y filas coherentes, así que solo se actualizan recuentos y
+        # estado vacío; si cambió, se ejecuta la pasada íntegra de siempre.
         # Se usa el filtro efectivo para no descartar la búsqueda viva (A3).
-        self._apply_filter(self._filter_text)
+        if self._filter_changed_during_populate:
+            self._apply_filter(self._filter_text)
+        else:
+            self._update_counts()
+        self._filter_changed_during_populate = False
         self._schedule_visible_thumbnails()
         self._update_empty_state()
         if state is not None and state.on_done is not None:
@@ -923,7 +1003,9 @@ class PhotoWindow(QMainWindow):
         pending = self._pending_append
         if pending:
             self._pending_append = []
-            self.append_photos(pending)
+            prepared = self._pending_prepared
+            self._pending_prepared = None
+            self.append_photos(pending, prepared=prepared)
             if self._populate_active:
                 self._library_loading = True
 
@@ -940,6 +1022,27 @@ class PhotoWindow(QMainWindow):
         self._visible_keys_cache = []
         self._visible_positions_by_key = {}
         self.grid.set_visible_rows([])
+
+    def _snapshot_populate_filter(self) -> None:
+        """Toma el filtro efectivo vigente al abrir una sesión de populate."""
+        self._populate_filter_snapshot = (
+            self._filter_text.strip().casefold(),
+            self._tag_filter,
+        )
+        self._filter_changed_during_populate = False
+
+    def _note_filter_change(self, text: str | None = None) -> None:
+        """Marca si el filtro cambió mientras hay un populate en curso.
+
+        ``text`` permite a ``_apply_filter`` comprobar la consulta entrante
+        antes de asignarla. Fuera de una sesión el flag no se toca: no hay
+        pasada final que omitir.
+        """
+        if not self._populate_active:
+            return
+        needle = (self._filter_text if text is None else text).strip().casefold()
+        if (needle, self._tag_filter) != self._populate_filter_snapshot:
+            self._filter_changed_during_populate = True
 
     def _matches_filter(
         self, photo: Photo, needle: str, tag_filter: str | None
@@ -1006,6 +1109,7 @@ class PhotoWindow(QMainWindow):
         locations: Sequence[LocationStatus] = (),
         initial_tag_filter: str | None = None,
         total_count: int | None = None,
+        prepared: PreparedPhotos | None = None,
     ) -> None:
         """Sustituye la biblioteca cargada por el worker (T2.3, ADR 0011).
 
@@ -1020,15 +1124,21 @@ class PhotoWindow(QMainWindow):
         la aplicación real abre con ``fav`` (historia de usuario) y la
         rejilla nace con las no favoritas ya ocultas, así que la carga es
         más ligera. La llamada decide si la etiqueta es válida; aquí entra
-        tal cual, como el filtro guardado de ``:tag``.
+        tal cual, como el filtro guardado de ``:tag``. ``prepared`` (Fase B)
+        se reenvía a ``set_photos`` para que la UI no recalcule índice ni
+        orden durante el arranque.
         """
         self.tag_catalog = tuple(tags)
+        # Fase B: la fase 1 solo actualiza los datos y el banner; el panel
+        # de ubicaciones se construye bajo demanda con estos mismos datos.
         self._locations = tuple(locations)
-        self.locations_overlay.set_locations(location_rows(self._locations))
         self._refresh_location_banner(photos)
         self._layout_content()
         self.set_photos(
-            photos, tag_filter=initial_tag_filter, total_count=total_count
+            photos,
+            tag_filter=initial_tag_filter,
+            total_count=total_count,
+            prepared=prepared,
         )
 
     def set_photos(
@@ -1038,6 +1148,7 @@ class PhotoWindow(QMainWindow):
         tag_filter: str | None = None,
         *,
         total_count: int | None = None,
+        prepared: PreparedPhotos | None = None,
     ) -> None:
         """Sustituye la biblioteca visible conservando la foto actual si sigue.
 
@@ -1052,6 +1163,12 @@ class PhotoWindow(QMainWindow):
         conocido en la fase 1 aunque entonces solo existan las favoritas en
         memoria. La barra muestra «4 de 29567» desde el primer lote. Con
         ``None`` se limpia y se vuelve a ``len(photos)`` (demo y tests).
+
+        ``prepared`` (Fase B) sustituye el índice y el orden calculados en la
+        UI por los que ya entregó el worker. Con ``None`` se mantienen
+        ``build_search_index`` y ``sorted_photos`` aquí, igual que antes; el
+        resto de ``set_photos`` (cachés de imágenes, pinned, selección…) no
+        cambia.
         """
         viewer_was_visible = self._viewer_visible
         self._image_cache.clear()
@@ -1063,8 +1180,13 @@ class PhotoWindow(QMainWindow):
         current = self.grid.currentItem()
         current_key = current.data(PHOTO_ROLE) if current is not None else None
         self.photos = {photo.key: photo for photo in photos}
-        # La biblioteca cambió: el índice de búsqueda se reconstruye (T1.5).
-        self._search_index = build_search_index(photos)
+        # La biblioteca cambió: el índice de búsqueda se reconstruye (T1.5),
+        # salvo que el worker ya lo haya entregado preparado (Fase B).
+        self._search_index = (
+            prepared.search_index
+            if prepared is not None
+            else build_search_index(photos)
+        )
         if thumbnails is not None:
             self.thumbnails = dict(thumbnails)
             self._thumbnail_order = list(self.thumbnails)
@@ -1076,7 +1198,7 @@ class PhotoWindow(QMainWindow):
         self.status.set_pinned(f"etiqueta: {tag_filter}" if tag_filter else "")
         self.grid.blockSignals(True)
         try:
-            self._populate_grid(photos)
+            self._populate_grid(photos, prepared=prepared)
             if self._populate_active:
                 # Populate por lotes (T2.4): la restauración de la selección
                 # y el resto del trabajo post-populate esperan al último
@@ -1233,10 +1355,11 @@ class PhotoWindow(QMainWindow):
         super().resizeEvent(event)
         self._layout_content()
         self.status.position_popup()
-        if self.help_overlay.isVisible():
-            self._center_overlay(self.help_overlay, max_width=960, max_height=820)
-        if self.locations_overlay.isVisible():
-            self._center_overlay(self.locations_overlay)
+        # Consultas que no deben construir un overlay que aún no existe.
+        if self._help_overlay is not None and self._help_overlay.isVisible():
+            self._center_overlay(self._help_overlay, max_width=960, max_height=820)
+        if self._locations_overlay is not None and self._locations_overlay.isVisible():
+            self._center_overlay(self._locations_overlay)
 
     def _center_overlay(
         self, overlay: QWidget, *, max_width: int = 760, max_height: int = 760
@@ -1801,6 +1924,7 @@ class PhotoWindow(QMainWindow):
         visibles y la primera foto visible para la selección de respaldo;
         ``setHidden`` solo se llama cuando el valor cambia.
         """
+        self._note_filter_change(text)
         self._filter_text = text
         needle = text.strip().casefold()
         tag_filter = self._tag_filter
@@ -1976,6 +2100,7 @@ class PhotoWindow(QMainWindow):
         expirar vuelve a verse.
         """
         self._tag_filter = name
+        self._note_filter_change()
         # Un intento previo fallido (p. ej. «uso: :tag <nombre>») deja de
         # ser relevante: el filtro aplicado o retirado es la respuesta.
         self.status.clear_error()
@@ -2100,11 +2225,11 @@ class PhotoWindow(QMainWindow):
         """
         if action not in ("g", "m") and self._g_pending:
             self._cancel_g_pending()
-        if self.help_overlay.isVisible():
+        if self._help_overlay is not None and self._help_overlay.isVisible():
             if action in ("escape", "help", "close"):
                 self._toggle_help()
             return
-        if self.locations_overlay.isVisible():
+        if self._locations_overlay is not None and self._locations_overlay.isVisible():
             if action in ("escape", "close"):
                 self._toggle_locations()
                 return
@@ -2204,7 +2329,7 @@ class PhotoWindow(QMainWindow):
         if self.status.prompt_active:
             self.status._escape()
             return
-        if self.help_overlay.isVisible():
+        if self._help_overlay is not None and self._help_overlay.isVisible():
             self._toggle_help()
             return
         if self.status.error_text:
@@ -2247,15 +2372,21 @@ class PhotoWindow(QMainWindow):
             self.status.show_message("panel oculto", 2000)
 
     def _toggle_help(self, contextual: bool = True) -> None:
-        if self.help_overlay.isVisible():
-            self.help_overlay.hide()
+        # B.5b: consultar el backing evita construir el overlay solo para
+        # preguntar si está visible; los caminos que sí lo abren usan la
+        # propiedad, que lo crea en ese momento.
+        if self._help_overlay is not None and self._help_overlay.isVisible():
+            self._help_overlay.hide()
             self._hide_content_blocker()
             self.status.set_help_mode(False)
             self._focus_current_view()
         else:
             # Un solo overlay abierto a la vez (docs/diseno-ui.md).
-            if self.locations_overlay.isVisible():
-                self.locations_overlay.hide()
+            if (
+                self._locations_overlay is not None
+                and self._locations_overlay.isVisible()
+            ):
+                self._locations_overlay.hide()
             # La sección se deduce antes de mover el foco al overlay: es el
             # foco y la vista del momento los que deciden (§ 2.1). ``:help``
             # pide contextual=False: viene de la línea de comandos y, al
@@ -2286,12 +2417,13 @@ class PhotoWindow(QMainWindow):
 
     def _toggle_locations(self) -> None:
         """Panel de ubicaciones: clic en el banner o comando ``:locations``."""
-        if self.locations_overlay.isVisible():
-            self.locations_overlay.hide()
+        # B.5b: mismo criterio que en la ayuda: solo se crea al abrirlo.
+        if self._locations_overlay is not None and self._locations_overlay.isVisible():
+            self._locations_overlay.hide()
             self._hide_content_blocker()
             self._focus_current_view()
         else:
-            if self.help_overlay.isVisible():
+            if self._help_overlay is not None and self._help_overlay.isVisible():
                 self._toggle_help()
             self._center_overlay(self.locations_overlay)
             self._show_content_blocker()

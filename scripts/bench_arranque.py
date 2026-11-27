@@ -53,6 +53,8 @@ Uso exacto::
     QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py --originales
     QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py --fotos 25000 --repeticiones 3
     QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py --fotos 25000 --repeticiones 3 --interaccion
+    QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py --fotos 25000 --repeticiones 3 --favoritas-primero
+    QT_QPA_PLATFORM=offscreen uv run python scripts/bench_arranque.py --fotos 25000 --repeticiones 3 --fase-b
 
 El directorio temporal se borra al terminar (``--keep`` para conservarlo
 e inspeccionar la biblioteca generada). El script fuerza la plataforma
@@ -273,14 +275,36 @@ def _interaccion(
     return geometria_fiable, jk, filtro
 
 
-def _arranque_dos_fases(app, raiz: Path, metadata: Path, esperado_total: int):
+def _arranque_dos_fases(
+    app,
+    raiz: Path,
+    metadata: Path,
+    esperado_total: int,
+    contadores: dict | None = None,
+):
     """Mide primer píxel, fase 1 y populate completo sin esperas fijas.
 
     El fin de la fase 1 se detecta en el ``on_done`` del populate (envuelto
     aquí) con dos guardas: que el bench haya contado ya una emisión de
     ``loaded`` y que no se haya registrado todavía la fase 1. Así no hay
     carrera con la fase 2 ni hace falta dormir un tiempo concreto.
+
+    Con ``contadores`` (modo ``--fase-b``) se instrumentan las funciones que
+    la Fase B saca del hilo de UI; los parches se instalan antes del primer
+    ``MainWindow`` y se restauran siempre en ``finally``.
     """
+    restaurar = _instalar_contadores(contadores) if contadores is not None else None
+    try:
+        return _arranque_dos_fases_instrumentado(
+            app, raiz, metadata, esperado_total
+        )
+    finally:
+        if restaurar is not None:
+            restaurar()
+
+
+def _arranque_dos_fases_instrumentado(app, raiz, metadata, esperado_total):
+    """Cuerpo de la medición, con los parches ya instalados."""
     t0 = time.perf_counter()
     window = MainWindow(raiz, _config(raiz), metadata)
     cargas: list[int] = []
@@ -315,6 +339,139 @@ def _arranque_dos_fases(app, raiz: Path, metadata: Path, esperado_total: int):
     window.close()
     app.processEvents()
     return t1 - t0, fase1["tiempo"] - t0, t3 - t0, fase1["items"], fase1["fotos"]
+
+
+def _contadores_fase_b() -> dict:
+    """Contadores del modo ``--fase-b`` (una medición por repetición)."""
+    return {
+        "ui_index": 0,
+        "ui_sort": 0,
+        "worker_prep": 0,
+        "filter_calls": 0,
+        "filter_seconds": 0.0,
+    }
+
+
+def _instalar_contadores(contadores: dict):
+    """Envuelve solo durante el arranque las funciones que Fase B mide.
+
+    Devuelve una función que restaura todo, siempre llamada en ``finally``:
+    el bench no deja parches colgados entre repeticiones ni modos.
+    """
+    from foto.ui import app as app_module
+    from foto.ui import presentation
+    from foto.ui import window as window_module
+    from foto.ui.window import PhotoWindow
+
+    restauraciones: list = []
+
+    def parchear(modulo, nombre: str, fabrica) -> None:
+        original = getattr(modulo, nombre)
+        setattr(modulo, nombre, fabrica(original))
+        restauraciones.append(lambda: setattr(modulo, nombre, original))
+
+    def contar_ui(nombre: str, clave: str):
+        def fabrica(original):
+            def envuelto(*args, **kwargs):
+                contadores[clave] += 1
+                return original(*args, **kwargs)
+
+            return envuelto
+
+        parchear(window_module, nombre, fabrica)
+
+    contar_ui("build_search_index", "ui_index")
+    contar_ui("sorted_photos", "ui_sort")
+
+    def fabrica_prep(original):
+        def envuelto(*args, **kwargs):
+            contadores["worker_prep"] += 1
+            return original(*args, **kwargs)
+
+        return envuelto
+
+    parchear(app_module, "prepare_photos", fabrica_prep)
+    parchear(presentation, "prepare_photos", fabrica_prep)
+
+    original_filter = PhotoWindow._apply_filter
+
+    def filtro_medido(self, texto):
+        inicio = time.perf_counter()
+        try:
+            return original_filter(self, texto)
+        finally:
+            contadores["filter_calls"] += 1
+            contadores["filter_seconds"] += time.perf_counter() - inicio
+
+    PhotoWindow._apply_filter = filtro_medido
+    restauraciones.append(
+        lambda: setattr(PhotoWindow, "_apply_filter", original_filter)
+    )
+
+    def restaurar() -> None:
+        for deshacer in reversed(restauraciones):
+            deshacer()
+
+    return restaurar
+
+
+def _fase_b(app, raiz: Path, metadata: Path, args) -> None:
+    """Modo Fase B: el de ``--favoritas-primero`` más los contadores nuevos."""
+    esperado_fav = args.fotos // 20
+    pixeles: list[float] = []
+    primeras: list[float] = []
+    completos: list[float] = []
+    items: list[int] = []
+    ui_index: list[int] = []
+    ui_sort: list[int] = []
+    worker_prep: list[int] = []
+    filter_calls: list[int] = []
+    filter_ms: list[float] = []
+    for _ in range(args.repeticiones):
+        contadores = _contadores_fase_b()
+        pixel, fase1, completo, n_items, _fotos = _arranque_dos_fases(
+            app, raiz, metadata, args.fotos, contadores
+        )
+        pixeles.append(pixel)
+        primeras.append(fase1)
+        completos.append(completo)
+        items.append(int(n_items))
+        ui_index.append(contadores["ui_index"])
+        ui_sort.append(contadores["ui_sort"])
+        worker_prep.append(contadores["worker_prep"])
+        filter_calls.append(contadores["filter_calls"])
+        filter_ms.append(contadores["filter_seconds"] * 1000)
+
+    print("(c) arranque en dos fases (fase B):")
+    print(f"  primer píxel (ventana + estado de carga): {_linea(pixeles)}")
+    print(f"  fase 1 (favoritas navegables):             {_linea(primeras)}")
+    print(f"  populate completo ({args.fotos} fotos):       {_linea(completos)}")
+    print(f"  ítems creados en la fase 1: {items[0]} (esperado: {esperado_fav})")
+    print(
+        f"  build_search_index/sorted_photos en la UI: "
+        f"{sum(ui_index)} / {sum(ui_sort)} (esperado: 0 / 0)"
+    )
+    print(
+        f"  prepare_photos en el worker: {min(worker_prep)}…{max(worker_prep)} "
+        f"por arranque (esperado: ≥ 1)"
+    )
+    medio_ms = statistics.median(filter_ms)
+    print(
+        f"  _apply_filter en el arranque: {sum(filter_calls)} llamadas, "
+        f"mediana {medio_ms:.1f} ms (esperado: < 20 ms)"
+    )
+    mediana = statistics.median(primeras)
+    ok = (
+        mediana < 1.0
+        and not any(ui_index)
+        and not any(ui_sort)
+        and all(n >= 1 for n in worker_prep)
+        and medio_ms < 20.0
+    )
+    print(
+        f"  veredicto fase B: {'OK' if ok else 'FALLA'} "
+        f"(fase 1 mediana {mediana * 1000:.1f} ms)"
+    )
 
 
 def _favoritas_primero(app, raiz: Path, metadata: Path, args) -> None:
@@ -365,6 +522,10 @@ def main() -> None:
                         help="arranque en dos fases (A.3): mide la fase 1 por "
                              "separado y cuenta los ítems creados; omite (a), "
                              "(b) y (d)")
+    parser.add_argument("--fase-b", action="store_true",
+                        help="como --favoritas-primero más los contadores de la "
+                             "Fase B: índice/orden en la UI, prepare_photos en "
+                             "el worker y tiempo de _apply_filter")
     args = parser.parse_args()
 
     from PySide6.QtWidgets import QApplication
@@ -379,12 +540,15 @@ def main() -> None:
         print(f"  condición de filesystem: {'con originales' if args.originales else 'sin originales'}")
         print()
 
-        # A.3/A.5: modo de arranque en dos fases. Se omiten (a), (b) y (d).
-        if args.favoritas_primero:
+        # A.3/A.5 y Fase B: modo de arranque en dos fases. Se omiten (a), (b) y (d).
+        if args.favoritas_primero or args.fase_b:
             from PySide6.QtWidgets import QApplication
 
             app = QApplication.instance() or QApplication([])
-            _favoritas_primero(app, raiz, metadata, args)
+            if args.fase_b:
+                _fase_b(app, raiz, metadata, args)
+            else:
+                _favoritas_primero(app, raiz, metadata, args)
             return
 
         # (a) load_photos completo, con repetición.

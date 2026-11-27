@@ -14,9 +14,10 @@ import os
 import re
 
 import pytest
-from PySide6.QtGui import QFont, QFontInfo
+from PySide6.QtGui import QFont, QFontInfo, QGuiApplication
 from PySide6.QtWidgets import QApplication, QWidget
 
+from foto.ui import theme as theme_module
 from foto.ui.grid import PhotoGrid
 from foto.ui.help import HelpOverlay
 from foto.ui.panels import CompletionPopup, MetadataPanel, StatusBar
@@ -136,3 +137,40 @@ def test_apply_system_font_is_idempotent(qapp):
     _apply_system_font(qapp)
 
     assert qapp.font().family() == family
+
+
+# ----------------------------------------------------------------------
+# B.5a (S5) — cocoa no paga la resolución de fuentes del sistema
+# ----------------------------------------------------------------------
+def test_apply_theme_does_not_call_font_info_on_cocoa(qapp, monkeypatch):
+    """En cocoa la fuente ya resuelve a sí misma: no se crea ningún QFontInfo."""
+    monkeypatch.setattr(QGuiApplication, "platformName", lambda: "cocoa")
+
+    def forbidden(_font: QFont) -> str:
+        raise AssertionError("QFontInfo no debe llamarse en cocoa")
+
+    monkeypatch.setattr(theme_module, "QFontInfo", forbidden)
+    original = qapp.font()
+
+    apply_theme(qapp)
+
+    assert qapp.font() == original
+
+
+def test_apply_system_font_still_resolves_on_other_platforms(qapp, monkeypatch):
+    """Fuera de cocoa se mantiene la corrección de T2.8 (offscreen incluido)."""
+    monkeypatch.setattr(QGuiApplication, "platformName", lambda: "offscreen")
+    original = qapp.font()
+    try:
+        missing = QFont("Fuente-Inexistente-Foto-XYZ", 12)
+        missing.setWeight(QFont.Weight.DemiBold)
+        qapp.setFont(missing)
+
+        _apply_system_font(qapp)
+
+        current = qapp.font()
+        assert current.family() != "Fuente-Inexistente-Foto-XYZ"
+        assert QFontInfo(current).family() == current.family()
+        assert current.weight() == QFont.Weight.DemiBold
+    finally:
+        qapp.setFont(original)

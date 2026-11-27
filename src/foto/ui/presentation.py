@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from foto.core.geocoding import Place
 from foto.storage.tags import FAVORITE_TAG, Region, Tag, normalize_tag_name
@@ -485,6 +485,36 @@ def sorted_photos(photos: list[Photo], key: str) -> list[Photo]:
     if key != "date":
         decorated.sort(key=lambda entry: entry[2])
     return [entry[3] for entry in decorated]
+
+
+@dataclass(frozen=True)
+class PreparedPhotos:
+    """Índice y orden precalculados de una lista de fotos (Fase B).
+
+    El worker entrega este par con cada fase del arranque para que la UI no
+    recalcule el documento de búsqueda ni el orden en el hilo principal. Es un
+    tipo puro, sin Qt: ``search_index`` es exactamente el resultado de
+    ``build_search_index(fotos)`` y ``ordered`` el de
+    ``sorted_photos(fotos, DEFAULT_SORT)``, carácter a carácter y en el mismo
+    orden. Quien recibe el par decide si lo usa; ``None`` significa «recalcula
+    aquí como antes» (demo, tests y acciones del usuario).
+    """
+
+    search_index: dict[str, str]
+    ordered: list[Photo]
+
+
+def prepare_photos(photos: list[Photo], key: str = DEFAULT_SORT) -> PreparedPhotos:
+    """Precalcula en el worker el índice de búsqueda y el orden (Fase B).
+
+    Pura: solo llama a ``build_search_index`` y ``sorted_photos`` y devuelve
+    el par. No cambia contenido ni orden: la UI consume lo que aquí se calcula
+    sin volver a pagar esas dos pasadas durante el arranque.
+    """
+    return PreparedPhotos(
+        search_index=build_search_index(photos),
+        ordered=sorted_photos(photos, key),
+    )
 
 
 def photo_group(photo: Photo, key: str) -> tuple[str, str]:
